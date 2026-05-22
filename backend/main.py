@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 from device_manager import DeviceManager
+from drive_controller import DriveController
 from favorites import add_favorite, delete_favorite, list_favorites
 from location_service import LocationService
 
@@ -51,10 +52,15 @@ app.add_middleware(
 
 manager = DeviceManager()
 svc = LocationService(manager)
+drive = DriveController(svc.set_location, svc.clear_location)
 
 
 def experimental_enabled() -> bool:
     return os.getenv("IOS_SIM_ENABLE_EXPERIMENTAL", "").lower() in {"1", "true", "yes", "on"}
+
+
+def drive_mode_enabled() -> bool:
+    return os.getenv("IOS_SIM_ENABLE_DRIVE_MODE", "1").lower() not in {"0", "false", "no", "off"}
 
 
 def experimental_disabled(feature: str) -> JSONResponse:
@@ -86,6 +92,17 @@ class LocationBody(BaseModel):
 class RouteBody(BaseModel):
     waypoints: list[LocationBody] = Field(..., min_length=2)
     speed_mps: float = Field(1.4, ge=0.1, le=50.0)
+
+
+class DriveStartBody(BaseModel):
+    waypoints: list[LocationBody] = Field(..., min_length=2)
+    speed_mps: float = Field(8.3, ge=0.5, le=35.0)
+    tick_s: float = Field(2.0, ge=1.0, le=10.0)
+    stay_at_end: bool = True
+
+
+class DriveStopBody(BaseModel):
+    clear_location: bool = False
 
 
 class FavoriteBody(BaseModel):
@@ -142,6 +159,7 @@ def _location_error(result: dict) -> JSONResponse:
 
 @app.post("/api/location/set")
 def set_location(body: LocationBody):
+    drive.stop(clear_location=False)
     result = svc.set_location(body.lat, body.lon)
     if not result["ok"]:
         return _location_error(result)
@@ -150,6 +168,7 @@ def set_location(body: LocationBody):
 
 @app.post("/api/location/clear")
 def clear_location():
+    drive.stop(clear_location=False)
     result = svc.clear_location()
     if not result["ok"]:
         return _location_error(result)
@@ -165,6 +184,59 @@ def play_route(body: RouteBody):
     if not result["ok"]:
         return _location_error(result)
     return result
+
+
+@app.post("/api/location/drive/start")
+def drive_start(body: DriveStartBody):
+    if not drive_mode_enabled():
+        return experimental_disabled("Drive Mode")
+    wps = [{"lat": w.lat, "lon": w.lon} for w in body.waypoints]
+    result = drive.start(
+        wps,
+        speed_mps=body.speed_mps,
+        tick_s=body.tick_s,
+        stay_at_end=body.stay_at_end,
+    )
+    if not result["ok"]:
+        return _location_error(result)
+    return result
+
+
+@app.post("/api/location/drive/pause")
+def drive_pause():
+    if not drive_mode_enabled():
+        return experimental_disabled("Drive Mode")
+    result = drive.pause()
+    if not result["ok"]:
+        return _location_error(result)
+    return result
+
+
+@app.post("/api/location/drive/resume")
+def drive_resume():
+    if not drive_mode_enabled():
+        return experimental_disabled("Drive Mode")
+    result = drive.resume()
+    if not result["ok"]:
+        return _location_error(result)
+    return result
+
+
+@app.post("/api/location/drive/stop")
+def drive_stop(body: DriveStopBody | None = None):
+    if not drive_mode_enabled():
+        return experimental_disabled("Drive Mode")
+    result = drive.stop(clear_location=body.clear_location if body else False)
+    if not result["ok"]:
+        return _location_error(result)
+    return result
+
+
+@app.get("/api/location/drive/status")
+def drive_status():
+    if not drive_mode_enabled():
+        return experimental_disabled("Drive Mode")
+    return drive.status()
 
 
 # â”€â”€ favorites â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

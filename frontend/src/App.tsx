@@ -1,12 +1,14 @@
 ﻿import React, { useState, useCallback } from 'react'
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, useMapEvents } from 'react-leaflet'
+import { useEffect } from 'react'
 import L from 'leaflet'
-import { api, LatLon, Favorite } from './api/client'
+import { api, LatLon, DriveStatus } from './api/client'
 import DevicePanel from './components/DevicePanel'
 import FavoritesList from './components/FavoritesList'
 import UnplugModal from './components/UnplugModal'
 
 const experimentalEnabled = import.meta.env.VITE_ENABLE_EXPERIMENTAL_FEATURES === '1'
+const driveModeEnabled = import.meta.env.VITE_ENABLE_DRIVE_MODE !== '0'
 
 // Fix default marker icon in Vite builds
 delete (L.Icon.Default.prototype as any)._getIconUrl
@@ -29,6 +31,12 @@ export default function App() {
   const [showUnplug, setShowUnplug] = useState(false)
   const [routeMode, setRouteMode] = useState(false)
   const [routeWaypoints, setRouteWaypoints] = useState<LatLon[]>([])
+  const [driveSpeed, setDriveSpeed] = useState(8.3)
+  const [stayAtEnd, setStayAtEnd] = useState(true)
+  const [driveStatus, setDriveStatus] = useState<DriveStatus | null>(null)
+
+  const driveActive = driveStatus?.state === 'starting' || driveStatus?.state === 'driving' || driveStatus?.state === 'paused'
+  const drivePaused = driveStatus?.state === 'paused'
 
   const setMsg = (s: string, isErr = false) => {
     setError(isErr ? s : '')
@@ -36,9 +44,26 @@ export default function App() {
   }
 
   const handlePick = useCallback((ll: LatLon) => {
+    if (driveActive) {
+      setMsg('Stop Drive Mode before editing waypoints.', true)
+      return
+    }
     setPicked(ll)
     if (routeMode) setRouteWaypoints(prev => [...prev, ll])
-  }, [routeMode])
+  }, [driveActive, routeMode])
+
+  useEffect(() => {
+    if (!driveModeEnabled) return
+    const id = window.setInterval(async () => {
+      try {
+        const next = await api.driveStatus()
+        if (next.state !== 'idle' || driveStatus?.state !== 'idle') setDriveStatus(next)
+      } catch {
+        // Backend experimental flag may be off while frontend flag is on.
+      }
+    }, 1500)
+    return () => window.clearInterval(id)
+  }, [driveStatus?.state])
 
   const handleSet = async () => {
     if (!picked) { setMsg('Click the map to pick a location.', true); return }
@@ -69,12 +94,37 @@ export default function App() {
     setPicked(loc)
   }
 
-  const handlePlayRoute = async () => {
+  const handleStartDrive = async () => {
     if (routeWaypoints.length < 2) { setMsg('Add at least 2 waypoints by clicking the map.', true); return }
     try {
-      setMsg(`Playing route (${routeWaypoints.length} waypoints)â€¦`)
-      await api.playRoute(routeWaypoints, 1.4)
-      setMsg('Route complete.')
+      setMsg(`Starting drive (${routeWaypoints.length} waypoints)â€¦`)
+      const result = await api.startDrive(routeWaypoints, driveSpeed, 2.0, stayAtEnd)
+      setDriveStatus(result)
+      setMsg('Drive Mode started.')
+    } catch (e: any) { setMsg(e.message, true) }
+  }
+
+  const handlePauseDrive = async () => {
+    try {
+      const result = await api.pauseDrive()
+      setDriveStatus(result)
+      setMsg('Drive paused.')
+    } catch (e: any) { setMsg(e.message, true) }
+  }
+
+  const handleResumeDrive = async () => {
+    try {
+      const result = await api.resumeDrive()
+      setDriveStatus(result)
+      setMsg('Drive resumed.')
+    } catch (e: any) { setMsg(e.message, true) }
+  }
+
+  const handleStopDrive = async () => {
+    try {
+      const result = await api.stopDrive(false)
+      setDriveStatus(result)
+      setMsg('Drive stopped.')
     } catch (e: any) { setMsg(e.message, true) }
   }
 
@@ -114,23 +164,69 @@ export default function App() {
         </div>
 
         {/* Route mode */}
-        {experimentalEnabled && (
+        {driveModeEnabled && (
         <div style={routeBox}>
           <button
             style={{ ...secondaryBtn, background: routeMode ? '#2a2a60' : '#1a1a26' }}
             onClick={() => { setRouteMode(!routeMode); setRouteWaypoints([]) }}
+            disabled={driveActive}
           >
-            {routeMode ? `Route mode ON (${routeWaypoints.length} pts)` : 'Route Mode'}
+            {routeMode ? `Drive waypoints (${routeWaypoints.length})` : 'Drive Mode'}
           </button>
-          {routeMode && routeWaypoints.length >= 2 && (
-            <button style={primaryBtn} onClick={handlePlayRoute} disabled={!deviceReady}>
-              â–¶ Play Route
+          {routeMode && (
+            <>
+              <label style={fieldLabel}>
+                Speed
+                <select
+                  style={select}
+                  value={driveSpeed}
+                  disabled={driveActive}
+                  onChange={e => setDriveSpeed(Number(e.target.value))}
+                >
+                  <option value={1.4}>Walking</option>
+                  <option value={3.5}>Jogging</option>
+                  <option value={5.5}>Cycling</option>
+                  <option value={8.3}>City driving</option>
+                  <option value={27.8}>Highway</option>
+                </select>
+              </label>
+              <label style={checkRow}>
+                <input
+                  type="checkbox"
+                  checked={stayAtEnd}
+                  disabled={driveActive}
+                  onChange={e => setStayAtEnd(e.target.checked)}
+                />
+                Stay at end
+              </label>
+            </>
+          )}
+          {routeMode && routeWaypoints.length >= 2 && !driveActive && (
+            <button style={primaryBtn} onClick={handleStartDrive} disabled={!deviceReady}>
+              Start Drive
             </button>
           )}
-          {routeMode && (
-            <button style={secondaryBtn} onClick={() => setRouteWaypoints([])}>
+          {routeMode && driveActive && (
+            <div style={driveControls}>
+              <button style={secondaryBtn} onClick={drivePaused ? handleResumeDrive : handlePauseDrive}>
+                {drivePaused ? 'Resume' : 'Pause'}
+              </button>
+              <button style={secondaryBtn} onClick={handleStopDrive}>
+                Stop
+              </button>
+            </div>
+          )}
+          {routeMode && !driveActive && (
+            <button style={secondaryBtn} onClick={() => setRouteWaypoints([])} disabled={routeWaypoints.length === 0}>
               Clear Waypoints
             </button>
+          )}
+          {routeMode && driveStatus && driveStatus.state !== 'idle' && (
+            <div style={driveReadout}>
+              <div>{driveStatus.state.toUpperCase()} - {Math.round(driveStatus.progress * 100)}%</div>
+              <div>{Math.round(driveStatus.distance_remaining_m)} m left</div>
+              {driveStatus.eta_s !== null && <div>ETA {Math.round(driveStatus.eta_s)} s</div>}
+            </div>
           )}
         </div>
         )}
@@ -151,6 +247,16 @@ export default function App() {
           {routeMode && routeWaypoints.map((wp, i) => (
             <Marker key={i} position={[wp.lat, wp.lon]} />
           ))}
+          {routeMode && routeWaypoints.length >= 2 && (
+            <Polyline positions={routeWaypoints.map(wp => [wp.lat, wp.lon] as [number, number])} pathOptions={{ color: '#0f766e', weight: 4 }} />
+          )}
+          {driveStatus?.current_location && (
+            <CircleMarker
+              center={[driveStatus.current_location.lat, driveStatus.current_location.lon]}
+              radius={8}
+              pathOptions={{ color: '#14b8a6', fillColor: '#14b8a6', fillOpacity: 0.85 }}
+            />
+          )}
         </MapContainer>
       </div>
 
@@ -171,6 +277,11 @@ const mapWrap: React.CSSProperties = { flex: 1, position: 'relative' }
 const coordBox: React.CSSProperties = { padding: '10px 16px', borderBottom: '1px solid #2a2a38' }
 const actions: React.CSSProperties = { padding: 16, display: 'flex', flexDirection: 'column', gap: 8, borderBottom: '1px solid #2a2a38' }
 const routeBox: React.CSSProperties = { padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8, borderBottom: '1px solid #2a2a38' }
+const fieldLabel: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, color: '#b8b8c8', fontSize: 12 }
+const select: React.CSSProperties = { padding: '8px', background: '#1a1a26', border: '1px solid #2a2a40', borderRadius: 6, color: '#e8e8f0' }
+const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, color: '#d8d8e4', fontSize: 13 }
+const driveControls: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }
+const driveReadout: React.CSSProperties = { padding: '8px 10px', background: '#0c1f1d', border: '1px solid #164e46', borderRadius: 6, color: '#99f6e4', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 3 }
 const primaryBtn: React.CSSProperties = { padding: '9px 0', background: '#5b5bf6', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 14 }
 const secondaryBtn: React.CSSProperties = { padding: '9px 0', background: '#1a1a26', border: '1px solid #2a2a40', borderRadius: 8, color: '#e8e8f0', cursor: 'pointer', fontSize: 13 }
 const lockBtn: React.CSSProperties = { padding: '9px 0', background: '#1e1e3a', border: '1px solid #4040a0', borderRadius: 8, color: '#aaaaff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }

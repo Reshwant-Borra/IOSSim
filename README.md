@@ -19,14 +19,15 @@ Stable working features:
 - Static Set Location over USB/RSD.
 - Persistent active `simulate-location set` process while backend stays open.
 - Reset GPS / clear location.
+- Drive Mode over an active USB/RSD backend session.
+- Drive Mode pause/resume/stop/status controls.
+- Drive Mode "Stay at end" final-location hold.
 - `RUN_EVERYTHING.ps1` launcher.
 - Frontend/backend communication for status, initialize, set, reset, and favorites.
 
 Experimental or not guaranteed:
 
-- Drive Mode.
-- Route playback.
-- Pause/resume route controller.
+- Legacy GPX route playback.
 - WiFi tunnel mode.
 - Unplug persistence.
 - Developer Mode OFF trick / GhostMe-style persistence.
@@ -35,22 +36,25 @@ See [STABILITY.md](STABILITY.md) before changing device, tunnel, set, clear, lau
 
 ---
 
-## Enabling Experimental Test Builds
+## Feature Flags
 
-Frontend experimental UI is off by default:
+Drive Mode is available by default. To hide it for a stable demo build:
 
 ```powershell
-cd frontend
-$env:VITE_ENABLE_EXPERIMENTAL_FEATURES = "1"
-npm run dev
+$env:IOS_SIM_ENABLE_DRIVE_MODE = "0"
+$env:VITE_ENABLE_DRIVE_MODE = "0"
 ```
 
-Backend experimental endpoints are off by default:
+Other experimental workflows, such as Lock & Unplug and legacy GPX route playback, remain off by default. To enable those test workflows:
 
 ```powershell
 cd backend
 $env:IOS_SIM_ENABLE_EXPERIMENTAL = "1"
 python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
+
+cd ..\frontend
+$env:VITE_ENABLE_EXPERIMENTAL_FEATURES = "1"
+npm run dev
 ```
 
 Do not enable these in the normal launcher unless the branch is explicitly a test branch.
@@ -125,16 +129,17 @@ Open `http://localhost:5173`.
 
 ---
 
-## Experimental Workflow: Route Playback
+## Drive Mode
 
-Route playback is behind experimental flags. It currently uses GPX playback and does not yet provide a full Drive Mode controller with pause/resume/ETA/stay-at-end guarantees.
+Drive Mode is confirmed working on the live target device while the backend, USB/RSD tunnel, and Developer Mode stay active. It uses timed static-location updates, exposes pause/resume/stop/status endpoints, and can keep the final destination active when "Stay at end" is enabled.
 
-1. Enable frontend and backend experimental flags.
-2. Click **Route Mode**.
-3. Click at least two waypoints on the map.
-4. Click **Play Route**.
+1. Click **Drive Mode**.
+2. Click at least two waypoints on the map.
+3. Choose a speed preset.
+4. Click **Start Drive**.
+5. Use **Pause**, **Resume**, or **Stop** as needed.
 
-For the planned Drive Mode architecture, see the Obsidian note `Projects/iOS_Location_Sim_Research/Drive_Mode.md`.
+Limit: Drive Mode is not an unplug/offline persistence feature. Keep the backend and tunnel running for movement updates.
 
 ---
 
