@@ -13,9 +13,6 @@ These features are considered stable enough to protect on `main`:
 - Static Set Location over USB/RSD.
 - Persistent active `simulate-location set` process while the backend stays open.
 - Reset GPS / clear location.
-- Drive Mode over an active USB/RSD backend session.
-- Drive Mode pause/resume/stop/status controls.
-- Drive Mode "Stay at end" final-location hold.
 - `RUN_EVERYTHING.ps1` launcher flow.
 - Frontend/backend communication for status, initialize, set, reset, and favorites.
 
@@ -23,6 +20,7 @@ These features are considered stable enough to protect on `main`:
 
 These features are not guaranteed and must stay behind explicit opt-in flags or separate branches:
 
+- Drive Mode, including manual waypoint driving, address geocoding, road routing, pause/resume/stop/status, and "Stay at end".
 - Legacy GPX route playback.
 - WiFi tunnel mode.
 - Unplug persistence.
@@ -30,11 +28,11 @@ These features are not guaranteed and must stay behind explicit opt-in flags or 
 
 ## Runtime flags
 
-Drive Mode is enabled by default. Disable it only for a stable demo build:
+Drive Mode requires the experimental flag. `IOS_SIM_ENABLE_DRIVE_MODE=0` and `VITE_ENABLE_DRIVE_MODE=0` can still hide it in a test build:
 
 ```powershell
-$env:VITE_ENABLE_DRIVE_MODE = "0"
-$env:IOS_SIM_ENABLE_DRIVE_MODE = "0"
+$env:IOS_SIM_ENABLE_EXPERIMENTAL = "1"
+$env:VITE_ENABLE_EXPERIMENTAL_FEATURES = "1"
 ```
 
 Frontend experimental UI is disabled by default. Enable it only in a test build:
@@ -55,7 +53,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
 
 ## Branch policy
 
-- `main`: stable USB set/reset workflow and confirmed Drive Mode only. No WiFi tunnel or Ghost persistence behavior should be required for this branch to work.
+- `main`: stable USB set/reset workflow. Drive Mode, WiFi tunnel, and Ghost persistence behavior should not be required for this branch to work.
 - `experimental/*`: feature work for Drive Mode, WiFi mode, Ghost Mode, route controllers, and persistence experiments.
 - Before merging experimental work into `main`, verify the stable checklist below.
 
@@ -68,7 +66,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
 5. Set Location starts a persistent process and location remains active while backend stays open.
 6. Setting a second location replaces the old process cleanly.
 7. Reset GPS terminates the active process and clears simulated location.
-8. Drive Mode can start from at least two waypoints, update location, pause/resume/stop, and report status.
+8. In experimental mode only, Drive Mode can start from at least two waypoints or a generated road route, update location, pause/resume/stop, and report status.
 9. Frontend can call backend through the Vite proxy.
 10. `RUN_EVERYTHING.ps1` launches backend and frontend.
 

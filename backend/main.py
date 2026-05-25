@@ -38,6 +38,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 from device_manager import DeviceManager
 from drive_controller import DriveController
+from drive_routing import DriveRoutingClient
 from favorites import add_favorite, delete_favorite, list_favorites
 from location_service import LocationService
 
@@ -53,6 +54,7 @@ app.add_middleware(
 manager = DeviceManager()
 svc = LocationService(manager)
 drive = DriveController(svc.set_location, svc.clear_location)
+drive_routing = DriveRoutingClient()
 
 
 def experimental_enabled() -> bool:
@@ -61,6 +63,10 @@ def experimental_enabled() -> bool:
 
 def drive_mode_enabled() -> bool:
     return os.getenv("IOS_SIM_ENABLE_DRIVE_MODE", "1").lower() not in {"0", "false", "no", "off"}
+
+
+def experimental_drive_mode_enabled() -> bool:
+    return experimental_enabled() and drive_mode_enabled()
 
 
 def experimental_disabled(feature: str) -> JSONResponse:
@@ -96,6 +102,22 @@ class RouteBody(BaseModel):
 
 class DriveStartBody(BaseModel):
     waypoints: list[LocationBody] = Field(..., min_length=2)
+    speed_mps: float = Field(8.3, ge=0.5, le=35.0)
+    tick_s: float = Field(2.0, ge=1.0, le=10.0)
+    stay_at_end: bool = True
+
+
+class DriveGeocodeBody(BaseModel):
+    address: str = Field(..., min_length=1, max_length=300)
+
+
+class DriveRouteBody(BaseModel):
+    start: LocationBody
+    destination: LocationBody
+
+
+class RoadRouteStartBody(BaseModel):
+    coordinates: list[LocationBody] = Field(..., min_length=2)
     speed_mps: float = Field(8.3, ge=0.5, le=35.0)
     tick_s: float = Field(2.0, ge=1.0, le=10.0)
     stay_at_end: bool = True
@@ -188,7 +210,7 @@ def play_route(body: RouteBody):
 
 @app.post("/api/location/drive/start")
 def drive_start(body: DriveStartBody):
-    if not drive_mode_enabled():
+    if not experimental_drive_mode_enabled():
         return experimental_disabled("Drive Mode")
     wps = [{"lat": w.lat, "lon": w.lon} for w in body.waypoints]
     result = drive.start(
@@ -202,9 +224,48 @@ def drive_start(body: DriveStartBody):
     return result
 
 
+@app.post("/api/location/drive/geocode")
+def drive_geocode(body: DriveGeocodeBody):
+    if not experimental_drive_mode_enabled():
+        return experimental_disabled("Drive Mode geocoding")
+    result = drive_routing.geocode(body.address)
+    if not result["ok"]:
+        return JSONResponse(status_code=502, content=result)
+    return result
+
+
+@app.post("/api/location/drive/route")
+def drive_route(body: DriveRouteBody):
+    if not experimental_drive_mode_enabled():
+        return experimental_disabled("Drive Mode routing")
+    result = drive_routing.route(
+        {"lat": body.start.lat, "lon": body.start.lon},
+        {"lat": body.destination.lat, "lon": body.destination.lon},
+    )
+    if not result["ok"]:
+        return JSONResponse(status_code=502, content=result)
+    return result
+
+
+@app.post("/api/location/drive/start-road-route")
+def drive_start_road_route(body: RoadRouteStartBody):
+    if not experimental_drive_mode_enabled():
+        return experimental_disabled("Drive Mode")
+    coordinates = [{"lat": coord.lat, "lon": coord.lon} for coord in body.coordinates]
+    result = drive.start(
+        coordinates,
+        speed_mps=body.speed_mps,
+        tick_s=body.tick_s,
+        stay_at_end=body.stay_at_end,
+    )
+    if not result["ok"]:
+        return _location_error(result)
+    return result
+
+
 @app.post("/api/location/drive/pause")
 def drive_pause():
-    if not drive_mode_enabled():
+    if not experimental_drive_mode_enabled():
         return experimental_disabled("Drive Mode")
     result = drive.pause()
     if not result["ok"]:
@@ -214,7 +275,7 @@ def drive_pause():
 
 @app.post("/api/location/drive/resume")
 def drive_resume():
-    if not drive_mode_enabled():
+    if not experimental_drive_mode_enabled():
         return experimental_disabled("Drive Mode")
     result = drive.resume()
     if not result["ok"]:
@@ -224,7 +285,7 @@ def drive_resume():
 
 @app.post("/api/location/drive/stop")
 def drive_stop(body: DriveStopBody | None = None):
-    if not drive_mode_enabled():
+    if not experimental_drive_mode_enabled():
         return experimental_disabled("Drive Mode")
     result = drive.stop(clear_location=body.clear_location if body else False)
     if not result["ok"]:
@@ -234,7 +295,7 @@ def drive_stop(body: DriveStopBody | None = None):
 
 @app.get("/api/location/drive/status")
 def drive_status():
-    if not drive_mode_enabled():
+    if not experimental_drive_mode_enabled():
         return experimental_disabled("Drive Mode")
     return drive.status()
 

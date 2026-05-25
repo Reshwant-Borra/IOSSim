@@ -24,6 +24,12 @@ export const api = {
     req<OkMsg>('POST', '/location/route', { waypoints, speed_mps }),
   startDrive: (waypoints: LatLon[], speed_mps: number, tick_s: number, stay_at_end: boolean) =>
     req<DriveStatus>('POST', '/location/drive/start', { waypoints, speed_mps, tick_s, stay_at_end }),
+  geocodeDriveAddress: (address: string) =>
+    req<GeocodeResponse>('POST', '/location/drive/geocode', { address }),
+  buildDriveRoute: (start: LatLon, destination: LatLon) =>
+    req<DriveRouteResponse>('POST', '/location/drive/route', { start, destination }),
+  startRoadRoute: (coordinates: LatLon[], speed_mps: number, tick_s: number, stay_at_end: boolean) =>
+    req<DriveStatus>('POST', '/location/drive/start-road-route', { coordinates, speed_mps, tick_s, stay_at_end }),
   pauseDrive: () => req<DriveStatus>('POST', '/location/drive/pause'),
   resumeDrive: () => req<DriveStatus>('POST', '/location/drive/resume'),
   stopDrive: (clear_location = false) =>
@@ -39,6 +45,31 @@ export interface LatLon { lat: number; lon: number }
 export interface OkMsg { ok: boolean; message?: string }
 export interface TunnelResult { ok: boolean; address?: string; port?: number; message?: string }
 export interface Favorite { id: number; name: string; lat: number; lon: number; note: string }
+
+export interface GeocodeResult {
+  display_name: string
+  lat: number
+  lon: number
+}
+
+export interface GeocodeResponse {
+  ok: boolean
+  provider: string
+  cached: boolean
+  results: GeocodeResult[]
+  message: string
+}
+
+export interface DriveRouteResponse {
+  ok: boolean
+  provider: string
+  profile: string
+  cached: boolean
+  coordinates: LatLon[]
+  distance_m: number
+  osrm_duration_s: number
+  message: string
+}
 
 export interface DriveStatus {
   ok: boolean

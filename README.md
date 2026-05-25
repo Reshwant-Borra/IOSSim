@@ -19,14 +19,13 @@ Stable working features:
 - Static Set Location over USB/RSD.
 - Persistent active `simulate-location set` process while backend stays open.
 - Reset GPS / clear location.
-- Drive Mode over an active USB/RSD backend session.
-- Drive Mode pause/resume/stop/status controls.
-- Drive Mode "Stay at end" final-location hold.
 - `RUN_EVERYTHING.ps1` launcher.
 - Frontend/backend communication for status, initialize, set, reset, and favorites.
 
 Experimental or not guaranteed:
 
+- Drive Mode over an active USB/RSD backend session.
+- Address-based road route Drive Mode through Nominatim and OSRM public endpoints.
 - Legacy GPX route playback.
 - WiFi tunnel mode.
 - Unplug persistence.
@@ -34,18 +33,13 @@ Experimental or not guaranteed:
 
 See [STABILITY.md](STABILITY.md) before changing device, tunnel, set, clear, launcher, Drive Mode, route, WiFi, or persistence behavior.
 
+For a full clean-machine setup walkthrough, see [SETUP_FROM_SCRATCH.md](SETUP_FROM_SCRATCH.md).
+
 ---
 
 ## Feature Flags
 
-Drive Mode is available by default. To hide it for a stable demo build:
-
-```powershell
-$env:IOS_SIM_ENABLE_DRIVE_MODE = "0"
-$env:VITE_ENABLE_DRIVE_MODE = "0"
-```
-
-Other experimental workflows, such as Lock & Unplug and legacy GPX route playback, remain off by default. To enable those test workflows:
+Drive Mode is experimental. Keep it off for stable static-location sessions. To enable it for a test build:
 
 ```powershell
 cd backend
@@ -98,6 +92,18 @@ Right-click start.bat -> Run as administrator
 
 This starts the backend and frontend and opens `http://localhost:5173`. The backend must run as administrator because it owns the iOS 17+ tunnel and stores the parsed RSD address used by Set Location.
 
+For the PowerShell launcher, stable mode is the default:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1"
+```
+
+To launch the same stack with experimental Drive Mode enabled:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
+```
+
 ### Option B: Manual
 
 ```bat
@@ -129,17 +135,19 @@ Open `http://localhost:5173`.
 
 ---
 
-## Drive Mode
+## Experimental Drive Mode
 
-Drive Mode is confirmed working on the live target device while the backend, USB/RSD tunnel, and Developer Mode stay active. It uses timed static-location updates, exposes pause/resume/stop/status endpoints, and can keep the final destination active when "Stay at end" is enabled.
+Drive Mode is experimental and requires `IOS_SIM_ENABLE_EXPERIMENTAL=1` on the backend and `VITE_ENABLE_EXPERIMENTAL_FEATURES=1` on the frontend. It uses timed static-location updates, exposes pause/resume/stop/status endpoints, and can keep the final destination active when "Stay at end" is enabled.
 
 1. Click **Drive Mode**.
-2. Click at least two waypoints on the map.
-3. Choose a speed preset.
-4. Click **Start Drive**.
+2. Either enter a destination address and generate a road route, or click at least two manual waypoints on the map.
+3. Choose a speed preset or custom mph.
+4. Click **Start Road Drive** or **Start Manual Drive**.
 5. Use **Pause**, **Resume**, or **Stop** as needed.
 
 Limit: Drive Mode is not an unplug/offline persistence feature. Keep the backend and tunnel running for movement updates.
+
+Nominatim and OSRM public endpoints are for light personal testing only. The backend caches geocode and route responses locally under `backend/data/route_cache`.
 
 ---
 
@@ -192,6 +200,7 @@ ios-location-sim/
         FavoritesList.tsx
         UnplugModal.tsx
   RUN_EVERYTHING.ps1
+  SETUP_FROM_SCRATCH.md
   start.bat
   STABILITY.md
   README.md

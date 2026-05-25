@@ -20,6 +20,29 @@ class DriveControllerTests(unittest.TestCase):
         self.assertAlmostEqual(midpoint.lat, 0.0, places=6)
         self.assertAlmostEqual(midpoint.lon, 0.0005, places=4)
 
+    def test_interpolation_follows_route_geometry(self) -> None:
+        route = [LatLon(0.0, 0.0), LatLon(0.0, 0.001), LatLon(0.001, 0.001)]
+        first_leg = route_distance_m(route[:2])
+        coord = interpolate_route(route, first_leg + 10)
+
+        self.assertAlmostEqual(coord.lon, 0.001, places=6)
+        self.assertGreater(coord.lat, 0.0)
+
+    def test_eta_uses_selected_speed(self) -> None:
+        controller = DriveController(
+            lambda lat, lon: {"ok": True},
+            lambda: {"ok": True},
+        )
+        status = controller.start(
+            [{"lat": 0.0, "lon": 0.0}, {"lat": 0.0, "lon": 0.001}],
+            speed_mps=10.0,
+            tick_s=1.0,
+        )
+
+        self.assertTrue(status["ok"])
+        self.assertAlmostEqual(status["eta_s"], status["total_distance_m"] / 10.0, delta=0.5)
+        controller.stop()
+
     def test_drive_arrives_and_keeps_final_location(self) -> None:
         writes: list[tuple[float, float]] = []
 
