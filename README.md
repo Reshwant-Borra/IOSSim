@@ -1,6 +1,6 @@
 ﻿# iOS Location Sim
 
-Free, open-source iOS location testing tool. Windows-first, USB connection, no paid Apple Developer account required.
+Free, open-source iOS location testing tool. Windows-first with macOS support, USB connection, no paid Apple Developer account required.
 
 **Stack**: Python 3.11+ / FastAPI / pymobiledevice3, React 18 / TypeScript / Vite, OpenStreetMap via Leaflet.
 
@@ -19,7 +19,7 @@ Stable working features:
 - Static Set Location over USB/RSD.
 - Persistent active `simulate-location set` process while backend stays open.
 - Reset GPS / clear location.
-- `RUN_EVERYTHING.ps1` launcher.
+- `RUN_EVERYTHING.ps1` launcher (Windows) and `RUN_EVERYTHING.sh` launcher (macOS).
 - Frontend/backend communication for status, initialize, set, reset, and favorites.
 
 Experimental or not guaranteed:
@@ -33,7 +33,7 @@ Experimental or not guaranteed:
 
 See [STABILITY.md](STABILITY.md) before changing device, tunnel, set, clear, launcher, Drive Mode, route, WiFi, or persistence behavior.
 
-For a full clean-machine setup walkthrough, see [SETUP_FROM_SCRATCH.md](SETUP_FROM_SCRATCH.md).
+For a full clean-machine setup walkthrough, see [SETUP_FROM_SCRATCH.md](SETUP_FROM_SCRATCH.md) (Windows) and [SETUP_MAC.md](SETUP_MAC.md) (macOS).
 
 ---
 
@@ -57,14 +57,14 @@ Do not enable these in the normal launcher unless the branch is explicitly a tes
 
 ## Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| Python 3.11+ | 3.13 recommended for current pymobiledevice3 behavior |
-| iTunes standalone | Download from apple.com, not Microsoft Store |
-| Node.js 20+ | For the React frontend |
-| Admin privileges | Required for iOS 17+ tunnel creation |
-| iPhone with Developer Mode ON | Settings > Privacy & Security > Developer Mode |
-| USB cable | Trust this computer on the iPhone |
+| Requirement | Windows | macOS |
+|---|---|---|
+| Python 3.11+ | Required (3.13 recommended) | Required — `brew install python@3.13` |
+| iTunes / device support | Standalone iTunes from apple.com, not Microsoft Store | Not required — built into macOS (`usbmuxd`) |
+| Node.js 20+ | Required | Required |
+| Elevated privileges | Run as Administrator for iOS 17+ tunnel | `sudo` for backend on iOS 17+ tunnel |
+| iPhone with Developer Mode ON | Settings > Privacy & Security > Developer Mode | Same |
+| USB cable | Trust this computer on the iPhone | Same |
 
 ---
 
@@ -119,6 +119,39 @@ npm run dev
 ```
 
 Open `http://localhost:5173`.
+
+### Option C: macOS launcher
+
+macOS uses the same stable/experimental modes as Windows. The backend runs with `sudo` because the iOS 17+ tunnel needs elevated privileges (you will be prompted for your Mac login password).
+
+```bash
+cd /path/to/IOSSim
+chmod +x RUN_EVERYTHING.sh   # first time only
+./RUN_EVERYTHING.sh
+```
+
+Experimental Drive Mode:
+
+```bash
+./RUN_EVERYTHING.sh experimental
+```
+
+This opens two Terminal windows (backend + frontend) and launches `http://localhost:5173`. For a full macOS walkthrough, see [SETUP_MAC.md](SETUP_MAC.md).
+
+### Option D: macOS manual
+
+```bash
+# Terminal 1 — backend (sudo for iOS 17+)
+cd backend
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+sudo -E $(which python) -m uvicorn main:app --host 127.0.0.1 --port 8765 --reload
+
+# Terminal 2 — frontend
+cd frontend
+npm install
+npm run dev
+```
 
 ---
 
@@ -200,7 +233,9 @@ ios-location-sim/
         FavoritesList.tsx
         UnplugModal.tsx
   RUN_EVERYTHING.ps1
+  RUN_EVERYTHING.sh
   SETUP_FROM_SCRATCH.md
+  SETUP_MAC.md
   start.bat
   STABILITY.md
   README.md
