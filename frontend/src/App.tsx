@@ -7,7 +7,7 @@ import FavoritesList from './components/FavoritesList'
 import UnplugModal from './components/UnplugModal'
 
 const experimentalEnabled = import.meta.env.VITE_ENABLE_EXPERIMENTAL_FEATURES === '1'
-const driveModeEnabled = experimentalEnabled && import.meta.env.VITE_ENABLE_DRIVE_MODE !== '0'
+const driveModeEnabled = true
 
 const speedPresets = {
   walking: 3,
@@ -102,7 +102,7 @@ export default function App() {
         const next = await api.driveStatus()
         if (next.state !== 'idle' || driveStatus?.state !== 'idle') setDriveStatus(next)
       } catch {
-        // Backend experimental flag may be off while frontend flag is on.
+        // ignore polling errors (backend may be starting up)
       }
     }, 1500)
     return () => window.clearInterval(id)

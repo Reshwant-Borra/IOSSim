@@ -13,13 +13,13 @@ $Frontend    = "$ProjectRoot\frontend"
 $Experimental = $Mode -eq "experimental"
 
 if ($Experimental) {
-    $BackendEnv = "`$env:IOS_SIM_ENABLE_EXPERIMENTAL='1'; `$env:IOS_SIM_ENABLE_DRIVE_MODE='1'; "
-    $FrontendEnv = "`$env:VITE_ENABLE_EXPERIMENTAL_FEATURES='1'; `$env:VITE_ENABLE_DRIVE_MODE='1'; "
-    Write-Host "[MODE] Experimental launch: Drive Mode and experimental UI enabled." -ForegroundColor Yellow
+    $BackendEnv = "`$env:IOS_SIM_ENABLE_EXPERIMENTAL='1'; "
+    $FrontendEnv = "`$env:VITE_ENABLE_EXPERIMENTAL_FEATURES='1'; "
+    Write-Host "[MODE] Experimental launch: Lock & Unplug and other experimental features enabled." -ForegroundColor Yellow
 } else {
-    $BackendEnv = "`$env:IOS_SIM_ENABLE_EXPERIMENTAL='0'; "
-    $FrontendEnv = "`$env:VITE_ENABLE_EXPERIMENTAL_FEATURES='0'; "
-    Write-Host "[MODE] Stable launch: experimental features disabled." -ForegroundColor Green
+    $BackendEnv = ""
+    $FrontendEnv = ""
+    Write-Host "[MODE] Stable launch." -ForegroundColor Green
 }
 
 # Verify required files

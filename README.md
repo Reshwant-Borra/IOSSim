@@ -21,11 +21,11 @@ Stable working features:
 - Reset GPS / clear location.
 - `RUN_EVERYTHING.ps1` launcher (Windows) and `RUN_EVERYTHING.sh` launcher (macOS).
 - Frontend/backend communication for status, initialize, set, reset, and favorites.
+- Drive Mode over an active USB/RSD backend session (manual waypoints and address-based road routes via Nominatim and OSRM).
 
 Experimental or not guaranteed:
 
-- Drive Mode over an active USB/RSD backend session.
-- Address-based road route Drive Mode through Nominatim and OSRM public endpoints.
+- iOS Drive Simulation — visual iPhone display simulation showing the drive in progress (planned next experimental feature).
 - Legacy GPX route playback.
 - WiFi tunnel mode.
 - Unplug persistence.
@@ -39,19 +39,13 @@ For a full clean-machine setup walkthrough, see [SETUP_FROM_SCRATCH.md](SETUP_FR
 
 ## Feature Flags
 
-Drive Mode is experimental. Keep it off for stable static-location sessions. To enable it for a test build:
+Drive Mode is stable and always on. No flags required.
+
+`IOS_SIM_ENABLE_EXPERIMENTAL=1` (backend) and `VITE_ENABLE_EXPERIMENTAL_FEATURES=1` (frontend) enable the remaining experimental features — Lock & Unplug and legacy GPX route playback. Use the `-Mode experimental` launcher argument to set both:
 
 ```powershell
-cd backend
-$env:IOS_SIM_ENABLE_EXPERIMENTAL = "1"
-python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
-
-cd ..\frontend
-$env:VITE_ENABLE_EXPERIMENTAL_FEATURES = "1"
-npm run dev
+powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
 ```
-
-Do not enable these in the normal launcher unless the branch is explicitly a test branch.
 
 ---
 
@@ -98,7 +92,7 @@ For the PowerShell launcher, stable mode is the default:
 powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1"
 ```
 
-To launch the same stack with experimental Drive Mode enabled:
+To launch with experimental features enabled (Lock & Unplug, legacy GPX):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
@@ -130,7 +124,7 @@ chmod +x RUN_EVERYTHING.sh   # first time only
 ./RUN_EVERYTHING.sh
 ```
 
-Experimental Drive Mode:
+With experimental features (Lock & Unplug, legacy GPX):
 
 ```bash
 ./RUN_EVERYTHING.sh experimental
@@ -168,9 +162,9 @@ npm run dev
 
 ---
 
-## Experimental Drive Mode
+## Drive Mode
 
-Drive Mode is experimental and requires `IOS_SIM_ENABLE_EXPERIMENTAL=1` on the backend and `VITE_ENABLE_EXPERIMENTAL_FEATURES=1` on the frontend. It uses timed static-location updates, exposes pause/resume/stop/status endpoints, and can keep the final destination active when "Stay at end" is enabled.
+Drive Mode is stable and always available. It uses timed static-location updates, exposes pause/resume/stop/status endpoints, and can keep the final destination active when "Stay at end" is enabled.
 
 1. Click **Drive Mode**.
 2. Either enter a destination address and generate a road route, or click at least two manual waypoints on the map.

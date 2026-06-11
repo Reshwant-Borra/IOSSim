@@ -18,13 +18,13 @@ if [[ "$MODE" != "stable" && "$MODE" != "experimental" ]]; then
 fi
 
 if [[ "$MODE" == "experimental" ]]; then
-  BACKEND_ENV="export IOS_SIM_ENABLE_EXPERIMENTAL=1 IOS_SIM_ENABLE_DRIVE_MODE=1;"
-  FRONTEND_ENV="export VITE_ENABLE_EXPERIMENTAL_FEATURES=1 VITE_ENABLE_DRIVE_MODE=1;"
-  echo "[MODE] Experimental launch: Drive Mode and experimental UI enabled."
+  BACKEND_ENV="export IOS_SIM_ENABLE_EXPERIMENTAL=1;"
+  FRONTEND_ENV="export VITE_ENABLE_EXPERIMENTAL_FEATURES=1;"
+  echo "[MODE] Experimental launch: Lock & Unplug and other experimental features enabled."
 else
-  BACKEND_ENV="export IOS_SIM_ENABLE_EXPERIMENTAL=0;"
-  FRONTEND_ENV="export VITE_ENABLE_EXPERIMENTAL_FEATURES=0;"
-  echo "[MODE] Stable launch: experimental features disabled."
+  BACKEND_ENV=""
+  FRONTEND_ENV=""
+  echo "[MODE] Stable launch."
 fi
 
 for f in "$BACKEND/main.py" "$FRONTEND/package.json" "$BACKEND/requirements.txt"; do

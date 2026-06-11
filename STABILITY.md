@@ -15,12 +15,13 @@ These features are considered stable enough to protect on `main`:
 - Reset GPS / clear location.
 - `RUN_EVERYTHING.ps1` launcher flow.
 - Frontend/backend communication for status, initialize, set, reset, and favorites.
+- Drive Mode (manual waypoints, address geocoding, road routing via Nominatim/OSRM, pause/resume/stop/status, "Stay at end").
 
 ## Experimental/test-build surface
 
 These features are not guaranteed and must stay behind explicit opt-in flags or separate branches:
 
-- Drive Mode, including manual waypoint driving, address geocoding, road routing, pause/resume/stop/status, and "Stay at end".
+- **iOS Drive Simulation** — visual iPhone display simulation showing the drive in progress (next planned experimental feature).
 - Legacy GPX route playback.
 - WiFi tunnel mode.
 - Unplug persistence.
@@ -28,33 +29,21 @@ These features are not guaranteed and must stay behind explicit opt-in flags or 
 
 ## Runtime flags
 
-Drive Mode requires the experimental flag. `IOS_SIM_ENABLE_DRIVE_MODE=0` and `VITE_ENABLE_DRIVE_MODE=0` can still hide it in a test build:
+Drive Mode is stable and requires no flags.
+
+`IOS_SIM_ENABLE_EXPERIMENTAL=1` enables remaining experimental features (Lock & Unplug, legacy GPX route playback):
 
 ```powershell
 $env:IOS_SIM_ENABLE_EXPERIMENTAL = "1"
 $env:VITE_ENABLE_EXPERIMENTAL_FEATURES = "1"
 ```
 
-Frontend experimental UI is disabled by default. Enable it only in a test build:
-
-```powershell
-$env:VITE_ENABLE_EXPERIMENTAL_FEATURES = "1"
-npm run dev
-```
-
-Backend experimental endpoints are disabled by default. Enable them only in a test backend session:
-
-```powershell
-$env:IOS_SIM_ENABLE_EXPERIMENTAL = "1"
-python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
-```
-
-`RUN_EVERYTHING.ps1` and `start.bat` should remain stable-mode launchers unless explicitly changed for a test branch.
+`RUN_EVERYTHING.ps1` and `start.bat` remain stable-mode launchers by default.
 
 ## Branch policy
 
-- `main`: stable USB set/reset workflow. Drive Mode, WiFi tunnel, and Ghost persistence behavior should not be required for this branch to work.
-- `experimental/*`: feature work for Drive Mode, WiFi mode, Ghost Mode, route controllers, and persistence experiments.
+- `main`: stable USB set/reset + Drive Mode workflow. WiFi tunnel and Ghost persistence behavior should not be required for this branch to work.
+- `experimental/*`: feature work for iOS Drive Simulation, WiFi mode, Ghost Mode, and persistence experiments.
 - Before merging experimental work into `main`, verify the stable checklist below.
 
 ## Stable verification checklist
@@ -66,7 +55,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
 5. Set Location starts a persistent process and location remains active while backend stays open.
 6. Setting a second location replaces the old process cleanly.
 7. Reset GPS terminates the active process and clears simulated location.
-8. In experimental mode only, Drive Mode can start from at least two waypoints or a generated road route, update location, pause/resume/stop, and report status.
+8. Drive Mode can start from at least two waypoints or a generated road route, update location, pause/resume/stop, and report status.
 9. Frontend can call backend through the Vite proxy.
 10. `RUN_EVERYTHING.ps1` launches backend and frontend.
 
