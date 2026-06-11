@@ -1,6 +1,8 @@
 # iOS Location Sim - Setup From Scratch
 
-This guide starts from a clean Windows machine and ends with the app running against your own iPhone.
+This guide starts from a clean **Windows** machine and ends with the app running against your own iPhone.
+
+**On macOS?** See [SETUP_MAC.md](SETUP_MAC.md) — same app, macOS-specific install and `RUN_EVERYTHING.sh` launcher.
 
 ## 1. Install Prerequisites
 
