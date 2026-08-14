@@ -1,0 +1,25 @@
+﻿# Dependencies
+frontend/node_modules/
+frontend/dist/
+backend/__pycache__/
+backend/.pytest_cache/
+*.py[cod]
+
+# Local runtime data
+backend/data/
+backend/data/drive_testing/
+*.log
+*.pid
+
+# Python environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
