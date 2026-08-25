@@ -405,41 +405,42 @@ class WirelessTestingTests(unittest.TestCase):
         self.assertEqual(len(result["tunnel_attempts"]), 1)
         self.assertIsNone(self.runner.tunnel_by_protocol["quic"].poll())
 
-    def test_default_protocol_starts_quic_before_tcp(self) -> None:
+    def test_default_protocol_starts_quic_only_not_tcp(self) -> None:
         experiment_id = self.create()
         self.runner.usb_connected = False
         self.runner.remote_found = True
         self.runner.tunnel_by_protocol["quic"] = FakeProcess(["Encountered a QUIC protocol error.\n"], alive=False)
         self.runner.tunnel_by_protocol["tcp"] = FakeProcess(["fd12:3456::1 54321\n"], alive=True)
         result = self.controller.start_wifi_tunnel(experiment_id)
-        self.assertTrue(result["ok"])
-        self.assertEqual(self.tunnel_protocols_started(), ["quic", "tcp"])
-        self.assertEqual([attempt["protocol"] for attempt in result["tunnel_attempts"]], ["quic", "tcp"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.tunnel_protocols_started(), ["quic"])
+        self.assertEqual([attempt["protocol"] for attempt in result["tunnel_attempts"]], ["quic"])
+        self.assertIn("explicit diagnostic-only", result["tunnel_strategy"]["fallback_policy"])
 
-    def test_quic_protocol_error_falls_back_to_tcp_success(self) -> None:
+    def test_quic_protocol_error_does_not_fallback_to_tcp_success(self) -> None:
         experiment_id = self.create()
         self.runner.usb_connected = False
         self.runner.remote_found = True
         self.runner.tunnel_by_protocol["quic"] = FakeProcess(["Encountered a QUIC protocol error.\n"], alive=False)
         self.runner.tunnel_by_protocol["tcp"] = FakeProcess(["fd12:3456::1 54321\n"], alive=True, pid=4444)
         result = self.controller.start_wifi_tunnel(experiment_id)
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["selected_protocol"], "tcp")
-        self.assertEqual([attempt["protocol"] for attempt in result["tunnel_attempts"]], ["quic", "tcp"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["last_tunnel_failure_class"], "quic_protocol_error")
+        self.assertEqual([attempt["protocol"] for attempt in result["tunnel_attempts"]], ["quic"])
         self.assertIsNotNone(self.runner.tunnel_by_protocol["quic"].poll())
-        self.assertIsNone(self.runner.tunnel_by_protocol["tcp"].poll())
+        self.assertIsNone(self.runner.tunnel_by_protocol["tcp"].returncode)
 
-    def test_quic_protocol_error_then_tcp_sigbus_is_structured_failure(self) -> None:
+    def test_explicit_tcp_sigbus_is_structured_failure(self) -> None:
         experiment_id = self.create()
         self.runner.usb_connected = False
         self.runner.remote_found = True
-        self.runner.tunnel_by_protocol["quic"] = FakeProcess(["Encountered a QUIC protocol error.\n"], alive=False)
         self.runner.tunnel_by_protocol["tcp"] = FakeProcess(["bus error\n"], alive=False, returncode=138)
-        result = self.controller.start_wifi_tunnel(experiment_id)
+        result = self.controller.start_wifi_tunnel(experiment_id, protocol="tcp")
         self.assertFalse(result["ok"])
         self.assertEqual(result["last_tunnel_failure_class"], "sigbus")
         self.assertEqual(result["tunnel_attempts"][-1]["terminating_signal"], "SIGBUS")
         self.assertEqual(result["tunnel_attempts"][-1]["returncode"], 138)
+        self.assertEqual(self.tunnel_protocols_started(), ["tcp"])
 
     def test_no_route_to_host_classification(self) -> None:
         experiment_id = self.create()

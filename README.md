@@ -17,6 +17,9 @@ Stable working features:
 - Backend-owned tunnel startup for iOS 17+.
 - RSD parsing.
 - Static Set Location over USB/RSD.
+- Wireless userspace location for saved same-LAN iPhones using explicit UDID -> userspace RSD -> DVT -> DeviceInfo warmup -> LocationSimulation.
+- Wireless Set Location, coordinate changes, and Reset GPS with backend-owned persistent userspace session.
+- One-time USB setup to enable wireless access and save iPhone identity.
 - Persistent active `simulate-location set` process while backend stays open.
 - Reset GPS / clear location.
 - `RUN_EVERYTHING.ps1` launcher (Windows) and `RUN_EVERYTHING.sh` launcher (macOS).
@@ -27,7 +30,7 @@ Experimental or not guaranteed:
 
 - iOS Drive Simulation — visual iPhone display simulation showing the drive in progress (planned next experimental feature).
 - Legacy GPX route playback.
-- Wireless Testing Lab for same-LAN Wi-Fi discovery/tunnel/RSD/Set Location/Reset GPS experiments.
+- Advanced Wireless Diagnostics for persistent tunnel experiments.
 - Unplug persistence.
 - Developer Mode OFF trick / GhostMe-style persistence.
 
@@ -47,7 +50,7 @@ Drive Mode is stable and always on. No flags required.
 powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
 ```
 
-Dedicated experimental labs require their own gates in addition to generic experimental mode. Drive Testing uses `-Mode drive-testing`. Wireless Testing uses `-Mode wireless-testing` and is documented in [docs/wireless_testing/README.md](docs/wireless_testing/README.md).
+Dedicated experimental labs require their own gates in addition to generic experimental mode. Drive Testing uses `-Mode drive-testing`. Advanced Wireless Diagnostics uses `-Mode wireless-testing` and is documented in [docs/wireless_testing/README.md](docs/wireless_testing/README.md).
 
 ---
 
@@ -60,7 +63,7 @@ Dedicated experimental labs require their own gates in addition to generic exper
 | Node.js 20+ | Required | Required |
 | Elevated privileges | Run as Administrator for iOS 17+ tunnel | `sudo` for backend on iOS 17+ tunnel |
 | iPhone with Developer Mode ON | Settings > Privacy & Security > Developer Mode | Same |
-| USB cable | Trust this computer on the iPhone | Same |
+| USB cable | Required once for new-phone wireless setup or USB mode | Same |
 
 ---
 
@@ -100,7 +103,7 @@ To launch with experimental features enabled (Lock & Unplug, legacy GPX):
 powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
 ```
 
-To launch the isolated Wireless Testing Lab:
+To launch the isolated Advanced Wireless Diagnostics lab:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode wireless-testing
@@ -138,7 +141,7 @@ With experimental features (Lock & Unplug, legacy GPX):
 ./RUN_EVERYTHING.sh experimental
 ```
 
-With the isolated Wireless Testing Lab:
+With the isolated Advanced Wireless Diagnostics lab:
 
 ```bash
 ./RUN_EVERYTHING.sh wireless-testing
@@ -163,10 +166,29 @@ npm run dev
 
 ---
 
-## Stable Workflow: Set Location
+## Wireless Workflow: Add Once, Use Wirelessly
+
+For a new iPhone:
+
+1. Launch IOSSim.
+2. Connect the iPhone with USB.
+3. Unlock the iPhone and Trust this Mac/PC.
+4. Click **Add iPhone**.
+5. When IOSSim says **You can unplug your iPhone now**, unplug it.
+6. Click **I've unplugged my iPhone**.
+7. Wait for **Wireless Ready**.
+8. Pick a point on the map and click **Set Location**.
+9. Pick another point and click **Set Location** again to change coordinates.
+10. Click **Reset GPS** to clear the simulated location.
+
+For a previously paired iPhone, no cable is required when the iPhone is reachable on the same local network. Launch IOSSim, wait for **Wireless Ready**, then use **Set Location** and **Reset GPS** normally.
+
+Wireless mode requires the computer and iPhone to be mutually reachable on the same LAN. Guest, hotel, school, or segmented networks may block discovery. Some apps may take longer to refresh their displayed location.
+
+## USB Workflow: Set Location
 
 1. Connect iPhone via USB.
-2. In the app, click **Initialize** in the Device panel.
+2. In the app, choose **USB** under Connection and click **Prepare USB** in the Device panel.
 3. Initialization mounts the Developer Disk Image.
 4. On iOS 17+, initialization starts the backend-owned tunnel.
 5. Click anywhere on the map to pick a location.

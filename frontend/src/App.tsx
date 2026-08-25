@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
-import { api, LatLon, DriveRouteResponse, DriveStatus, GeocodeResult } from './api/client'
+import { api, LatLon, DriveRouteResponse, DriveStatus, GeocodeResult, ConnectionMode } from './api/client'
 import DevicePanel from './components/DevicePanel'
 import FavoritesList from './components/FavoritesList'
 import UnplugModal from './components/UnplugModal'
@@ -88,6 +88,8 @@ export default function App() {
   const [showDriveTesting, setShowDriveTesting] = useState(false)
   const [driveTestingMap, setDriveTestingMap] = useState<LabMapState | null>(null)
   const [showWirelessTesting, setShowWirelessTesting] = useState(false)
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('automatic')
+  const [selectedDeviceUdid, setSelectedDeviceUdid] = useState<string | null>(null)
 
   const driveActive = driveStatus?.state === 'starting' || driveStatus?.state === 'driving' || driveStatus?.state === 'paused'
   const drivePaused = driveStatus?.state === 'paused'
@@ -137,7 +139,7 @@ export default function App() {
     if (!picked) { setMsg('Click the map to pick a location.', true); return }
     try {
       setMsg('Setting location...')
-      await api.setLocation(picked.lat, picked.lon)
+      await api.setLocation(picked.lat, picked.lon, connectionMode, selectedDeviceUdid)
       setMsg(`Location set: ${picked.lat.toFixed(5)}, ${picked.lon.toFixed(5)}`)
     } catch (e: any) { setMsg(e.message, true) }
   }
@@ -153,7 +155,7 @@ export default function App() {
   const handleLockUnplug = async () => {
     if (!picked) { setMsg('Set a location first.', true); return }
     try {
-      await api.setLocation(picked.lat, picked.lon)
+      await api.setLocation(picked.lat, picked.lon, connectionMode, selectedDeviceUdid)
       setShowUnplug(true)
     } catch (e: any) { setMsg(e.message, true) }
   }
@@ -249,7 +251,13 @@ export default function App() {
       <div style={sidebar}>
         <div style={logo}>iOS Location Sim</div>
 
-        <DevicePanel onReady={rdy => setDeviceReady(rdy)} />
+        <DevicePanel
+          onReady={rdy => setDeviceReady(rdy)}
+          onConnectionChange={(mode, udid) => {
+            setConnectionMode(mode)
+            setSelectedDeviceUdid(udid)
+          }}
+        />
 
         <FavoritesList onSelect={handleFavSelect} currentLoc={picked} />
 

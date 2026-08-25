@@ -42,7 +42,8 @@ export const api = {
   mountDdi: () => req<OkMsg>('POST', '/setup/mount-ddi'),
   startTunnel: () => req<TunnelResult>('POST', '/setup/tunnel'),
   stopTunnel: () => req<OkMsg>('DELETE', '/setup/tunnel'),
-  setLocation: (lat: number, lon: number) => req<OkMsg>('POST', '/location/set', { lat, lon }),
+  setLocation: (lat: number, lon: number, connection_mode?: ConnectionMode, device_udid?: string | null) =>
+    req<OkMsg>('POST', '/location/set', { lat, lon, connection_mode, device_udid }),
   clearLocation: () => req<OkMsg>('POST', '/location/clear'),
   playRoute: (waypoints: LatLon[], speed_mps: number) =>
     req<OkMsg>('POST', '/location/route', { waypoints, speed_mps }),
@@ -121,12 +122,22 @@ export const api = {
   stopWirelessWifiTunnel: () => req<OkMsg>('DELETE', '/experimental/wireless-testing/tunnel'),
   wirelessTestingReport: (id: string) => reqText(`/experimental/wireless-testing/experiments/${id}/report`),
   wirelessTestingExportUrl: (id: string) => `${BASE}/experimental/wireless-testing/experiments/${id}/export/json`,
+  wirelessLocationStatus: () => req<WirelessLocationStatus>('GET', '/wireless-location/status'),
+  setWirelessConnectionMode: (mode: ConnectionMode, device_udid?: string | null) =>
+    req<WirelessLocationStatus>('POST', '/wireless-location/connection-mode', { mode, device_udid }),
+  startWirelessSetup: () => req<WirelessSetupResponse>('POST', '/wireless-location/setup/start'),
+  verifyWirelessSetupUnplugged: (device_udid: string) =>
+    req<WirelessSetupResponse>('POST', '/wireless-location/setup/verify-unplugged', { device_udid }),
+  connectWirelessLocation: (device_udid: string) => req<{ ok: boolean; session: WirelessLocationSession; message: string }>('POST', '/wireless-location/connect', { device_udid }),
+  disconnectWirelessLocation: (device_udid: string) => req<OkMsg>('POST', '/wireless-location/disconnect', { device_udid }),
+  removeWirelessDevice: (device_udid: string) => req<{ ok: boolean; devices: WirelessSavedDevice[]; message: string }>('DELETE', `/wireless-location/devices/${device_udid}`),
 }
 
 export interface LatLon { lat: number; lon: number }
 export interface OkMsg { ok: boolean; message?: string }
 export interface TunnelResult { ok: boolean; address?: string; port?: number; message?: string }
 export interface Favorite { id: number; name: string; lat: number; lon: number; note: string }
+export type ConnectionMode = 'automatic' | 'usb' | 'wireless'
 
 export interface GeocodeResult {
   display_name: string
@@ -190,6 +201,61 @@ export interface DeviceStatus {
   } | null
   tunnel_active: boolean
   tunnel: { address: string; port: number } | null
+  wireless_location?: WirelessLocationStatus
+}
+
+export interface WirelessLocationSession {
+  device_udid: string | null
+  device_name: string | null
+  connection: 'wireless' | 'none' | string
+  wireless_ready: boolean
+  session_state: string
+  simulation_enabled: boolean
+  latitude: number | null
+  longitude: number | null
+  connected_at?: string | null
+  last_set_at: string | null
+  last_clear_at: string | null
+  last_error: string | null
+  recovery?: string | null
+}
+
+export interface WirelessSavedDevice {
+  udid: string
+  name: string
+  product_type?: string | null
+  ios_version?: string | null
+  wireless_setup_valid: boolean
+  setup_state: string
+  last_seen_at?: string | null
+  last_usb_seen_at?: string | null
+  last_wireless_seen_at?: string | null
+  last_wireless_success_at?: string | null
+  last_transport_state: string
+  wireless_ready: boolean
+  usb_visible: boolean
+  network_visible: boolean
+  transport: string
+  status_label: string
+  selected: boolean
+}
+
+export interface WirelessLocationStatus {
+  ok: boolean
+  devices: WirelessSavedDevice[]
+  selected_udid: string | null
+  connection_mode: ConnectionMode
+  session: WirelessLocationSession
+  message: string
+}
+
+export interface WirelessSetupResponse {
+  ok: boolean
+  device: WirelessSavedDevice
+  setup_state: string
+  session?: WirelessLocationSession
+  steps?: Array<{ label: string; status: 'complete' | 'current' | 'pending' | string }>
+  message: string
 }
 
 export type WirelessTestType = 'remove_cable_after_pairing' | 'fresh_cable_free_session'

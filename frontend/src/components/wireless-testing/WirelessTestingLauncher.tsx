@@ -4,8 +4,8 @@ export default function WirelessTestingLauncher({ enabled, onOpen }: { enabled: 
   if (!enabled) return null
   return <div style={launcher}>
     <button style={labButton} onClick={onOpen}>
-      <span>Wireless Testing Lab</span>
-      <span style={badge}>EXPERIMENTAL</span>
+      <span>Advanced Diagnostics</span>
+      <span style={badge}>Persistent Tunnel Diagnostics</span>
     </button>
   </div>
 }

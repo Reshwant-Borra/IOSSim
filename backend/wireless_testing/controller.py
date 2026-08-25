@@ -456,7 +456,7 @@ class WirelessTestingController:
             "candidate_selection": "routeable_preferred" if selected_candidate else "none_discovered",
             "baseline_udid_abbreviated": abbreviate_identifier(str(self._baseline_identifier() or "")),
             "preflight_discovery": preflight_discovery,
-            "fallback_policy": "default tries QUIC first, then TCP only after QUIC protocol negotiation failure",
+            "fallback_policy": "default persistent-tunnel diagnostics try QUIC only; TCP is explicit diagnostic-only because it can SIGBUS in native SSL-PSK",
         }
         with self._lock:
             if self._wifi_tunnel_proc and self._wifi_tunnel_proc.poll() is None:
@@ -994,11 +994,7 @@ class WirelessTestingController:
         }
 
     def _default_tunnel_protocol_plan(self) -> list[str]:
-        help_result = self.runner.run(pmd3_command("remote", "start-tunnel", "--help"), timeout_s=15)
-        text = help_result.stdout + help_result.stderr
-        if help_result.ok and "<tcp|quic>" not in text and "--protocol" not in text:
-            return ["quic"]
-        return ["quic", "tcp"]
+        return ["quic"]
 
     def _wifi_tunnel_command(self, protocol: str) -> list[str]:
         command = pmd3_command("remote", "start-tunnel", "--connection-type", "wifi", "--script-mode")

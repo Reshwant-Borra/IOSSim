@@ -66,7 +66,7 @@ const stages: Array<[StageKey, string]> = [
   ['pairing', 'Wireless Pairing Preparation'],
   ['unplug', 'Ready to Unplug'],
   ['detect', 'Detect Without USB'],
-  ['tunnel', 'Establish Wi-Fi Tunnel'],
+  ['tunnel', 'Persistent Tunnel Diagnostic'],
   ['rsd', 'Validate Fresh RSD'],
   ['set', 'Test Wireless Set Location'],
   ['confirm', 'Manual Device Confirmation'],
@@ -242,9 +242,9 @@ export default function WirelessTestingLab({ selectedLocation, onClose }: Props)
   return <div style={overlay} data-testid="wireless-testing-lab">
     <div style={header}>
       <div>
-        <div style={headerTitle}>Wireless Testing Lab - Experimental</div>
+        <div style={headerTitle}>Advanced Wireless Diagnostics</div>
         <div style={{ color: colors.muted, fontSize: 12, marginTop: 4 }}>
-          USB remains the stable IOSSim path. This lab tests same-LAN Wi-Fi operation after normal Apple pairing.
+          Normal wireless location uses the main device panel. This lab is diagnostic and includes older persistent tunnel experiments.
         </div>
       </div>
       <div style={buttonRow}>
@@ -318,7 +318,7 @@ export default function WirelessTestingLab({ selectedLocation, onClose }: Props)
           busy={busy}
           protocol={tunnelProtocol}
           onProtocol={setTunnelProtocol}
-          onStart={() => run('Start Wi-Fi Tunnel', () => api.startWirelessWifiTunnel(requireExperiment(), tunnelProtocol), 'rsd')}
+          onStart={() => run('Start Persistent Tunnel Diagnostic', () => api.startWirelessWifiTunnel(requireExperiment(), tunnelProtocol), 'rsd')}
         />}
         {activeStage === 'rsd' && <RsdStage
           rsd={lastRsd}
@@ -540,13 +540,13 @@ function TunnelStage({ status, busy, protocol, onProtocol, onStart }: { status: 
   return <section style={section}>
     <div style={sectionTitle}>Fresh Wi-Fi RemoteXPC/RSD Tunnel</div>
     <div style={notice(status?.usb.usb_detected ? 'warning' : 'success')}>
-      The tunnel command uses installed pymobiledevice3 syntax: remote start-tunnel --connection-type wifi --script-mode. Default tries QUIC first and falls back to TCP only for a QUIC protocol failure.
+      Persistent tunnels are diagnostic-only for the older wireless path. Default tries QUIC only; TCP is available only when explicitly selected because it can crash in the native SSL-PSK path.
     </div>
     <div style={{ ...grid2, marginTop: 12 }}>
       <label style={field}>Protocol
         <select style={input} value={protocol} onChange={e => onProtocol(e.target.value as 'default' | 'tcp' | 'quic')}>
           <option value="default">Default</option>
-          <option value="tcp">TCP</option>
+          <option value="tcp">TCP diagnostic</option>
           <option value="quic">QUIC</option>
         </select>
       </label>

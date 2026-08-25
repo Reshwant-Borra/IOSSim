@@ -74,9 +74,9 @@ describe('Wireless Testing feature flags and launcher', () => {
   it('hides and shows the launcher', () => {
     const open = vi.fn()
     const { rerender } = render(<WirelessTestingLauncher enabled={false} onOpen={open} />)
-    expect(screen.queryByText('Wireless Testing Lab')).not.toBeInTheDocument()
+    expect(screen.queryByText('Advanced Diagnostics')).not.toBeInTheDocument()
     rerender(<WirelessTestingLauncher enabled onOpen={open} />)
-    fireEvent.click(screen.getByText('Wireless Testing Lab'))
+    fireEvent.click(screen.getByText('Advanced Diagnostics'))
     expect(open).toHaveBeenCalledOnce()
   })
 })

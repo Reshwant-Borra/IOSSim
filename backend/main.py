@@ -50,6 +50,8 @@ from location_service import LocationService
 from wireless_testing.controller import WirelessTestingController
 from wireless_testing.experiment_store import WirelessExperimentStore as WirelessTestingStore
 from wireless_testing.router import build_router as build_wireless_testing_router
+from wireless_location.controller import WirelessLocationController
+from wireless_location.router import build_router as build_wireless_location_router
 
 app = FastAPI(title="iOS Location Sim", version="0.1.0")
 
@@ -87,6 +89,10 @@ wireless_testing = WirelessTestingController(
     wireless_testing_store,
     operation_lock=location_operation_lock,
 )
+wireless_location = WirelessLocationController(
+    stable_status_provider=manager.status,
+    operation_lock=location_operation_lock,
+)
 
 
 def experimental_enabled() -> bool:
@@ -122,6 +128,8 @@ async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
 class LocationBody(BaseModel):
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
+    connection_mode: str | None = Field(default=None, pattern="^(automatic|usb|wireless)$")
+    device_udid: str | None = None
 
 
 class RouteBody(BaseModel):
@@ -167,7 +175,27 @@ class FavoriteBody(BaseModel):
 
 @app.get("/api/status")
 def status() -> dict:
-    return manager.status()
+    stable = manager.status()
+    return {
+        **stable,
+        "wireless_location": wireless_location.status(refresh=True),
+    }
+
+
+@app.on_event("startup")
+def startup_wireless_discovery() -> None:
+    try:
+        wireless_location.refresh_saved_devices()
+    except Exception:
+        logging.exception("Wireless saved-device discovery failed during startup")
+
+
+@app.on_event("shutdown")
+def shutdown_wireless_session() -> None:
+    try:
+        wireless_location.disconnect_wireless()
+    except Exception:
+        logging.exception("Wireless session cleanup failed during shutdown")
 
 
 # â”€â”€ setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -216,7 +244,10 @@ def set_location(body: LocationBody):
             content={"ok": False, "code": "drive_testing_conflict", "message": "Stop Drive Testing before setting a static location."},
         )
     drive.stop(clear_location=False)
-    result = svc.set_location(body.lat, body.lon)
+    if wireless_location.should_use_wireless(body.connection_mode, body.device_udid):
+        result = wireless_location.set_location(body.lat, body.lon, udid=body.device_udid)
+    else:
+        result = svc.set_location(body.lat, body.lon)
     if not result["ok"]:
         return _location_error(result)
     return result
@@ -228,7 +259,11 @@ def clear_location():
     if active_experiment:
         drive_testing.stop(active_experiment, reset_gps=False)
     drive.stop(clear_location=False)
-    result = svc.clear_location()
+    wireless_state = wireless_location.session_status()
+    if wireless_state.get("simulation_enabled"):
+        result = wireless_location.clear_location()
+    else:
+        result = svc.clear_location()
     if not result["ok"]:
         return _location_error(result)
     return result
@@ -338,6 +373,7 @@ app.include_router(
     )
 )
 app.include_router(build_wireless_testing_router(wireless_testing))
+app.include_router(build_wireless_location_router(wireless_location))
 
 
 # â”€â”€ favorites â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
