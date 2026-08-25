@@ -56,7 +56,7 @@ npm install
 
 ## 5. Start The App In Stable Mode
 
-Stable mode supports the reliable static location workflow.
+Stable mode supports reliable USB location and normal userspace wireless location for saved same-LAN iPhones.
 
 Run this from an Administrator PowerShell:
 
@@ -70,15 +70,21 @@ The script starts:
 - Frontend: `http://localhost:5173`
 - API docs: `http://127.0.0.1:8765/docs`
 
-## 6. Initialize The Device
+To stop IOSSim later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Users\$env:USERNAME\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode stop
+```
+
+## 6. Prepare The Device
 
 In the browser:
 
 1. Open `http://localhost:5173`.
-2. In the device panel, click **Initialize**.
-3. Let it mount the Developer Disk Image.
-4. On iOS 17+, let it start the tunnel.
-5. Wait until the device panel says the phone is ready.
+2. For wireless, connect the iPhone once, unlock and Trust, then click **Add iPhone**.
+3. When IOSSim says you can unplug, unplug the iPhone and click **I've unplugged my iPhone**.
+4. Wait for **Wireless Ready**.
+5. For USB mode instead, choose **USB** under Connection and click **Prepare USB**.
 
 ## 7. Use Stable Set Location
 

@@ -62,7 +62,7 @@ npm install
 
 ## 5. Start The App In Stable Mode
 
-Stable mode supports the reliable static location workflow.
+Stable mode supports reliable USB location and normal userspace wireless location for saved same-LAN iPhones.
 
 One-command launcher (recommended):
 
@@ -72,7 +72,13 @@ chmod +x RUN_EVERYTHING.sh   # first time only
 ./RUN_EVERYTHING.sh
 ```
 
-The script installs missing dependencies, opens two Terminal windows, and opens `http://localhost:5173`. The backend window will ask for your Mac password (`sudo`).
+The script stops old IOSSim backend/frontend/location processes, installs missing dependencies, opens two Terminal windows, and opens `http://localhost:5173`. The backend window will ask for your Mac password (`sudo`).
+
+To stop IOSSim later:
+
+```bash
+./RUN_EVERYTHING.sh stop
+```
 
 Manual start (two terminals):
 
@@ -93,15 +99,15 @@ Services:
 - Frontend: `http://localhost:5173`
 - API docs: `http://127.0.0.1:8765/docs`
 
-## 6. Initialize The Device
+## 6. Prepare The Device
 
 In the browser:
 
 1. Open `http://localhost:5173`.
-2. In the device panel, click **Initialize**.
-3. Let it mount the Developer Disk Image.
-4. On iOS 17+, let it start the tunnel.
-5. Wait until the device panel says the phone is ready.
+2. For wireless, connect the iPhone once, unlock and Trust, then click **Add iPhone**.
+3. When IOSSim says you can unplug, unplug the iPhone and click **I've unplugged my iPhone**.
+4. Wait for **Wireless Ready**.
+5. For USB mode instead, choose **USB** under Connection and click **Prepare USB**.
 
 ## 7. Use Stable Set Location
 
@@ -110,7 +116,7 @@ In the browser:
 3. Keep the backend Terminal window open. The backend keeps the active `simulate-location set` process alive.
 4. Click **Reset GPS** to return the phone to real GPS.
 
-You can turn off WiFi on the iPhone after spoofing — the fake GPS is sent over USB, not WiFi. Keep the USB cable connected and the backend running.
+For wireless mode, keep the Mac and iPhone reachable on the same local network. For USB mode, keep the USB cable connected and the backend running.
 
 ## 8. Start Experimental Drive Mode
 

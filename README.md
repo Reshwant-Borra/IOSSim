@@ -89,12 +89,18 @@ Do not use libimobiledevice/idevicesetlocation for iOS 17+.
 Right-click start.bat -> Run as administrator
 ```
 
-This starts the backend and frontend and opens `http://localhost:5173`. The backend must run as administrator because it owns the iOS 17+ tunnel and stores the parsed RSD address used by Set Location.
+This delegates to `RUN_EVERYTHING.ps1`, starts the backend and frontend, and opens `http://localhost:5173`. The backend must run as administrator because it owns the iOS 17+ tunnel and stores the parsed RSD address used by Set Location.
 
-For the PowerShell launcher, stable mode is the default:
+For the PowerShell launcher, stable mode is the default and now stops old IOSSim backend/frontend/location processes before starting:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1"
+```
+
+To stop IOSSim processes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode stop
 ```
 
 To launch with experimental features enabled (Lock & Unplug, legacy GPX):
@@ -148,6 +154,12 @@ With the isolated Advanced Wireless Diagnostics lab:
 ```
 
 This opens two Terminal windows (backend + frontend) and launches `http://localhost:5173`. For a full macOS walkthrough, see [SETUP_MAC.md](SETUP_MAC.md).
+
+To stop IOSSim processes:
+
+```bash
+./RUN_EVERYTHING.sh stop
+```
 
 ### Option D: macOS manual
 

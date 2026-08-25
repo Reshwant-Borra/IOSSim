@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("stable", "experimental", "drive-testing", "wireless-testing")]
+    [ValidateSet("stable", "experimental", "drive-testing", "wireless-testing", "stop")]
     [string]$Mode = "stable"
 )
 
@@ -13,6 +13,53 @@ $Frontend    = "$ProjectRoot\frontend"
 $Experimental = $Mode -eq "experimental"
 $DriveTesting = $Mode -eq "drive-testing"
 $WirelessTesting = $Mode -eq "wireless-testing"
+$StopOnly = $Mode -eq "stop"
+
+function Stop-IOSSimProcesses {
+    Write-Host "[...] Stopping existing IOSSim backend/frontend/location processes..." -ForegroundColor Cyan
+    $ids = New-Object System.Collections.Generic.HashSet[int]
+
+    foreach ($port in @(8765, 5173)) {
+        $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        foreach ($listener in $listeners) {
+            [void]$ids.Add([int]$listener.OwningProcess)
+        }
+    }
+
+    $patterns = @("uvicorn", "vite", "pymobiledevice3", "simulate-location")
+    foreach ($process in Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) {
+        $cmd = [string]$process.CommandLine
+        if (-not $cmd) { continue }
+        $inProject = $cmd -like "*$ProjectRoot*"
+        $isLocation = $cmd -like "*pymobiledevice3*" -and $cmd -like "*simulate-location*"
+        if ($isLocation -or ($inProject -and ($patterns | Where-Object { $cmd -like "*$_*" }))) {
+            [void]$ids.Add([int]$process.ProcessId)
+        }
+    }
+
+    $current = $PID
+    $targets = $ids | Where-Object { $_ -ne $current }
+    if (-not $targets) {
+        Write-Host "[OK] No IOSSim processes found." -ForegroundColor Green
+        return
+    }
+
+    foreach ($id in $targets) {
+        try {
+            Stop-Process -Id $id -Force -ErrorAction Stop
+        } catch {
+            Write-Host "[WARN] Could not stop PID $id from this shell. Trying elevated stop." -ForegroundColor Yellow
+            Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Stop-Process -Id $id -Force -ErrorAction SilentlyContinue" | Out-Null
+        }
+    }
+    Start-Sleep -Seconds 1
+    Write-Host "[OK] Stop request complete." -ForegroundColor Green
+}
+
+if ($StopOnly) {
+    Stop-IOSSimProcesses
+    exit 0
+}
 
 if ($DriveTesting) {
     $BackendEnv = "`$env:IOS_SIM_ENABLE_EXPERIMENTAL='1'; `$env:IOS_SIM_ENABLE_DRIVE_TESTING='1'; "
@@ -42,22 +89,7 @@ foreach ($f in $checks) {
 }
 Write-Host "[OK] Project structure verified." -ForegroundColor Green
 
-# Refuse to take over an unrelated listener on the backend port.
-$listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($listener) {
-    $process = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
-    $owner = "unknown"
-    try {
-        $ownerInfo = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)") -MethodName GetOwner -ErrorAction Stop
-        if ($ownerInfo.User) { $owner = "$($ownerInfo.Domain)\$($ownerInfo.User)" }
-    } catch {}
-    Write-Host "ERROR: Port 8765 is already in use." -ForegroundColor Red
-    Write-Host "  PID          : $($listener.OwningProcess)"
-    Write-Host "  Process name : $($process.ProcessName)"
-    Write-Host "  User         : $owner"
-    Write-Host "  Inspect with : Get-Process -Id $($listener.OwningProcess)"
-    exit 1
-}
+Stop-IOSSimProcesses
 
 $VenvPython = Join-Path $Backend ".venv\Scripts\python.exe"
 if (Test-Path $VenvPython) {
@@ -68,7 +100,14 @@ if (Test-Path $VenvPython) {
         Write-Error "Python 3.11+ was not found and backend\.venv does not exist."
         exit 1
     }
-    $Python = $PythonCommand.Source
+    $BootstrapPython = $PythonCommand.Source
+    Write-Host "[...] Creating Python virtual environment..." -ForegroundColor Cyan
+    & $BootstrapPython -m venv "$Backend\.venv"
+    if (-not (Test-Path $VenvPython)) {
+        Write-Error "Could not create backend virtual environment."
+        exit 1
+    }
+    $Python = $VenvPython
 }
 
 # Install backend requirements
@@ -110,3 +149,4 @@ Write-Host "  Frontend : http://localhost:5173" -ForegroundColor Yellow
 Write-Host "  Backend  : http://127.0.0.1:8765" -ForegroundColor Yellow
 Write-Host "  Docs     : http://127.0.0.1:8765/docs" -ForegroundColor Yellow
 Write-Host "=============================================" -ForegroundColor Yellow
+Write-Host "Stop everything later with: .\RUN_EVERYTHING.ps1 -Mode stop" -ForegroundColor Yellow

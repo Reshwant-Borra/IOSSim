@@ -5,6 +5,7 @@
 #   ./RUN_EVERYTHING.sh experimental
 #   ./RUN_EVERYTHING.sh drive-testing
 #   ./RUN_EVERYTHING.sh wireless-testing
+#   ./RUN_EVERYTHING.sh stop       # stop IOSSim backend/frontend/location processes
 
 set -euo pipefail
 
@@ -14,9 +15,55 @@ BACKEND="$PROJECT_ROOT/backend"
 FRONTEND="$PROJECT_ROOT/frontend"
 VENV_PYTHON="$BACKEND/.venv/bin/python"
 
-if [[ "$MODE" != "stable" && "$MODE" != "experimental" && "$MODE" != "drive-testing" && "$MODE" != "wireless-testing" ]]; then
-  echo "Usage: $0 [stable|experimental|drive-testing|wireless-testing]"
+if [[ "$MODE" != "stable" && "$MODE" != "experimental" && "$MODE" != "drive-testing" && "$MODE" != "wireless-testing" && "$MODE" != "stop" ]]; then
+  echo "Usage: $0 [stable|experimental|drive-testing|wireless-testing|stop]"
   exit 1
+fi
+
+stop_iossim_processes() {
+  echo "[...] Stopping existing IOSSim backend/frontend/location processes..."
+  local pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -nP -iTCP:8765 -sTCP:LISTEN -t 2>/dev/null || true)"
+    pids="$pids $(lsof -nP -iTCP:5173 -sTCP:LISTEN -t 2>/dev/null || true)"
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    pids="$pids $(pgrep -f "$PROJECT_ROOT/.+uvicorn|uvicorn main:app|npm run dev|vite .*5173" 2>/dev/null || true)"
+    pids="$pids $(pgrep -f "pymobiledevice3 .*simulate-location" 2>/dev/null || true)"
+  fi
+  pids="$(printf "%s\n" $pids 2>/dev/null | awk 'NF && $1 != "'"$$"'" {print $1}' | sort -u | tr '\n' ' ')"
+  if [[ -z "${pids// /}" ]]; then
+    echo "[OK] No IOSSim processes found."
+    return 0
+  fi
+  kill $pids 2>/dev/null || true
+  sleep 1
+  local remaining=""
+  for pid in $pids; do
+    if ps -p "$pid" >/dev/null 2>&1; then
+      remaining="$remaining $pid"
+    fi
+  done
+  if [[ -n "${remaining// /}" ]]; then
+    echo "[...] Some processes need administrator privileges:$remaining"
+    osascript -e "do shell script \"kill -TERM $remaining 2>/dev/null || true\" with administrator privileges" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+  echo "[OK] Stop request complete."
+}
+
+repair_data_permissions() {
+  mkdir -p "$BACKEND/data"
+  if [[ -n "${SUDO_UID:-}" ]]; then
+    sudo chown -R "$SUDO_UID:${SUDO_GID:-$(id -g)}" "$BACKEND/data" 2>/dev/null || true
+  else
+    chown -R "$(id -u):$(id -g)" "$BACKEND/data" 2>/dev/null || true
+  fi
+}
+
+if [[ "$MODE" == "stop" ]]; then
+  stop_iossim_processes
+  exit 0
 fi
 
 if [[ "$MODE" == "drive-testing" ]]; then
@@ -45,15 +92,8 @@ for f in "$BACKEND/main.py" "$FRONTEND/package.json" "$BACKEND/requirements.txt"
 done
 echo "[OK] Project structure verified."
 
-if command -v lsof >/dev/null 2>&1; then
-  LISTENER_PID="$(lsof -nP -iTCP:8765 -sTCP:LISTEN -t 2>/dev/null | head -n 1 || true)"
-  if [[ -n "$LISTENER_PID" ]]; then
-    echo "ERROR: Port 8765 is already in use."
-    ps -o pid=,comm=,user= -p "$LISTENER_PID" | awk '{print "  PID          : "$1"\n  Process name : "$2"\n  User         : "$3}'
-    echo "  Inspect with : sudo lsof -nP -iTCP:8765 -sTCP:LISTEN && ps -fp $LISTENER_PID"
-    exit 1
-  fi
-fi
+stop_iossim_processes
+repair_data_permissions
 
 if [[ ! -x "$VENV_PYTHON" ]]; then
   echo "[...] Creating Python virtual environment..."
@@ -112,3 +152,4 @@ echo "============================================="
 echo ""
 echo "The backend window will ask for your Mac password (sudo)."
 echo "Keep both Terminal windows open while using the app."
+echo "Stop everything later with: ./RUN_EVERYTHING.sh stop"
