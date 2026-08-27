@@ -14,16 +14,17 @@ export class ApiError extends Error {
   }
 }
 
-export async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function req<T>(method: string, path: string, body?: unknown, options?: { signal?: AbortSignal }): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
+    signal: options?.signal,
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     const detail = typeof err.detail === 'string' ? err.detail : err.detail?.message
-    throw new ApiError(detail ?? err.message ?? res.statusText, res.status, err.code, err)
+    throw new ApiError(detail ?? err.message ?? res.statusText, res.status, err.code ?? err.detail?.code, err)
   }
   return res.json()
 }
@@ -51,6 +52,8 @@ export const api = {
     req<DriveStatus>('POST', '/location/drive/start', { waypoints, speed_mps, tick_s, stay_at_end }),
   geocodeDriveAddress: (address: string) =>
     req<GeocodeResponse>('POST', '/location/drive/geocode', { address }),
+  searchLocations: (query: string, signal?: AbortSignal) =>
+    req<GeocodeResponse>('POST', '/location/search', { query, limit: 5 }, { signal }),
   buildDriveRoute: (start: LatLon, destination: LatLon) =>
     req<DriveRouteResponse>('POST', '/location/drive/route', { start, destination }),
   startRoadRoute: (coordinates: LatLon[], speed_mps: number, tick_s: number, stay_at_end: boolean) =>
@@ -143,6 +146,16 @@ export interface GeocodeResult {
   display_name: string
   lat: number
   lon: number
+  primary_label?: string
+  secondary_label?: string
+  provider?: string
+  place_id?: number | string
+  osm_type?: string
+  osm_id?: number | string
+  class?: string
+  type?: string
+  boundingbox?: string[]
+  address?: Record<string, string>
 }
 
 export interface GeocodeResponse {

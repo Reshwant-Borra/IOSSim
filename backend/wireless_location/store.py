@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ from .session import normalize_udid, utc_now, validate_udid
 
 
 DEFAULT_STORE_FILE = Path(__file__).resolve().parents[1] / "data" / "wireless_devices.json"
+logger = logging.getLogger(__name__)
 
 
 class WirelessDeviceStore:
@@ -96,3 +99,14 @@ class WirelessDeviceStore:
     def _write(self, rows: list[dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
+        self._normalize_store_ownership()
+
+    def _normalize_store_ownership(self) -> None:
+        if os.geteuid() != 0:
+            return
+        try:
+            owner = Path(__file__).resolve().parents[1].stat()
+            for item in (self.path.parent, self.path):
+                os.chown(item, owner.st_uid, owner.st_gid)
+        except OSError:
+            logger.warning("WIRELESS_DEVICE_STORE_OWNERSHIP_NORMALIZE_FAILED path=%s", self.path)

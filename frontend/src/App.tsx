@@ -4,6 +4,9 @@ import L from 'leaflet'
 import { api, LatLon, DriveRouteResponse, DriveStatus, GeocodeResult, ConnectionMode } from './api/client'
 import DevicePanel from './components/DevicePanel'
 import FavoritesList from './components/FavoritesList'
+import LocationSearch from './components/LocationSearch'
+import MapController, { MapCameraTarget } from './components/MapController'
+import SelectedLocationCard, { SelectedLocationDetails } from './components/SelectedLocationCard'
 import UnplugModal from './components/UnplugModal'
 import DriveTestingLab from './components/drive-testing/DriveTestingLab'
 import DriveTestingLauncher from './components/drive-testing/DriveTestingLauncher'
@@ -67,6 +70,20 @@ function routeDistance(coordinates: LatLon[]): number {
   }, 0)
 }
 
+function labelFromResult(result: GeocodeResult): SelectedLocationDetails {
+  const primary = result.primary_label || result.display_name.split(',')[0] || result.display_name
+  const secondary = result.secondary_label || result.display_name.split(',').slice(1, 5).map(part => part.trim()).filter(Boolean).join(', ')
+  return { source: 'search', title: primary, subtitle: secondary }
+}
+
+function zoomForResult(result: GeocodeResult): number {
+  if (result.provider === 'coordinates') return 16
+  if (['city', 'town', 'village', 'municipality'].includes(result.type || '')) return 12
+  if (['state', 'province', 'administrative'].includes(result.type || '')) return 8
+  if (result.class === 'boundary') return 10
+  return 15
+}
+
 export default function App() {
   const [deviceReady, setDeviceReady] = useState(false)
   const [picked, setPicked] = useState<LatLon | null>(null)
@@ -90,6 +107,8 @@ export default function App() {
   const [showWirelessTesting, setShowWirelessTesting] = useState(false)
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('automatic')
   const [selectedDeviceUdid, setSelectedDeviceUdid] = useState<string | null>(null)
+  const [selectedLocationDetails, setSelectedLocationDetails] = useState<SelectedLocationDetails | null>(null)
+  const [cameraTarget, setCameraTarget] = useState<MapCameraTarget | null>(null)
 
   const driveActive = driveStatus?.state === 'starting' || driveStatus?.state === 'driving' || driveStatus?.state === 'paused'
   const drivePaused = driveStatus?.state === 'paused'
@@ -114,6 +133,7 @@ export default function App() {
       return
     }
     setPicked(ll)
+    setSelectedLocationDetails({ source: 'manual' })
     if (routeMode) {
       setRoadRoute(null)
       setRoadStart(null)
@@ -160,8 +180,31 @@ export default function App() {
     } catch (e: any) { setMsg(e.message, true) }
   }
 
-  const handleFavSelect = (loc: LatLon) => {
+  const focusMapOn = (loc: LatLon, zoom = 15) => {
+    setCameraTarget({ ...loc, zoom, nonce: Date.now() })
+  }
+
+  const handleFavSelect = (loc: LatLon, favorite?: { name: string; note?: string }) => {
     setPicked(loc)
+    setSelectedLocationDetails({ source: 'favorite', title: favorite?.name, subtitle: favorite?.note })
+    focusMapOn(loc, 15)
+  }
+
+  const handleSearchSelect = useCallback((result: GeocodeResult) => {
+    if (driveActive) {
+      setMsg('Stop Drive Mode before selecting a new location.', true)
+      return false
+    }
+    const loc = { lat: result.lat, lon: result.lon }
+    setPicked(loc)
+    setSelectedLocationDetails(labelFromResult(result))
+    focusMapOn(loc, zoomForResult(result))
+    setMsg(`Selected ${result.primary_label || result.display_name.split(',')[0] || 'location'}.`)
+    return true
+  }, [driveActive])
+
+  const recenterSelected = () => {
+    if (picked) focusMapOn(picked, 15)
   }
 
   const firstGeocodeResult = async (address: string, label: string): Promise<GeocodeResult> => {
@@ -261,14 +304,7 @@ export default function App() {
 
         <FavoritesList onSelect={handleFavSelect} currentLoc={picked} />
 
-        {picked && (
-          <div style={coordBox}>
-            <span style={{ color: '#8888aa', fontSize: 11 }}>SELECTED</span>
-            <div style={{ fontFamily: 'monospace', fontSize: 13, marginTop: 4 }}>
-              {picked.lat.toFixed(6)}, {picked.lon.toFixed(6)}
-            </div>
-          </div>
-        )}
+        <SelectedLocationCard location={picked} details={selectedLocationDetails} />
 
         <div style={actions}>
           <button style={primaryBtn} onClick={handleSet} disabled={!deviceReady || !picked}>
@@ -438,13 +474,20 @@ export default function App() {
       </div>
 
       <div style={mapWrap}>
+        <LocationSearch onSelect={handleSearchSelect} />
+        {picked && (
+          <button style={recenterBtn} onClick={recenterSelected} aria-label="Recenter map on selected location">
+            ◎ Selected
+          </button>
+        )}
         <MapContainer center={[37.7749, -122.4194]} zoom={13} style={{ width: '100%', height: '100%' }}>
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             attribution="OpenStreetMap contributors"
           />
+          <MapController target={cameraTarget} />
           <MapClickHandler onPick={handlePick} />
-          {picked && !routeMode && <Marker position={[picked.lat, picked.lon]} />}
+          {picked && (!routeMode || selectedLocationDetails?.source !== 'manual') && <Marker position={[picked.lat, picked.lon]} />}
           {routeMode && !roadRoute && routeWaypoints.map((wp, i) => (
             <Marker key={i} position={[wp.lat, wp.lon]} />
           ))}
@@ -510,7 +553,6 @@ const root: React.CSSProperties = { display: 'flex', height: '100vh', overflow: 
 const sidebar: React.CSSProperties = { width: 300, background: '#13131a', display: 'flex', flexDirection: 'column', overflowY: 'auto', flexShrink: 0 }
 const logo: React.CSSProperties = { padding: '18px 16px 14px', fontWeight: 800, fontSize: 16, borderBottom: '1px solid #2a2a38' }
 const mapWrap: React.CSSProperties = { flex: 1, position: 'relative' }
-const coordBox: React.CSSProperties = { padding: '10px 16px', borderBottom: '1px solid #2a2a38' }
 const actions: React.CSSProperties = { padding: 16, display: 'flex', flexDirection: 'column', gap: 8, borderBottom: '1px solid #2a2a38' }
 const routeBox: React.CSSProperties = { padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8, borderBottom: '1px solid #2a2a38' }
 const fieldLabel: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, color: '#b8b8c8', fontSize: 12 }
@@ -526,3 +568,4 @@ const secondaryBtn: React.CSSProperties = { padding: '9px 0', background: '#1a1a
 const lockBtn: React.CSSProperties = { padding: '9px 0', background: '#1e1e3a', border: '1px solid #4040a0', borderRadius: 8, color: '#aaaaff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }
 const statusMsg: React.CSSProperties = { margin: 16, padding: '8px 12px', background: '#0f2010', borderRadius: 6, color: '#4ade80', fontSize: 12 }
 const errMsg: React.CSSProperties = { margin: 16, padding: '8px 12px', background: '#1f0a0a', borderRadius: 6, color: '#f87171', fontSize: 12 }
+const recenterBtn: React.CSSProperties = { position: 'absolute', right: 18, top: 18, zIndex: 1100, padding: '9px 12px', background: '#13131a', border: '1px solid #303044', borderRadius: 8, color: '#e8e8f0', cursor: 'pointer', boxShadow: '0 10px 28px rgba(0, 0, 0, 0.34)', fontSize: 13 }

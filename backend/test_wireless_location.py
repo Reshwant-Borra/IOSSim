@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from wireless_location.controller import WirelessLocationController
 from wireless_location.session import WirelessUserspaceLocationSession, validate_udid
@@ -214,6 +215,21 @@ class WirelessLocationControllerTests(unittest.TestCase):
             worker=InlineWorker(),  # type: ignore[arg-type]
             session_factory=fake_session_factory,
         )
+
+    def test_store_write_under_root_restores_repository_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "devices.json"
+            store = WirelessDeviceStore(path)
+            calls: list[tuple[Path, int, int]] = []
+            owner = Path(__file__).resolve().parent.stat()
+
+            def fake_chown(item: Path, uid: int, gid: int) -> None:
+                calls.append((item, uid, gid))
+
+            with patch("wireless_location.store.os.geteuid", return_value=0), patch("wireless_location.store.os.chown", side_effect=fake_chown):
+                store.upsert({"udid": UDID, "name": "Test iPhone"})
+
+        self.assertEqual(calls, [(path.parent, owner.st_uid, owner.st_gid), (path, owner.st_uid, owner.st_gid)])
 
     def test_new_phone_setup_saves_identity_and_never_starts_persistent_tunnel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

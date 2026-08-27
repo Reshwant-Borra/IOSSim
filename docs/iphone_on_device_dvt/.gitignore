@@ -1,0 +1,10 @@
+# Do not commit Apple device pairing material or experiment secrets here.
+pairing/
+secrets/
+*.mobiledevicepairing
+*.mobiledevicepair
+*.rpPairing
+*.rppairing
+rp_pairing_file.plist
+host_pairing_file.plist
+selfIdentity.plist

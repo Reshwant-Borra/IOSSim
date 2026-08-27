@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api, Favorite, LatLon } from '../api/client'
 
 interface Props {
-  onSelect: (loc: LatLon) => void
+  onSelect: (loc: LatLon, favorite?: Favorite) => void
   currentLoc: LatLon | null
 }
 
@@ -56,7 +56,7 @@ export default function FavoritesList({ onSelect, currentLoc }: Props) {
         {favorites.length === 0 && <div style={empty}>No favorites yet</div>}
         {favorites.map(f => (
           <div key={f.id} style={item}>
-            <button style={itemBtn} onClick={() => onSelect({ lat: f.lat, lon: f.lon })}>
+            <button style={itemBtn} onClick={() => onSelect({ lat: f.lat, lon: f.lon }, f)}>
               <span style={itemName}>{f.name}</span>
               <span style={coords}>{f.lat.toFixed(4)}, {f.lon.toFixed(4)}</span>
             </button>

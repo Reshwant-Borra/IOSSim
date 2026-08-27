@@ -54,10 +54,17 @@ stop_iossim_processes() {
 
 repair_data_permissions() {
   mkdir -p "$BACKEND/data"
+  local owner_uid owner_gid
   if [[ -n "${SUDO_UID:-}" ]]; then
-    sudo chown -R "$SUDO_UID:${SUDO_GID:-$(id -g)}" "$BACKEND/data" 2>/dev/null || true
+    owner_uid="$SUDO_UID"
+    owner_gid="${SUDO_GID:-$(id -g)}"
   else
-    chown -R "$(id -u):$(id -g)" "$BACKEND/data" 2>/dev/null || true
+    owner_uid="$(id -u)"
+    owner_gid="$(id -g)"
+  fi
+  if ! chown -R "$owner_uid:$owner_gid" "$BACKEND/data" 2>/dev/null; then
+    echo "[...] Repairing backend data ownership with administrator privileges..."
+    osascript -e "do shell script \"chown -R $owner_uid:$owner_gid '$BACKEND/data'\" with administrator privileges" >/dev/null 2>&1 || true
   fi
 }
 

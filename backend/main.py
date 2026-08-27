@@ -66,6 +66,7 @@ manager = DeviceManager()
 svc = LocationService(manager)
 drive = DriveController(svc.set_location, svc.clear_location)
 drive_routing = DriveRoutingClient()
+location_search = drive_routing.geocoder
 location_operation_lock = threading.RLock()
 drive_testing_store = ExperimentStore()
 drive_testing = DriveExperimentController(
@@ -146,6 +147,11 @@ class DriveStartBody(BaseModel):
 
 class DriveGeocodeBody(BaseModel):
     address: str = Field(..., min_length=1, max_length=300)
+
+
+class LocationSearchBody(BaseModel):
+    query: str = Field(..., min_length=1, max_length=300)
+    limit: int = Field(5, ge=1, le=5)
 
 
 class DriveRouteBody(BaseModel):
@@ -264,6 +270,8 @@ def clear_location():
         result = wireless_location.clear_location()
     else:
         result = svc.clear_location()
+        if not result.get("ok") and result.get("message") == "No device connected":
+            return {"ok": True, "message": "GPS is already using the real location."}
     if not result["ok"]:
         return _location_error(result)
     return result
@@ -304,6 +312,28 @@ def drive_geocode(body: DriveGeocodeBody):
     result = drive_routing.geocode(body.address)
     if not result["ok"]:
         return JSONResponse(status_code=502, content=result)
+    return result
+
+
+@app.post("/api/location/search")
+def search_location(body: LocationSearchBody):
+    result = location_search.search(body.query, limit=body.limit)
+    if not result["ok"]:
+        if "Enter a place" in result.get("message", ""):
+            return JSONResponse(status_code=400, content=result)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "provider": result.get("provider", "nominatim"),
+                "cached": False,
+                "results": [],
+                "detail": {
+                    "message": "Location search provider is temporarily unavailable.",
+                    "code": result.get("code", "GEOCODING_PROVIDER_UNAVAILABLE"),
+                },
+            },
+        )
     return result
 
 
