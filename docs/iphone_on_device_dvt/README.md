@@ -22,6 +22,7 @@ Key verdict: GO WITH RISKS for a narrow Mac-once, Wi-Fi cold-start POC. Cellular
 
 Documents:
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) - canonical architecture overview and current physical validation status
 - [00_GOAL_AND_ACCEPTANCE_CRITERIA.md](00_GOAL_AND_ACCEPTANCE_CRITERIA.md)
 - [01_CURRENT_IOSSIM_BASELINE.md](01_CURRENT_IOSSIM_BASELINE.md)
 - [02_PRIOR_FINDINGS.md](02_PRIOR_FINDINGS.md)
@@ -42,5 +43,12 @@ Documents:
 - [17_SOURCE_LEDGER.md](17_SOURCE_LEDGER.md)
 - [18_OPEN_QUESTIONS.md](18_OPEN_QUESTIONS.md)
 - [19_RECOMMENDED_POC.md](19_RECOMMENDED_POC.md)
+- [20_POC_IMPLEMENTATION_NOTES.md](20_POC_IMPLEMENTATION_NOTES.md)
+- [21_POC_TEST_RESULTS.md](21_POC_TEST_RESULTS.md)
+- [22_CELLULAR_COLD_START_FINDINGS.md](22_CELLULAR_COLD_START_FINDINGS.md)
+- [23_E1_PHYSICAL_TEST_PROCEDURE.md](23_E1_PHYSICAL_TEST_PROCEDURE.md)
+- [24_IDEVICE_IOS_BUILD_NOTES.md](24_IDEVICE_IOS_BUILD_NOTES.md)
+- [25_SESSION_PERSISTENCE_FINDINGS.md](25_SESSION_PERSISTENCE_FINDINGS.md)
+- [26_DIAGNOSTIC_RECORDER.md](26_DIAGNOSTIC_RECORDER.md)
 
 Do not place real pairing records in this folder. The folder-local `.gitignore` blocks the known file names and extensions observed in Locus, Mirage, and RPPairing tools, but future POC code must add ignores at its own artifact paths before generating secrets.

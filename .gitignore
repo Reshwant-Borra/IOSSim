@@ -11,12 +11,39 @@ backend/data/drive_testing/
 *.log
 *.pid
 
+# On-device DVT POC pairing/secrets. RPPairing files contain private trust material.
+ios/pairing/
+ios/secrets/
+ios/artifacts/
+ios/Vendor/idevice/*.plist
+ios/Vendor/idevice/*.mobiledevicepairing
+ios/Vendor/idevice/*.mobiledevicepair
+ios/Vendor/idevice/*.rpPairing
+ios/Vendor/idevice/*.rppairing
+ios/Vendor/idevice/lib/libidevice_ffi.a
+ios/Vendor/idevice/*.xcframework/
+ios/Vendor/idevice/symbols/
+!ios/Vendor/idevice/lib/.gitkeep
+ios/**/rp_pairing_file.plist
+ios/**/host_pairing_file.plist
+ios/**/selfIdentity.plist
+
 # Python environments
 .venv/
 venv/
 .env
 .env.*
 !.env.example
+
+# Swift build outputs
+.build/
+.swiftpm/
+ios/.build/
+ios/.swiftpm/
+
+# Xcode user-local state
+**/xcuserdata/
+*.xcuserstate
 
 # OS/editor
 .DS_Store

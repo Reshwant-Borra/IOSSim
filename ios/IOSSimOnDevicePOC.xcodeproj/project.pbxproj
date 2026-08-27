@@ -1,0 +1,392 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		000000000000000000000101 /* IOSSimOnDeviceDVTPOCApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000201 /* IOSSimOnDeviceDVTPOCApp.swift */; };
+		000000000000000000000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000202 /* ContentView.swift */; };
+		000000000000000000000103 /* POCViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000203 /* POCViewModel.swift */; };
+		000000000000000000000104 /* CoreLocationVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000204 /* CoreLocationVerifier.swift */; };
+		000000000000000000000105 /* DeveloperRouteProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000205 /* DeveloperRouteProbe.swift */; };
+		000000000000000000000106 /* DiagnosticModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000206 /* DiagnosticModels.swift */; };
+		000000000000000000000107 /* DvtLocationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000207 /* DvtLocationClient.swift */; };
+		000000000000000000000108 /* ExperimentRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000208 /* ExperimentRunner.swift */; };
+		000000000000000000000109 /* PairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000209 /* PairingStore.swift */; };
+		000000000000000000000110 /* RPPairingValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000210 /* RPPairingValidator.swift */; };
+		000000000000000000000111 /* SessionDiagnosticRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000213 /* SessionDiagnosticRecorder.swift */; };
+		000000000000000000000112 /* BackgroundSessionKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000214 /* BackgroundSessionKeeper.swift */; };
+		000000000000000000000121 /* Vendor/idevice/lib/libidevice_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000221 /* Vendor/idevice/lib/libidevice_ffi.a */; };
+		000000000000000000000122 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000222 /* CoreLocation.framework */; };
+		000000000000000000000123 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000223 /* Network.framework */; };
+		000000000000000000000124 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000224 /* Security.framework */; };
+		000000000000000000000125 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000225 /* UniformTypeIdentifiers.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		000000000000000000000201 /* IOSSimOnDeviceDVTPOCApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSimOnDeviceDVTPOCApp.swift; sourceTree = "<group>"; };
+		000000000000000000000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		000000000000000000000203 /* POCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = POCViewModel.swift; sourceTree = "<group>"; };
+		000000000000000000000215 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		000000000000000000000204 /* CoreLocationVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLocationVerifier.swift; sourceTree = "<group>"; };
+		000000000000000000000205 /* DeveloperRouteProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperRouteProbe.swift; sourceTree = "<group>"; };
+		000000000000000000000206 /* DiagnosticModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticModels.swift; sourceTree = "<group>"; };
+		000000000000000000000207 /* DvtLocationClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DvtLocationClient.swift; sourceTree = "<group>"; };
+		000000000000000000000208 /* ExperimentRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperimentRunner.swift; sourceTree = "<group>"; };
+		000000000000000000000209 /* PairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingStore.swift; sourceTree = "<group>"; };
+		000000000000000000000210 /* RPPairingValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RPPairingValidator.swift; sourceTree = "<group>"; };
+		000000000000000000000211 /* module.modulemap */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.module-map"; path = module.modulemap; sourceTree = "<group>"; };
+		000000000000000000000212 /* idevice_minimal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = idevice_minimal.h; sourceTree = "<group>"; };
+		000000000000000000000213 /* SessionDiagnosticRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDiagnosticRecorder.swift; sourceTree = "<group>"; };
+		000000000000000000000214 /* BackgroundSessionKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSessionKeeper.swift; sourceTree = "<group>"; };
+		000000000000000000000221 /* Vendor/idevice/lib/libidevice_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = Vendor/idevice/lib/libidevice_ffi.a; sourceTree = "<group>"; };
+		000000000000000000000222 /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
+		000000000000000000000223 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		000000000000000000000224 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		000000000000000000000225 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
+		000000000000000000000231 /* IOSSim DVT POC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "IOSSim DVT POC.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		000000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000121 /* Vendor/idevice/lib/libidevice_ffi.a in Frameworks */,
+				000000000000000000000122 /* CoreLocation.framework in Frameworks */,
+				000000000000000000000123 /* Network.framework in Frameworks */,
+				000000000000000000000124 /* Security.framework in Frameworks */,
+				000000000000000000000125 /* UniformTypeIdentifiers.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000401 = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000402 /* App */,
+				000000000000000000000403 /* Sources */,
+				000000000000000000000404 /* Vendor */,
+				000000000000000000000405 /* Frameworks */,
+				000000000000000000000406 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		000000000000000000000402 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000201 /* IOSSimOnDeviceDVTPOCApp.swift */,
+				000000000000000000000202 /* ContentView.swift */,
+				000000000000000000000203 /* POCViewModel.swift */,
+				000000000000000000000215 /* Info.plist */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		000000000000000000000403 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000407 /* IOSSimOnDeviceDVTPOC */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		000000000000000000000404 /* Vendor */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000408 /* idevice */,
+			);
+			path = Vendor;
+			sourceTree = "<group>";
+		};
+		000000000000000000000405 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000222 /* CoreLocation.framework */,
+				000000000000000000000223 /* Network.framework */,
+				000000000000000000000224 /* Security.framework */,
+				000000000000000000000225 /* UniformTypeIdentifiers.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		000000000000000000000406 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000231 /* IOSSim DVT POC.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		000000000000000000000407 /* IOSSimOnDeviceDVTPOC */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000204 /* CoreLocationVerifier.swift */,
+				000000000000000000000214 /* BackgroundSessionKeeper.swift */,
+				000000000000000000000205 /* DeveloperRouteProbe.swift */,
+				000000000000000000000206 /* DiagnosticModels.swift */,
+				000000000000000000000207 /* DvtLocationClient.swift */,
+				000000000000000000000208 /* ExperimentRunner.swift */,
+				000000000000000000000209 /* PairingStore.swift */,
+				000000000000000000000210 /* RPPairingValidator.swift */,
+				000000000000000000000213 /* SessionDiagnosticRecorder.swift */,
+			);
+			path = IOSSimOnDeviceDVTPOC;
+			sourceTree = "<group>";
+		};
+		000000000000000000000408 /* idevice */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000409 /* include */,
+				000000000000000000000221 /* Vendor/idevice/lib/libidevice_ffi.a */,
+			);
+			path = idevice;
+			sourceTree = "<group>";
+		};
+		000000000000000000000409 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000211 /* module.modulemap */,
+				000000000000000000000212 /* idevice_minimal.h */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		000000000000000000000501 /* IOSSimOnDevicePOC */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000701 /* Build configuration list for PBXNativeTarget "IOSSimOnDevicePOC" */;
+			buildPhases = (
+				000000000000000000000601 /* Sources */,
+				000000000000000000000301 /* Frameworks */,
+				000000000000000000000602 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = IOSSimOnDevicePOC;
+			productName = "IOSSim DVT POC";
+			productReference = 000000000000000000000231 /* IOSSim DVT POC.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					000000000000000000000501 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = 000000000000000000000702 /* Build configuration list for PBXProject "IOSSimOnDevicePOC" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 000000000000000000000401;
+			productRefGroup = 000000000000000000000406 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				000000000000000000000501 /* IOSSimOnDevicePOC */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		000000000000000000000602 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		000000000000000000000601 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000101 /* IOSSimOnDeviceDVTPOCApp.swift in Sources */,
+				000000000000000000000102 /* ContentView.swift in Sources */,
+				000000000000000000000103 /* POCViewModel.swift in Sources */,
+				000000000000000000000104 /* CoreLocationVerifier.swift in Sources */,
+				000000000000000000000105 /* DeveloperRouteProbe.swift in Sources */,
+				000000000000000000000106 /* DiagnosticModels.swift in Sources */,
+				000000000000000000000107 /* DvtLocationClient.swift in Sources */,
+				000000000000000000000108 /* ExperimentRunner.swift in Sources */,
+				000000000000000000000109 /* PairingStore.swift in Sources */,
+				000000000000000000000110 /* RPPairingValidator.swift in Sources */,
+				000000000000000000000111 /* SessionDiagnosticRecorder.swift in Sources */,
+				000000000000000000000112 /* BackgroundSessionKeeper.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		000000000000000000000801 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T8SL4SG87F;
+				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/idevice/include",
+				);
+				INFOPLIST_FILE = App/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/idevice/lib",
+				);
+				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lidevice_ffi",
+					"-lc++",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.iossim.on-device-dvt-poc";
+				PRODUCT_NAME = "IOSSim DVT POC";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG IOS_SIM_IDEVICE_FFI";
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/idevice/include";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		000000000000000000000802 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T8SL4SG87F;
+				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/idevice/include",
+				);
+				INFOPLIST_FILE = App/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/idevice/lib",
+				);
+				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lidevice_ffi",
+					"-lc++",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.iossim.on-device-dvt-poc";
+				PRODUCT_NAME = "IOSSim DVT POC";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = IOS_SIM_IDEVICE_FFI;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/idevice/include";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		000000000000000000000811 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		000000000000000000000812 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000000000701 /* Build configuration list for PBXNativeTarget "IOSSimOnDevicePOC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000801 /* Debug */,
+				000000000000000000000802 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		000000000000000000000702 /* Build configuration list for PBXProject "IOSSimOnDevicePOC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000811 /* Debug */,
+				000000000000000000000812 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 000000000000000000000001 /* Project object */;
+}
