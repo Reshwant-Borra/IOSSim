@@ -32,6 +32,11 @@ struct POCUnitChecks {
         try driveTraceMetricCalculations()
         try await driveDiagnosticsTraceSerializationAndSummary()
         try await driveDiagnosticsDetectorEvents()
+        try coordinateParsingAcceptsValidPairs()
+        try coordinateParsingRejectsOutOfRangeAndMalformedText()
+        try recentsListDedupesNearbyPlacesAndMovesToFront()
+        try recentsListCapsAtLimit()
+        try jsonFilePlaceStoreRoundTripsAndOverwrites()
         print("POCUnitChecks passed")
     }
 
@@ -649,6 +654,79 @@ struct POCUnitChecks {
             throw CheckError(message)
         }
         return value
+    }
+
+    // MARK: - Location product-surface pure logic (SavedPlace.swift)
+
+    static func coordinateParsingAcceptsValidPairs() throws {
+        let a = try requireValue(CoordinateParsing.parse("40.7580,-73.9855"), "plain pair should parse")
+        try require(abs(a.latitude - 40.7580) < 0.0001, "latitude parsed")
+        try require(abs(a.longitude - (-73.9855)) < 0.0001, "longitude parsed")
+
+        let b = try requireValue(CoordinateParsing.parse(" 40.7580 , -73.9855 "), "pair with whitespace should parse")
+        try require(abs(b.latitude - 40.7580) < 0.0001, "latitude parsed with whitespace")
+
+        let boundary = try requireValue(CoordinateParsing.parse("90,-180"), "boundary values should parse")
+        try require(boundary.latitude == 90 && boundary.longitude == -180, "boundary values exact")
+    }
+
+    static func coordinateParsingRejectsOutOfRangeAndMalformedText() throws {
+        try require(CoordinateParsing.parse("Times Square") == nil, "place name is not a coordinate")
+        try require(CoordinateParsing.parse("91,0") == nil, "latitude out of range rejected")
+        try require(CoordinateParsing.parse("0,181") == nil, "longitude out of range rejected")
+        try require(CoordinateParsing.parse("40.75") == nil, "single value rejected")
+        try require(CoordinateParsing.parse("40.75,-73.98,extra") == nil, "extra component rejected")
+        try require(CoordinateParsing.parse("") == nil, "empty text rejected")
+    }
+
+    static func recentsListDedupesNearbyPlacesAndMovesToFront() throws {
+        let timesSquare = SavedPlace(name: "Times Square", latitude: 40.7580, longitude: -73.9855)
+        let centralPark = SavedPlace(name: "Central Park", latitude: 40.7851, longitude: -73.9683)
+        var list = RecentsList.inserting(timesSquare, into: [], limit: 20)
+        list = RecentsList.inserting(centralPark, into: list, limit: 20)
+        try require(list.count == 2, "two distinct places kept")
+        try require(list.first?.name == "Central Park", "most recent is first")
+
+        // Re-visiting a near-duplicate coordinate should move it to the front,
+        // not create a second entry.
+        let timesSquareAgain = SavedPlace(name: "Times Square", latitude: 40.75801, longitude: -73.98551)
+        list = RecentsList.inserting(timesSquareAgain, into: list, limit: 20)
+        try require(list.count == 2, "near-duplicate does not grow the list")
+        try require(list.first?.name == "Times Square", "re-visited place moves to front")
+    }
+
+    static func recentsListCapsAtLimit() throws {
+        var list: [SavedPlace] = []
+        for index in 0..<25 {
+            let place = SavedPlace(name: "Place \(index)", latitude: Double(index), longitude: Double(index))
+            list = RecentsList.inserting(place, into: list, limit: 20)
+        }
+        try require(list.count == 20, "list capped at limit")
+        try require(list.first?.name == "Place 24", "newest place kept at front")
+        try require(!list.contains { $0.name == "Place 0" }, "oldest place evicted")
+    }
+
+    static func jsonFilePlaceStoreRoundTripsAndOverwrites() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = JSONFilePlaceStore(fileName: "favorites.json", directory: directory)
+        try require(store.load().isEmpty, "new store starts empty")
+
+        let places = [
+            SavedPlace(name: "Times Square", latitude: 40.7580, longitude: -73.9855),
+            SavedPlace(name: "Golden Gate Bridge", latitude: 37.8199, longitude: -122.4783)
+        ]
+        store.save(places)
+
+        let reloaded = JSONFilePlaceStore(fileName: "favorites.json", directory: directory)
+        let loaded = reloaded.load()
+        try require(loaded.count == 2, "round trip preserves count")
+        try require(loaded.map(\.name) == ["Times Square", "Golden Gate Bridge"], "round trip preserves order")
+
+        store.save([places[0]])
+        let afterOverwrite = JSONFilePlaceStore(fileName: "favorites.json", directory: directory).load()
+        try require(afterOverwrite.count == 1, "save overwrites rather than appends")
     }
 
     static func testRoute() throws -> RouteResampler {

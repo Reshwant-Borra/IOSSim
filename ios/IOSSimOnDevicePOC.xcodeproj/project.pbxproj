@@ -35,6 +35,7 @@
 		000000000000000000000124 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000224 /* Security.framework */; };
 		000000000000000000000125 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000225 /* UniformTypeIdentifiers.framework */; };
 		000000000000000000000127 /* MapKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000230 /* MapKit.framework */; };
+		BC1FCFA3059F620F336001C2 /* SavedPlace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 365421394EB69E9120D4FE53 /* SavedPlace.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +71,7 @@
 		000000000000000000000225 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
 		000000000000000000000230 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
 		000000000000000000000231 /* IOSSim DVT POC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "IOSSim DVT POC.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		365421394EB69E9120D4FE53 /* SavedPlace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlace.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -151,6 +153,7 @@
 		000000000000000000000407 /* IOSSimOnDeviceDVTPOC */ = {
 			isa = PBXGroup;
 			children = (
+				365421394EB69E9120D4FE53 /* SavedPlace.swift */,
 				000000000000000000000204 /* CoreLocationVerifier.swift */,
 				000000000000000000000214 /* BackgroundSessionKeeper.swift */,
 				000000000000000000000228 /* BackgroundManager.swift */,
@@ -259,6 +262,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BC1FCFA3059F620F336001C2 /* SavedPlace.swift in Sources */,
 				000000000000000000000101 /* IOSSimOnDeviceDVTPOCApp.swift in Sources */,
 				000000000000000000000102 /* ContentView.swift in Sources */,
 				000000000000000000000103 /* POCViewModel.swift in Sources */,
