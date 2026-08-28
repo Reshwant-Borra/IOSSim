@@ -15,7 +15,7 @@ Mac used once
   -> Core Location
 ```
 
-The POC is intentionally narrow. It does not include the Mac-hosted web UI, map search, Drive Mode, route playback, cloud control, remote Mac control, WLOC, or a custom VPN.
+The POC is intentionally narrow. It does not include the Mac-hosted web UI, cloud control, remote Mac control, WLOC, or a custom VPN. It now includes an isolated experimental Drive Mode for developer testing only; that Drive Mode preserves the same on-device DVT stack and does not replace the existing static-location workflow.
 
 ## One-Time Setup
 
@@ -135,4 +135,4 @@ Treat that delay as likely Life360 background/server propagation behavior unless
 
 GO WITH RISKS.
 
-The core Mac-free on-device DVT architecture is physically demonstrated. The remaining risk is stability: controlled long-duration persistence and cellular scenarios still need recorded validation.
+The core Mac-free on-device DVT architecture is physically demonstrated. Basic foreground Drive route simulation is also physically demonstrated. The remaining risk is stability and characterization: speed reporting, cadence smoothness, foreground/background differences, controlled long-duration persistence, locked-screen behavior, and cellular scenarios still need recorded validation.

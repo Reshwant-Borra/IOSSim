@@ -60,6 +60,12 @@ struct ContentView: View {
                     }
                 }
 
+                Section("Experimental") {
+                    NavigationLink("Drive Mode") {
+                        DriveView()
+                    }
+                }
+
                 Section("E1 Stages") {
                     ForEach(model.stageRows) { row in
                         HStack {
@@ -116,7 +122,7 @@ struct ContentView: View {
 }
 
 #if canImport(UIKit)
-private struct ShareSheet: UIViewControllerRepresentable {
+struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [URL]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
@@ -126,7 +132,7 @@ private struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 #else
-private struct ShareSheet: View {
+struct ShareSheet: View {
     let activityItems: [URL]
 
     var body: some View {

@@ -18,7 +18,7 @@ iPhone
   -> system Core Location
 ```
 
-Key verdict: GO WITH RISKS for a narrow Mac-once, Wi-Fi cold-start POC. Cellular continuation has strong evidence. Cellular cold-start remains EXPERIMENT REQUIRED.
+Key verdict: GO WITH RISKS for a narrow Mac-once, Wi-Fi cold-start POC. Static simulation is physically demonstrated, and the basic experimental on-device Drive POC is now physically demonstrated in foreground testing. Drive cadence, speed reporting, background behavior, long-duration locked-screen execution, and cellular scenarios remain under investigation.
 
 Documents:
 
@@ -50,5 +50,6 @@ Documents:
 - [24_IDEVICE_IOS_BUILD_NOTES.md](24_IDEVICE_IOS_BUILD_NOTES.md)
 - [25_SESSION_PERSISTENCE_FINDINGS.md](25_SESSION_PERSISTENCE_FINDINGS.md)
 - [26_DIAGNOSTIC_RECORDER.md](26_DIAGNOSTIC_RECORDER.md)
+- [DRIVE_MODE_IMPLEMENTATION.md](DRIVE_MODE_IMPLEMENTATION.md) - experimental on-device Drive Mode implementation, diagnostics, and physical test procedure
 
 Do not place real pairing records in this folder. The folder-local `.gitignore` blocks the known file names and extensions observed in Locus, Mirage, and RPPairing tools, but future POC code must add ignores at its own artifact paths before generating secrets.

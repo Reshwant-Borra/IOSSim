@@ -4,6 +4,118 @@ Date: 2026-08-27
 
 IOSSim commit under test: working tree on `poc/on-device-dvt` after `82c8b06`.
 
+## Physical Drive Mode Result
+
+STATUS: BASIC DRIVE POC PHYSICALLY DEMONSTRATED / ISSUES UNDER INVESTIGATION
+
+Observed on 2026-08-27 after adding experimental on-device Drive Mode:
+
+- Drive Mode started successfully from the IOSSim iPhone app.
+- IOSSim advanced simulated system location through a generated driving route.
+- The route visibly progressed.
+- The previous catastrophic "move forward, reset to original location, move forward, reset" behavior was no longer the primary behavior.
+- Life360 recognized the movement as driving.
+- Life360 displayed the driven route/path.
+
+Verdict:
+
+```text
+PASS - IOSSim successfully simulated a moving driving route on-device.
+```
+
+This proves basic foreground route simulation for the implemented IOSSim on-device Drive POC. It does not prove perfect smoothness, speed reporting, equivalent foreground/background performance, locked-screen long-duration execution, Wi-Fi/cellular transition, cellular cold-start, or long-duration reconnect behavior.
+
+### Observed Issue D1 - Life360 Drive Speed Missing
+
+Physical observation:
+
+Life360 recognized the simulated movement as a Drive and displayed the route/path. However, Life360 did not display the car's speed during the simulated Drive.
+
+Observation separated from hypotheses:
+
+- Proven: route/Drive detection succeeded.
+- Proven: route/path display succeeded.
+- Proven: Life360 speed display was missing during the observed simulated Drive.
+- Not proven: why speed was missing.
+
+Future diagnostics may investigate Core Location `CLLocation.speed` behavior under DVT LocationSimulation, update cadence, sparse coordinate timing, third-party sampling behavior, background delivery, and differences between geometric speed and system-reported `CLLocation.speed`. These are hypotheses only.
+
+### Observed Issue D2 - Bursty / Non-Smooth Movement
+
+Physical observation:
+
+The simulated route works, but movement is not visually smooth. Instead of consistent incremental motion, it appears roughly like:
+
+```text
+move/shoot forward
+pause
+move/shoot forward
+pause
+repeat
+```
+
+Life360 still records the route.
+
+Potential categories for future diagnostics include scheduler cadence, DVT set-call timing, task scheduling jitter, app execution state, Core Location propagation, map/UI sampling, network/server refresh behavior, background throttling, and delayed or batched observations. No explanation is concluded yet.
+
+### Observed Issue D3 - Possible Foreground vs Background Performance Difference
+
+Classification:
+
+```text
+PHYSICAL OBSERVATION / REQUIRES MEASUREMENT
+```
+
+User impression:
+
+Drive Mode may appear to run faster or more smoothly while IOSSim itself is open in the foreground. When the user switches to another app but does not force-close IOSSim, Drive movement may become slower, more delayed, or more bursty.
+
+This has not been instrumentally confirmed. It must not yet be described as a proven iOS suspension problem. Future diagnostics need to compare monotonic scheduler timing, DVT set timing, Core Location observation timing, and lifecycle transitions.
+
+### Not Yet Proven From Drive Test
+
+- Cause of missing speed.
+- Cause of burstiness.
+- Actual foreground scheduler frequency.
+- Actual background scheduler frequency.
+- Actual DVT call latency foreground vs background.
+- Core Location propagation delay.
+- Whether `CLLocation.speed` is valid during DVT Drive.
+- Whether `CLLocation.course` is valid during DVT Drive.
+- Whether `sourceInformation.isSimulatedBySoftware` is true during Drive.
+- Whether background execution causes timer coalescing.
+- 10-minute locked-screen Drive.
+- 30-minute Drive.
+- Network transition reliability.
+- Cold-start over cellular.
+
+### Working Drive Architecture To Preserve
+
+```text
+DriveView
+  -> DriveSessionController
+  -> DriveScheduler
+  -> LocationCoordinator actor
+  -> existing IdeviceOnDeviceTunnelClient
+  -> RPPairing
+  -> LocalDevVPN
+  -> developer tunnel
+  -> RSD
+  -> DVT
+  -> retained LocationSimulation
+  -> repeated location_simulation_set()
+```
+
+Preserved invariants:
+
+- Static and Drive modes share `LocationCoordinator`.
+- Drive uses one authoritative writer ID.
+- One `LocationSimulation` session is retained per active connection.
+- `ContinuousClock` / monotonic elapsed time drives route progress.
+- Missed ticks are not intentionally replayed.
+- Route completion uses `completedHolding`.
+- Stop/Clear is explicit.
+
 ## Automated Software Checks
 
 STATUS: CONFIRMED

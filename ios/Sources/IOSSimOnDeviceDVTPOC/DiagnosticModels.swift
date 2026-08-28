@@ -41,6 +41,11 @@ public enum POCErrorCode: String, Codable, Equatable, Sendable {
     case clearCommandFailed = "CLEAR_COMMAND_FAILED"
     case coreLocationVerificationFailed = "CORELOCATION_VERIFICATION_FAILED"
     case disconnected = "DISCONNECTED"
+    case invalidRoute = "INVALID_ROUTE"
+    case routeCalculationFailed = "ROUTE_CALCULATION_FAILED"
+    case invalidDriveState = "INVALID_DRIVE_STATE"
+    case staleWriter = "STALE_WRITER"
+    case staleGeneration = "STALE_GENERATION"
     case unknown = "UNKNOWN"
 }
 

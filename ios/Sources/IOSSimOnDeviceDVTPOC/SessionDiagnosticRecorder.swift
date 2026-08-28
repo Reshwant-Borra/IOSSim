@@ -192,10 +192,23 @@ public actor SessionDiagnosticRecorder {
             "latitude": String(format: "%.6f", observation.latitude),
             "longitude": String(format: "%.6f", observation.longitude),
             "horizontal_accuracy_m": String(format: "%.1f", observation.horizontalAccuracy),
+            "vertical_accuracy_m": String(format: "%.1f", observation.verticalAccuracy),
             "location_timestamp": ISO8601DateFormatter().string(from: observation.locationTimestamp),
             "is_simulated_by_software": String(describing: observation.isSimulatedBySoftware),
             "is_produced_by_accessory": String(describing: observation.isProducedByAccessory)
         ]
+        if let speed = observation.speed {
+            metadata["cllocation_speed_mps"] = String(format: "%.3f", speed)
+        }
+        if let speedAccuracy = observation.speedAccuracy {
+            metadata["cllocation_speed_accuracy_mps"] = String(format: "%.3f", speedAccuracy)
+        }
+        if let course = observation.course {
+            metadata["cllocation_course_deg"] = String(format: "%.3f", course)
+        }
+        if let courseAccuracy = observation.courseAccuracy {
+            metadata["cllocation_course_accuracy_deg"] = String(format: "%.3f", courseAccuracy)
+        }
         if let distance = observation.distanceMetersFromRequested {
             metadata["distance_from_requested_m"] = String(format: "%.1f", distance)
         }

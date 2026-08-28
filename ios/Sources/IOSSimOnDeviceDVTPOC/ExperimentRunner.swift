@@ -39,18 +39,20 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
 
     private let pairingStore: RPPairingStore
     private let routeProbe: DeveloperRouteProbe
-    private let tunnelClient: OnDeviceTunnelClient
+    private let locationCoordinator: LocationCoordinator
     private let verifier: CoreLocationVerifier
     private let diagnostics: DiagnosticState
     private let endpoint: DeveloperEndpoint
     private let recorder: SessionDiagnosticRecorder
     private let backgroundKeeper: BackgroundSessionKeeper
     private var monitorTask: Task<Void, Never>?
+    private let staticWriterID = "static:\(UUID().uuidString)"
 
     public init(
         pairingStore: RPPairingStore = KeychainRPPairingStore(),
         routeProbe: DeveloperRouteProbe = DeveloperRouteProbe(),
         tunnelClient: OnDeviceTunnelClient = IdeviceOnDeviceTunnelClient(),
+        locationCoordinator: LocationCoordinator? = nil,
         verifier: CoreLocationVerifier = CoreLocationVerifier(),
         diagnostics: DiagnosticState = DiagnosticState(),
         recorder: SessionDiagnosticRecorder = .shared,
@@ -59,7 +61,12 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
     ) {
         self.pairingStore = pairingStore
         self.routeProbe = routeProbe
-        self.tunnelClient = tunnelClient
+        self.locationCoordinator = locationCoordinator ?? LocationCoordinator(
+            pairingStore: pairingStore,
+            tunnelClient: tunnelClient,
+            endpoint: endpoint,
+            recorder: recorder
+        )
         self.verifier = verifier
         self.diagnostics = diagnostics
         self.recorder = recorder
@@ -195,8 +202,8 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
 
         await diagnostics.start(.tunnelEstablished)
         do {
-            try await tunnelClient.connect(pairingData: pairingData, endpoint: endpoint)
-            let status = await tunnelClient.status()
+            try await locationCoordinator.startSimulation(writerID: staticWriterID, mode: .staticLocation(nil))
+            let status = await locationCoordinator.bridgeStatus()
             await diagnostics.setBridgeState(status.state)
             await diagnostics.succeed(.tunnelEstablished)
             await diagnostics.succeed(.rsdConnected)
@@ -218,7 +225,7 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
 
     public func disconnect() async {
         stopMonitors()
-        await tunnelClient.disconnect()
+        try? await locationCoordinator.disconnect(writerID: staticWriterID)
         backgroundKeeper.end(reason: "disconnect")
         verifier.stop()
         await diagnostics.setBridgeState(.disconnected)
@@ -238,7 +245,12 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
         await recorder.setRequestedCoordinate(latitude: latitude, longitude: longitude)
         await diagnostics.start(.setCommandSent)
         do {
-            try await tunnelClient.set(latitude: latitude, longitude: longitude)
+            try await locationCoordinator.updateLocation(
+                latitude: latitude,
+                longitude: longitude,
+                writerID: staticWriterID,
+                mode: .staticLocation(SimulatedCoordinate(latitude: latitude, longitude: longitude))
+            )
             await diagnostics.succeed(.setCommandSent)
             backgroundKeeper.begin()
             verifier.start(backgroundCapable: true)
@@ -265,7 +277,7 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
     public func clear() async throws {
         await diagnostics.start(.clearCommandSent)
         do {
-            try await tunnelClient.clear()
+            try await locationCoordinator.stopSimulation(writerID: staticWriterID, clearLocation: true)
             await diagnostics.succeed(.clearCommandSent)
             backgroundKeeper.end(reason: "clear simulation")
         } catch let error as POCError {
@@ -406,7 +418,7 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
     }
 
     private func recordBridgeStatus() async {
-        let status = await tunnelClient.status()
+        let status = await locationCoordinator.bridgeStatus()
         await recorder.record(
             category: "TUNNEL",
             component: "DeveloperTunnel",

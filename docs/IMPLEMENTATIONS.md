@@ -5,7 +5,7 @@ IOSSim contains two runtime implementations. They share the product goal of sett
 | Implementation | Runtime Host | Language | DVT Library | Pairing | Current Status |
 | --- | --- | --- | --- | --- | --- |
 | Mac-hosted IOSSim | Mac or Windows host | Python/FastAPI backend + React/TypeScript frontend | pymobiledevice3 | host-side pairing/trust | stable/current |
-| iPhone on-device POC | iPhone | Swift + Rust FFI | pinned jkcoxson/idevice | imported RPPairing stored on iPhone | experimental but physically validated |
+| iPhone on-device POC | iPhone | Swift + Rust FFI | pinned jkcoxson/idevice | imported RPPairing stored on iPhone | static simulation physically validated; basic Drive POC physically demonstrated with cadence/speed/background issues under investigation |
 
 ## Why Both Are Retained
 
@@ -20,3 +20,4 @@ Keeping the implementations separate avoids mixing an experimental mobile FFI pa
 - Mac-hosted IOSSim: repository root launchers, `backend/`, `frontend/`, and [docs/mac-host/README.md](mac-host/README.md).
 - iPhone on-device POC: [../ios](../ios) and [../ios/README.md](../ios/README.md).
 - iPhone research and validation history: [iphone_on_device_dvt/README.md](iphone_on_device_dvt/README.md).
+- Experimental iPhone Drive Mode: [iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md](iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md).

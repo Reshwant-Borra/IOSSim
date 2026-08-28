@@ -8,6 +8,10 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
     public let longitude: Double
     public let horizontalAccuracy: Double
     public let verticalAccuracy: Double
+    public let speed: Double?
+    public let speedAccuracy: Double?
+    public let course: Double?
+    public let courseAccuracy: Double?
     public let locationTimestamp: Date
     public let isSimulatedBySoftware: Bool?
     public let isProducedByAccessory: Bool?
@@ -30,6 +34,18 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
         self.longitude = location.coordinate.longitude
         self.horizontalAccuracy = location.horizontalAccuracy
         self.verticalAccuracy = location.verticalAccuracy
+        self.speed = location.speed >= 0 ? location.speed : nil
+        if #available(iOS 10.0, macOS 10.15, *) {
+            self.speedAccuracy = location.speedAccuracy >= 0 ? location.speedAccuracy : nil
+        } else {
+            self.speedAccuracy = nil
+        }
+        self.course = location.course >= 0 ? location.course : nil
+        if #available(iOS 13.4, macOS 10.15, *) {
+            self.courseAccuracy = location.courseAccuracy >= 0 ? location.courseAccuracy : nil
+        } else {
+            self.courseAccuracy = nil
+        }
         self.locationTimestamp = location.timestamp
         if #available(iOS 15.0, macOS 12.0, *) {
             self.isSimulatedBySoftware = location.sourceInformation?.isSimulatedBySoftware
@@ -68,6 +84,10 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
         longitude: Double,
         horizontalAccuracy: Double,
         verticalAccuracy: Double,
+        speed: Double? = nil,
+        speedAccuracy: Double? = nil,
+        course: Double? = nil,
+        courseAccuracy: Double? = nil,
         locationTimestamp: Date,
         isSimulatedBySoftware: Bool?,
         isProducedByAccessory: Bool?,
@@ -82,6 +102,10 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
         self.longitude = longitude
         self.horizontalAccuracy = horizontalAccuracy
         self.verticalAccuracy = verticalAccuracy
+        self.speed = speed
+        self.speedAccuracy = speedAccuracy
+        self.course = course
+        self.courseAccuracy = courseAccuracy
         self.locationTimestamp = locationTimestamp
         self.isSimulatedBySoftware = isSimulatedBySoftware
         self.isProducedByAccessory = isProducedByAccessory
@@ -121,6 +145,7 @@ public final class CoreLocationVerifier: NSObject, CLLocationManagerDelegate, @u
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = kCLDistanceFilterNone
         #if os(iOS)
+        manager.activityType = .automotiveNavigation
         manager.pausesLocationUpdatesAutomatically = false
         #endif
     }

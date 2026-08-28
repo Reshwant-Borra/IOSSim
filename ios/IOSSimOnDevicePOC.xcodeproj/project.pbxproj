@@ -19,11 +19,21 @@
 		000000000000000000000110 /* RPPairingValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000210 /* RPPairingValidator.swift */; };
 		000000000000000000000111 /* SessionDiagnosticRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000213 /* SessionDiagnosticRecorder.swift */; };
 		000000000000000000000112 /* BackgroundSessionKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000214 /* BackgroundSessionKeeper.swift */; };
+		000000000000000000000113 /* RouteResampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000216 /* RouteResampler.swift */; };
+		000000000000000000000114 /* DriveTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000217 /* DriveTiming.swift */; };
+		000000000000000000000115 /* DriveSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000218 /* DriveSessionController.swift */; };
+		000000000000000000000116 /* LocationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000219 /* LocationCoordinator.swift */; };
+		000000000000000000000117 /* DriveDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000220 /* DriveDiagnostics.swift */; };
+		000000000000000000000118 /* DriveScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000226 /* DriveScheduler.swift */; };
+		000000000000000000000119 /* MapKitRouteProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000227 /* MapKitRouteProvider.swift */; };
+		000000000000000000000120 /* BackgroundManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000228 /* BackgroundManager.swift */; };
+		000000000000000000000126 /* DriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000229 /* DriveView.swift */; };
 		000000000000000000000121 /* Vendor/idevice/lib/libidevice_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000221 /* Vendor/idevice/lib/libidevice_ffi.a */; };
 		000000000000000000000122 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000222 /* CoreLocation.framework */; };
 		000000000000000000000123 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000223 /* Network.framework */; };
 		000000000000000000000124 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000224 /* Security.framework */; };
 		000000000000000000000125 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000225 /* UniformTypeIdentifiers.framework */; };
+		000000000000000000000127 /* MapKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000230 /* MapKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +41,7 @@
 		000000000000000000000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		000000000000000000000203 /* POCViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = POCViewModel.swift; sourceTree = "<group>"; };
 		000000000000000000000215 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		000000000000000000000229 /* DriveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveView.swift; sourceTree = "<group>"; };
 		000000000000000000000204 /* CoreLocationVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLocationVerifier.swift; sourceTree = "<group>"; };
 		000000000000000000000205 /* DeveloperRouteProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperRouteProbe.swift; sourceTree = "<group>"; };
 		000000000000000000000206 /* DiagnosticModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticModels.swift; sourceTree = "<group>"; };
@@ -42,11 +53,20 @@
 		000000000000000000000212 /* idevice_minimal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = idevice_minimal.h; sourceTree = "<group>"; };
 		000000000000000000000213 /* SessionDiagnosticRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDiagnosticRecorder.swift; sourceTree = "<group>"; };
 		000000000000000000000214 /* BackgroundSessionKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSessionKeeper.swift; sourceTree = "<group>"; };
+		000000000000000000000216 /* RouteResampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteResampler.swift; sourceTree = "<group>"; };
+		000000000000000000000217 /* DriveTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveTiming.swift; sourceTree = "<group>"; };
+		000000000000000000000218 /* DriveSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveSessionController.swift; sourceTree = "<group>"; };
+		000000000000000000000219 /* LocationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationCoordinator.swift; sourceTree = "<group>"; };
+		000000000000000000000220 /* DriveDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveDiagnostics.swift; sourceTree = "<group>"; };
+		000000000000000000000226 /* DriveScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveScheduler.swift; sourceTree = "<group>"; };
+		000000000000000000000227 /* MapKitRouteProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapKitRouteProvider.swift; sourceTree = "<group>"; };
+		000000000000000000000228 /* BackgroundManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundManager.swift; sourceTree = "<group>"; };
 		000000000000000000000221 /* Vendor/idevice/lib/libidevice_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = Vendor/idevice/lib/libidevice_ffi.a; sourceTree = "<group>"; };
 		000000000000000000000222 /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
 		000000000000000000000223 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 		000000000000000000000224 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		000000000000000000000225 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
+		000000000000000000000230 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
 		000000000000000000000231 /* IOSSim DVT POC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "IOSSim DVT POC.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -60,6 +80,7 @@
 				000000000000000000000123 /* Network.framework in Frameworks */,
 				000000000000000000000124 /* Security.framework in Frameworks */,
 				000000000000000000000125 /* UniformTypeIdentifiers.framework in Frameworks */,
+				000000000000000000000127 /* MapKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -82,6 +103,7 @@
 			children = (
 				000000000000000000000201 /* IOSSimOnDeviceDVTPOCApp.swift */,
 				000000000000000000000202 /* ContentView.swift */,
+				000000000000000000000229 /* DriveView.swift */,
 				000000000000000000000203 /* POCViewModel.swift */,
 				000000000000000000000215 /* Info.plist */,
 			);
@@ -111,6 +133,7 @@
 				000000000000000000000223 /* Network.framework */,
 				000000000000000000000224 /* Security.framework */,
 				000000000000000000000225 /* UniformTypeIdentifiers.framework */,
+				000000000000000000000230 /* MapKit.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -128,12 +151,20 @@
 			children = (
 				000000000000000000000204 /* CoreLocationVerifier.swift */,
 				000000000000000000000214 /* BackgroundSessionKeeper.swift */,
+				000000000000000000000228 /* BackgroundManager.swift */,
 				000000000000000000000205 /* DeveloperRouteProbe.swift */,
 				000000000000000000000206 /* DiagnosticModels.swift */,
+				000000000000000000000220 /* DriveDiagnostics.swift */,
+				000000000000000000000226 /* DriveScheduler.swift */,
+				000000000000000000000218 /* DriveSessionController.swift */,
+				000000000000000000000217 /* DriveTiming.swift */,
 				000000000000000000000207 /* DvtLocationClient.swift */,
 				000000000000000000000208 /* ExperimentRunner.swift */,
+				000000000000000000000219 /* LocationCoordinator.swift */,
+				000000000000000000000227 /* MapKitRouteProvider.swift */,
 				000000000000000000000209 /* PairingStore.swift */,
 				000000000000000000000210 /* RPPairingValidator.swift */,
+				000000000000000000000216 /* RouteResampler.swift */,
 				000000000000000000000213 /* SessionDiagnosticRecorder.swift */,
 			);
 			path = IOSSimOnDeviceDVTPOC;
@@ -237,6 +268,15 @@
 				000000000000000000000110 /* RPPairingValidator.swift in Sources */,
 				000000000000000000000111 /* SessionDiagnosticRecorder.swift in Sources */,
 				000000000000000000000112 /* BackgroundSessionKeeper.swift in Sources */,
+				000000000000000000000113 /* RouteResampler.swift in Sources */,
+				000000000000000000000114 /* DriveTiming.swift in Sources */,
+				000000000000000000000115 /* DriveSessionController.swift in Sources */,
+				000000000000000000000116 /* LocationCoordinator.swift in Sources */,
+				000000000000000000000117 /* DriveDiagnostics.swift in Sources */,
+				000000000000000000000118 /* DriveScheduler.swift in Sources */,
+				000000000000000000000119 /* MapKitRouteProvider.swift in Sources */,
+				000000000000000000000120 /* BackgroundManager.swift in Sources */,
+				000000000000000000000126 /* DriveView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

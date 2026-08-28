@@ -20,8 +20,8 @@ final class POCViewModel: ObservableObject {
     @Published var timeline: [String] = []
     @Published var exportURLs: [URL] = []
 
-    private let store = KeychainRPPairingStore()
-    private lazy var runner = OnDeviceDVTExperimentRunner(pairingStore: store)
+    private let store = POCAppDependencies.store
+    private let runner = POCAppDependencies.runner
     private var refreshLoopStarted = false
     private var memoryWarningObserver: NSObjectProtocol?
 

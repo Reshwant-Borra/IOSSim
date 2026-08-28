@@ -10,7 +10,7 @@ Runtime target:
 Mac once -> imported RPPairing -> Mac off -> LocalDevVPN route -> raw RPPairing tunnel -> RSD/DVT -> LocationSimulation
 ```
 
-It intentionally does not implement IOSSim product UI, maps, Drive, GPX import, account features, a custom VPN, WLOC, or remote Mac control.
+It intentionally does not implement IOSSim product UI, GPX import, account features, a custom VPN, WLOC, or remote Mac control. It now includes an isolated experimental Drive Mode for developer testing, while preserving the existing static on-device DVT location simulation flow.
 
 Canonical architecture and validation status live in [../docs/iphone_on_device_dvt/ARCHITECTURE.md](../docs/iphone_on_device_dvt/ARCHITECTURE.md). Historical research remains in [../docs/iphone_on_device_dvt/README.md](../docs/iphone_on_device_dvt/README.md).
 
