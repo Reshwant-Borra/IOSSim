@@ -11,6 +11,7 @@ public final class DriveBackgroundManager: @unchecked Sendable {
     private let lock = NSLock()
     private var lifecycleState = "foreground"
     private var active = false
+    private var diagnostics: DriveDiagnostics?
 
     #if os(iOS)
     @available(iOS 17.0, *)
@@ -22,10 +23,17 @@ public final class DriveBackgroundManager: @unchecked Sendable {
         self.keeper = keeper ?? BackgroundSessionKeeper(recorder: recorder)
     }
 
+    public func setDiagnostics(_ diagnostics: DriveDiagnostics?) {
+        lock.lock()
+        self.diagnostics = diagnostics
+        lock.unlock()
+    }
+
     public func begin() {
         lock.lock()
         let alreadyActive = active
         active = true
+        let diagnostics = diagnostics
         lock.unlock()
         guard !alreadyActive else { return }
 
@@ -33,9 +41,13 @@ public final class DriveBackgroundManager: @unchecked Sendable {
         #if os(iOS)
         if #available(iOS 17.0, *) {
             backgroundActivitySession = CLBackgroundActivitySession()
+            Task {
+                await diagnostics?.recordBackgroundEvent("background_activity_session_created")
+            }
         }
         #endif
         Task {
+            await diagnostics?.recordBackgroundEvent("background_task_started", metadata: verifierConfigurationMetadata())
             await recorder.record(
                 category: "LIFECYCLE",
                 component: "DriveBackground",
@@ -50,6 +62,7 @@ public final class DriveBackgroundManager: @unchecked Sendable {
         lock.lock()
         let wasActive = active
         active = false
+        let diagnostics = diagnostics
         lock.unlock()
         guard wasActive else { return }
 
@@ -57,10 +70,14 @@ public final class DriveBackgroundManager: @unchecked Sendable {
         if #available(iOS 17.0, *) {
             backgroundActivitySession?.invalidate()
             backgroundActivitySession = nil
+            Task {
+                await diagnostics?.recordBackgroundEvent("background_activity_session_destroyed")
+            }
         }
         #endif
         keeper.end(reason: reason)
         Task {
+            await diagnostics?.recordBackgroundEvent("background_task_ended", metadata: ["reason": reason])
             await recorder.record(
                 category: "LIFECYCLE",
                 component: "DriveBackground",
@@ -74,8 +91,16 @@ public final class DriveBackgroundManager: @unchecked Sendable {
     public func recordLifecycle(_ state: String) {
         lock.lock()
         lifecycleState = state
+        let active = active
+        let diagnostics = diagnostics
         lock.unlock()
         Task {
+            await diagnostics?.recordLifecycle(
+                state,
+                schedulerState: active ? "active" : "inactive",
+                backgroundSessionActive: active,
+                connectionGeneration: 0
+            )
             await recorder.record(
                 category: "APP_LIFECYCLE",
                 component: "DriveBackground",
@@ -97,5 +122,16 @@ public final class DriveBackgroundManager: @unchecked Sendable {
         defer { lock.unlock() }
         return active
     }
-}
 
+    private func verifierConfigurationMetadata() -> [String: String] {
+        #if os(iOS)
+        return [
+            "allows_background_location_updates": "true",
+            "pauses_location_updates_automatically": "false",
+            "activity_type": "automotiveNavigation"
+        ]
+        #else
+        return [:]
+        #endif
+    }
+}

@@ -15,6 +15,10 @@ public final class DriveScheduler: @unchecked Sendable {
     private var task: Task<Void, Never>?
     private var sequenceNumber = 0
     private var tickNumber = 0
+    private var firstTickClockTime: TimeInterval?
+    private var previousActualTickOffset: TimeInterval?
+    private var previousExpectedDistanceForDiagnostics: CLLocationDistance?
+    private var previousExpectedCoordinateForDiagnostics: CLLocationCoordinate2D?
 
     public init(
         controller: DriveSessionController,
@@ -101,28 +105,84 @@ public final class DriveScheduler: @unchecked Sendable {
         sequenceNumber += 1
         tickNumber += 1
         let coordinate = position.coordinate
+        let lifecycleState = lifecycleProvider()
+        let generation = await locationCoordinator.currentConnectionGeneration()
+        let start = firstTickClockTime ?? now
+        firstTickClockTime = start
+        let actualTickOffset = max(0, now - start)
+        let expectedTickOffset = Double(max(0, tickNumber - 1)) * cadenceSeconds
+        let previousActualOffset = previousActualTickOffset
+        let previousExpectedDistance = previousExpectedDistanceForDiagnostics
+        let previousExpectedCoordinate = previousExpectedCoordinateForDiagnostics
+        let tickTraceID = "\(controller.sessionID.uuidString):tick:\(tickNumber)"
+        let snapshot = controller.snapshot(now: now)
+        let requestTime = ProcessInfo.processInfo.systemUptime
+        let traceContext = DriveTraceContext(
+            tickTraceID: tickTraceID,
+            driveSessionID: controller.sessionID.uuidString,
+            tickSequence: tickNumber,
+            requestSequence: sequenceNumber,
+            updateRequestMonotonicTime: requestTime,
+            expectedRouteDistanceMeters: position.expectedDistanceMeters,
+            previousExpectedRouteDistanceMeters: previousExpectedDistance,
+            expectedCoordinate: coordinate,
+            selectedSpeedMetersPerSecond: snapshot.speedMetersPerSecond,
+            lifecycleState: lifecycleState
+        )
+        await diagnostics.recordSchedulerTick(
+            tickTraceID: tickTraceID,
+            tickSequence: tickNumber,
+            monotonicTimestamp: requestTime,
+            expectedTickOffset: expectedTickOffset,
+            actualTickOffset: actualTickOffset,
+            previousActualTickOffset: previousActualOffset,
+            activeElapsedSeconds: position.activeElapsedSeconds,
+            expectedRouteDistanceMeters: position.expectedDistanceMeters,
+            previousExpectedRouteDistanceMeters: previousExpectedDistance,
+            selectedSpeedMetersPerSecond: snapshot.speedMetersPerSecond,
+            expectedCoordinate: coordinate,
+            previousExpectedCoordinate: previousExpectedCoordinate,
+            lifecycleState: lifecycleState,
+            connectionGeneration: generation,
+            targetIntervalSeconds: cadenceSeconds
+        )
+        await diagnostics.recordCoordinatorUpdateRequested(
+            context: traceContext,
+            writerID: controller.writerID,
+            connectionGeneration: generation
+        )
         do {
             try await locationCoordinator.updateLocation(
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude,
                 writerID: controller.writerID,
-                mode: .drive(sessionID: controller.sessionID, current: SimulatedCoordinate(coordinate))
+                mode: .drive(sessionID: controller.sessionID, current: SimulatedCoordinate(coordinate)),
+                traceContext: traceContext,
+                driveDiagnostics: diagnostics
             )
-            let generation = await locationCoordinator.currentConnectionGeneration()
-            let snapshot = controller.snapshot(now: now)
+            let updatedGeneration = await locationCoordinator.currentConnectionGeneration()
             await diagnostics.recordRequestedUpdate(
                 sequenceNumber: sequenceNumber,
                 tickNumber: tickNumber,
                 monotonicElapsedTime: position.activeElapsedSeconds,
-                connectionGeneration: generation,
+                connectionGeneration: updatedGeneration,
                 expectedRouteDistanceMeters: position.expectedDistanceMeters,
                 expectedCoordinate: coordinate,
                 requestedCoordinate: coordinate,
                 calculatedRouteSpeedMetersPerSecond: snapshot.speedMetersPerSecond,
                 observed: observedProvider(),
-                applicationLifecycleState: lifecycleProvider(),
-                backgroundSessionActive: backgroundActiveProvider()
+                applicationLifecycleState: lifecycleState,
+                backgroundSessionActive: backgroundActiveProvider(),
+                tickTraceID: tickTraceID
             )
+            await diagnostics.recordHeartbeat(
+                expectedRouteDistance: position.expectedDistanceMeters,
+                lifecycleState: lifecycleState,
+                connectionGeneration: updatedGeneration
+            )
+            previousActualTickOffset = actualTickOffset
+            previousExpectedDistanceForDiagnostics = position.expectedDistanceMeters
+            previousExpectedCoordinateForDiagnostics = coordinate
         } catch {
             await diagnostics.recordState(
                 "update_failed",

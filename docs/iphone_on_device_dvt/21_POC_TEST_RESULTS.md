@@ -116,6 +116,26 @@ Preserved invariants:
 - Route completion uses `completedHolding`.
 - Stop/Clear is explicit.
 
+## Drive Characterization Diagnostics
+
+Phase 2 instrumentation has been added after the first physical Drive pass to measure D1, D2, and D3 without speculative behavior changes.
+
+The diagnostics now record separate timestamps for scheduler wake, coordinate calculation/update request, `LocationCoordinator` actor entry, DVT set begin/end, Core Location callback receive time, and lifecycle transitions. Each Drive tick carries a `tickTraceID` through scheduler, coordinator, DVT, and Core Location records where matching is possible.
+
+Key fields for the next physical tests:
+
+- scheduler interval and wake jitter;
+- route distance delta and effective scheduler speed;
+- actor queue delay;
+- DVT set-call duration;
+- Core Location propagation latency;
+- `CLLocation.speed`, `speedAccuracy`, `course`, and `courseAccuracy`;
+- selected IOSSim speed versus requested and observed geometric speed;
+- foreground/background/locked lifecycle state;
+- stall, burst, snap-back, stale-writer, and stale-generation events.
+
+These logs are intended to answer whether the observed pauses occur in the scheduler, the coordinator actor, native DVT set calls, Core Location observation delivery, lifecycle/background execution, or a later consumer. No Drive smoothness or speed-display fix has been claimed.
+
 ## Automated Software Checks
 
 STATUS: CONFIRMED

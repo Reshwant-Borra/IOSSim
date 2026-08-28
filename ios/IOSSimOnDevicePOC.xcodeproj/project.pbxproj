@@ -28,6 +28,7 @@
 		000000000000000000000119 /* MapKitRouteProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000227 /* MapKitRouteProvider.swift */; };
 		000000000000000000000120 /* BackgroundManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000228 /* BackgroundManager.swift */; };
 		000000000000000000000126 /* DriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000229 /* DriveView.swift */; };
+		000000000000000000000128 /* DriveTraceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000232 /* DriveTraceModels.swift */; };
 		000000000000000000000121 /* Vendor/idevice/lib/libidevice_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000221 /* Vendor/idevice/lib/libidevice_ffi.a */; };
 		000000000000000000000122 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000222 /* CoreLocation.framework */; };
 		000000000000000000000123 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000223 /* Network.framework */; };
@@ -58,6 +59,7 @@
 		000000000000000000000218 /* DriveSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveSessionController.swift; sourceTree = "<group>"; };
 		000000000000000000000219 /* LocationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationCoordinator.swift; sourceTree = "<group>"; };
 		000000000000000000000220 /* DriveDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveDiagnostics.swift; sourceTree = "<group>"; };
+		000000000000000000000232 /* DriveTraceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveTraceModels.swift; sourceTree = "<group>"; };
 		000000000000000000000226 /* DriveScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveScheduler.swift; sourceTree = "<group>"; };
 		000000000000000000000227 /* MapKitRouteProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapKitRouteProvider.swift; sourceTree = "<group>"; };
 		000000000000000000000228 /* BackgroundManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundManager.swift; sourceTree = "<group>"; };
@@ -158,6 +160,7 @@
 				000000000000000000000226 /* DriveScheduler.swift */,
 				000000000000000000000218 /* DriveSessionController.swift */,
 				000000000000000000000217 /* DriveTiming.swift */,
+				000000000000000000000232 /* DriveTraceModels.swift */,
 				000000000000000000000207 /* DvtLocationClient.swift */,
 				000000000000000000000208 /* ExperimentRunner.swift */,
 				000000000000000000000219 /* LocationCoordinator.swift */,
@@ -277,6 +280,7 @@
 				000000000000000000000119 /* MapKitRouteProvider.swift in Sources */,
 				000000000000000000000120 /* BackgroundManager.swift in Sources */,
 				000000000000000000000126 /* DriveView.swift in Sources */,
+				000000000000000000000128 /* DriveTraceModels.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
