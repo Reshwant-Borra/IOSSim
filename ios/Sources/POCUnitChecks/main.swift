@@ -29,6 +29,9 @@ struct POCUnitChecks {
         try await stopPreventsDelayedWrites()
         try routeDistanceClamping()
         try await driveDiagnosticsSerialize()
+        try driveTraceMetricCalculations()
+        try await driveDiagnosticsTraceSerializationAndSummary()
+        try await driveDiagnosticsDetectorEvents()
         print("POCUnitChecks passed")
     }
 
@@ -252,7 +255,9 @@ struct POCUnitChecks {
     static func staleWriterCannotSendAfterOwnershipChanges() async throws {
         let tunnel = MockTunnelClient()
         let store = InMemoryRPPairingStore(data: try makePairingPlist())
-        let coordinator = LocationCoordinator(pairingStore: store, tunnelClient: tunnel, recorder: testRecorder())
+        let recorder = testRecorder()
+        _ = await recorder.startSession(prefix: "UNIT")
+        let coordinator = LocationCoordinator(pairingStore: store, tunnelClient: tunnel, recorder: recorder)
         try await coordinator.startSimulation(writerID: "static:old", mode: .staticLocation(nil))
         try await coordinator.startSimulation(writerID: "drive:new", mode: .drive(sessionID: UUID(), current: nil))
         do {
@@ -263,14 +268,21 @@ struct POCUnitChecks {
         }
         let count = await tunnel.setCount()
         try require(count == 0, "stale writer did not issue native set")
+        let urls = await recorder.exportURLs()
+        let jsonl = try requireValue(urls.first(where: { $0.pathExtension == "jsonl" }), "stale writer jsonl")
+        let text = try String(contentsOf: jsonl, encoding: .utf8)
+        try require(text.contains("SIMULATION_OWNER_CHANGED"), "owner change serialized")
+        try require(text.contains("STALE_WRITER_UPDATE_IGNORED"), "stale writer event serialized")
     }
 
     static func staleGenerationCallbackCannotAffectCurrentConnection() async throws {
         let tunnel = MockTunnelClient()
+        let recorder = testRecorder()
+        _ = await recorder.startSession(prefix: "UNIT")
         let coordinator = LocationCoordinator(
             pairingStore: InMemoryRPPairingStore(data: try makePairingPlist()),
             tunnelClient: tunnel,
-            recorder: testRecorder()
+            recorder: recorder
         )
         try await coordinator.startSimulation(writerID: "drive:1", mode: .drive(sessionID: UUID(), current: nil))
         let firstGeneration = await coordinator.currentConnectionGeneration()
@@ -283,6 +295,10 @@ struct POCUnitChecks {
         let currentState = await coordinator.currentConnectionState()
         try require(currentGeneration == secondGeneration, "stale generation ignored")
         try require(currentState == .connected, "current connection remains connected")
+        let urls = await recorder.exportURLs()
+        let jsonl = try requireValue(urls.first(where: { $0.pathExtension == "jsonl" }), "stale generation jsonl")
+        let text = try String(contentsOf: jsonl, encoding: .utf8)
+        try require(text.contains("STALE_GENERATION_EVENT_IGNORED"), "stale generation event serialized")
     }
 
     static func reconnectRestoresCurrentDrivePosition() async throws {
@@ -375,6 +391,223 @@ struct POCUnitChecks {
         try require(text.contains("DRIVE_LOCATION_UPDATE"), "drive event serialized")
         try require(text.contains("connection_generation"), "generation serialized")
         try require(text.contains("cllocation_speed_mps"), "speed serialized")
+    }
+
+    static func driveTraceMetricCalculations() throws {
+        try require(DriveTraceMetrics.schedulerWakeJitterMs(expectedWake: 1, actualWake: 1.25) == 250, "scheduler jitter calculated")
+        let stats = DriveTraceMetrics.timingStatistics(milliseconds: [100, 200, 300, 400])
+        try require(stats.count == 4, "statistics count")
+        try require(stats.meanMs == 250, "statistics mean")
+        try require(stats.medianMs == 250, "statistics median")
+        try require(abs((stats.p95Ms ?? 0) - 385) < 0.01, "statistics p95")
+        try require(DriveTraceMetrics.durationMs(begin: 10, end: 10.25) == 250, "DVT latency duration")
+        try require(abs(DriveTraceMetrics.durationMs(begin: 20, end: 20.4) - 400) < 0.01, "Core Location propagation duration")
+        try require(DriveTraceMetrics.validCLLocationSpeed(12), "valid speed accepted")
+        try require(!DriveTraceMetrics.validCLLocationSpeed(-1), "invalid speed rejected")
+        try require(DriveTraceMetrics.speedMetersPerSecond(distanceDeltaMeters: 30, elapsedSeconds: 3) == 10, "geometric speed")
+        let bearing = try requireValue(DriveTraceMetrics.bearingDegrees(
+            from: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            to: CLLocationCoordinate2D(latitude: 0, longitude: 1)
+        ), "bearing")
+        try require(abs(bearing - 90) < 0.01, "bearing east")
+        try require(DriveTraceMetrics.isSchedulerStall(intervalMs: 2600, targetIntervalMs: 1000), "scheduler stall detected")
+        try require(DriveTraceMetrics.isDVTSetStall(durationMs: 1000), "DVT stall detected")
+        try require(DriveTraceMetrics.isCoreLocationObservationStall(intervalMs: 4000), "CL stall detected")
+        try require(DriveTraceMetrics.isBurstyProgress(
+            actualDistanceDelta: 90,
+            expectedDistanceDelta: 20,
+            previousTickIntervalMs: 3000,
+            targetIntervalMs: 1000
+        ), "bursty progress detected")
+    }
+
+    static func driveDiagnosticsTraceSerializationAndSummary() async throws {
+        let recorder = testRecorder()
+        let diagnostics = DriveDiagnostics(recorder: recorder, sampleLimit: 3)
+        let route = try testRoute()
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
+        await diagnostics.start(sessionID: sessionID, writerID: "drive:trace", route: route, selectedSpeedMps: 10)
+        for tick in 1...5 {
+            let actualOffset = Double(tick - 1)
+            let coordinate = route.coordinate(atDistance: Double(tick) * 10)
+            await diagnostics.recordSchedulerTick(
+                tickTraceID: "trace-\(tick)",
+                tickSequence: tick,
+                monotonicTimestamp: actualOffset,
+                expectedTickOffset: actualOffset,
+                actualTickOffset: actualOffset,
+                previousActualTickOffset: tick == 1 ? nil : Double(tick - 2),
+                activeElapsedSeconds: actualOffset,
+                expectedRouteDistanceMeters: Double(tick) * 10,
+                previousExpectedRouteDistanceMeters: tick == 1 ? nil : Double(tick - 1) * 10,
+                selectedSpeedMetersPerSecond: 10,
+                expectedCoordinate: coordinate,
+                previousExpectedCoordinate: tick == 1 ? nil : route.coordinate(atDistance: Double(tick - 1) * 10),
+                lifecycleState: tick < 4 ? "foreground" : "background",
+                connectionGeneration: 2,
+                targetIntervalSeconds: 1
+            )
+        }
+        let context = DriveTraceContext(
+            tickTraceID: "trace-5",
+            driveSessionID: sessionID.uuidString,
+            tickSequence: 5,
+            requestSequence: 5,
+            updateRequestMonotonicTime: 100,
+            expectedRouteDistanceMeters: 50,
+            previousExpectedRouteDistanceMeters: 40,
+            expectedCoordinate: route.coordinate(atDistance: 50),
+            selectedSpeedMetersPerSecond: 10,
+            lifecycleState: "background"
+        )
+        await diagnostics.recordCoordinatorUpdateRequested(context: context, writerID: "drive:trace", connectionGeneration: 2)
+        await diagnostics.recordCoordinatorUpdateEntered(context: context, writerID: "drive:trace", connectionGeneration: 2, enteredMonotonicTime: 100.02)
+        await diagnostics.recordDVTSetBegin(context: context, writerID: "drive:trace", connectionGeneration: 2, beginMonotonicTime: 100.03)
+        await diagnostics.recordDVTSetEnd(
+            context: context,
+            writerID: "drive:trace",
+            connectionGeneration: 2,
+            beginMonotonicTime: 100.03,
+            endMonotonicTime: 100.04,
+            success: true,
+            nativeErrorCategory: nil
+        )
+        await diagnostics.recordObservation(
+            LocationObservation(
+                latitude: route.coordinate(atDistance: 50).latitude,
+                longitude: route.coordinate(atDistance: 50).longitude,
+                horizontalAccuracy: 5,
+                verticalAccuracy: 6,
+                altitude: 11,
+                speed: 9.5,
+                speedAccuracy: 1,
+                course: 89,
+                courseAccuracy: 2,
+                locationTimestamp: Date(),
+                isSimulatedBySoftware: true,
+                isProducedByAccessory: false
+            ),
+            applicationLifecycleState: "background",
+            backgroundSessionActive: true,
+            connectionGeneration: 2
+        )
+        let summary = await diagnostics.finalizeSummary()
+        try require(summary.totalSchedulerTicks == 5, "summary counts scheduler ticks even with bounded samples")
+        try require(summary.totalDVTSetCalls == 1, "summary counts DVT calls")
+        try require(summary.totalObservedCLLocations == 1, "summary counts observations")
+        try require(summary.schedulerIntervals.count == 3, "bounded scheduler interval sample")
+        try require(summary.foregroundSchedulerIntervals.count > 0, "foreground segmentation")
+        try require(summary.backgroundSchedulerIntervals.count > 0, "background segmentation")
+        try require(summary.percentageOfCLLocationsWithValidSpeed == 100, "valid CLLocation.speed percentage")
+        let urls = await diagnostics.exportURLs()
+        let jsonl = try requireValue(urls.first(where: { $0.pathExtension == "jsonl" }), "trace jsonl")
+        let text = try String(contentsOf: jsonl, encoding: .utf8)
+        try require(text.contains("SCHEDULER_TICK"), "scheduler tick serialized")
+        try require(text.contains("COORDINATOR_UPDATE_REQUESTED"), "coordinator request serialized")
+        try require(text.contains("COORDINATOR_UPDATE_ENTERED"), "coordinator entry serialized")
+        try require(text.contains("DVT_SET_BEGIN"), "DVT begin serialized")
+        try require(text.contains("DVT_SET_END"), "DVT end serialized")
+        try require(text.contains("CLLOCATION_OBSERVED"), "CL observation serialized")
+        try require(text.contains("DRIVE_CHARACTERIZATION_SUMMARY"), "summary serialized")
+        try require(text.contains("trace-5"), "trace ID propagated")
+        try require(text.contains("corelocation_propagation_latency_ms"), "propagation latency field serialized")
+    }
+
+    static func driveDiagnosticsDetectorEvents() async throws {
+        let recorder = testRecorder()
+        let diagnostics = DriveDiagnostics(recorder: recorder)
+        let route = try testRoute()
+        let sessionID = UUID(uuidString: "00000000-0000-0000-0000-0000000000B2")!
+        await diagnostics.start(sessionID: sessionID, writerID: "drive:detectors", route: route, selectedSpeedMps: 10)
+        await diagnostics.recordSchedulerTick(
+            tickTraceID: "trace-stall",
+            tickSequence: 2,
+            monotonicTimestamp: 3,
+            expectedTickOffset: 1,
+            actualTickOffset: 3,
+            previousActualTickOffset: 0,
+            activeElapsedSeconds: 3,
+            expectedRouteDistanceMeters: 80,
+            previousExpectedRouteDistanceMeters: 10,
+            selectedSpeedMetersPerSecond: 10,
+            expectedCoordinate: route.coordinate(atDistance: 80),
+            previousExpectedCoordinate: route.coordinate(atDistance: 10),
+            lifecycleState: "background",
+            connectionGeneration: 4,
+            targetIntervalSeconds: 1
+        )
+        let context = DriveTraceContext(
+            tickTraceID: "trace-stale",
+            driveSessionID: sessionID.uuidString,
+            tickSequence: 3,
+            requestSequence: 3,
+            updateRequestMonotonicTime: 5,
+            expectedRouteDistanceMeters: 100,
+            previousExpectedRouteDistanceMeters: 80,
+            expectedCoordinate: route.coordinate(atDistance: 100),
+            selectedSpeedMetersPerSecond: 10,
+            lifecycleState: "foreground"
+        )
+        await diagnostics.recordCoordinatorUpdateRequested(context: context, writerID: "drive:detectors", connectionGeneration: 4)
+        await diagnostics.recordDVTSetBegin(context: context, writerID: "drive:detectors", connectionGeneration: 4, beginMonotonicTime: 5)
+        await diagnostics.recordDVTSetEnd(
+            context: context,
+            writerID: "drive:detectors",
+            connectionGeneration: 4,
+            beginMonotonicTime: 5,
+            endMonotonicTime: 6,
+            success: true,
+            nativeErrorCategory: nil
+        )
+        await diagnostics.recordObservation(
+            LocationObservation(
+                latitude: route.coordinate(atDistance: 120).latitude,
+                longitude: route.coordinate(atDistance: 120).longitude,
+                horizontalAccuracy: 5,
+                verticalAccuracy: 5,
+                speed: nil,
+                speedAccuracy: nil,
+                course: nil,
+                courseAccuracy: nil,
+                locationTimestamp: Date(),
+                isSimulatedBySoftware: true,
+                isProducedByAccessory: false
+            ),
+            applicationLifecycleState: "foreground",
+            backgroundSessionActive: false,
+            connectionGeneration: 4
+        )
+        await diagnostics.recordObservation(
+            LocationObservation(
+                latitude: route.coordinate(atDistance: 10).latitude,
+                longitude: route.coordinate(atDistance: 10).longitude,
+                horizontalAccuracy: 5,
+                verticalAccuracy: 5,
+                speed: nil,
+                speedAccuracy: nil,
+                course: nil,
+                courseAccuracy: nil,
+                locationTimestamp: Date(),
+                isSimulatedBySoftware: true,
+                isProducedByAccessory: false
+            ),
+            applicationLifecycleState: "foreground",
+            backgroundSessionActive: false,
+            connectionGeneration: 4
+        )
+        let summary = await diagnostics.finalizeSummary()
+        try require(summary.schedulerStallCount == 1, "scheduler stall counted")
+        try require(summary.dvtSetStallCount == 1, "DVT stall counted")
+        try require(summary.burstyProgressCount == 1, "burst counted")
+        try require(summary.snapBackCount == 1, "snap-back counted")
+        let urls = await diagnostics.exportURLs()
+        let jsonl = try requireValue(urls.first(where: { $0.pathExtension == "jsonl" }), "detector jsonl")
+        let text = try String(contentsOf: jsonl, encoding: .utf8)
+        try require(text.contains("SCHEDULER_STALL"), "scheduler stall serialized")
+        try require(text.contains("DVT_SET_STALL"), "DVT stall serialized")
+        try require(text.contains("BURSTY_PROGRESS"), "burst serialized")
+        try require(text.contains("POSSIBLE_SNAP_BACK"), "snap-back serialized")
+        try require(text.contains("tick_trace_id"), "snap-back enrichment includes trace field")
     }
 
     static func makePairingPlist(identifier: String = "12345678-1234-1234-1234-123456789abc", omit: String? = nil) throws -> Data {

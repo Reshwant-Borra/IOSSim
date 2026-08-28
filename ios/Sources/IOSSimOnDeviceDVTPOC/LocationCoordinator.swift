@@ -72,16 +72,21 @@ public actor LocationCoordinator {
     }
 
     public func startSimulation(writerID: String, mode requestedMode: SimulationMode) async throws {
+        let previousWriterID = activeWriterID
         activeWriterID = writerID
         mode = requestedMode
         desiredCoordinate = requestedMode.coordinate ?? desiredCoordinate
         await recorder.record(
-            category: "WRITER",
+            category: "SIMULATION_OWNER_CHANGED",
             component: "LocationCoordinator",
-            previousState: nil,
+            previousState: previousWriterID ?? "none",
             newState: "claimed",
             message: "simulation writer claimed",
-            metadata: writerMetadata(writerID: writerID)
+            metadata: writerMetadata(writerID: writerID).merging([
+                "old_writer_id": previousWriterID ?? "none",
+                "new_writer_id": writerID,
+                "reason": "start_simulation"
+            ]) { _, new in new }
         )
         try await ensureConnected(reconnecting: false)
     }
@@ -90,8 +95,19 @@ public actor LocationCoordinator {
         latitude: Double,
         longitude: Double,
         writerID: String,
-        mode requestedMode: SimulationMode? = nil
+        mode requestedMode: SimulationMode? = nil,
+        traceContext: DriveTraceContext? = nil,
+        driveDiagnostics: DriveDiagnostics? = nil
     ) async throws {
+        let actorEntryTime = ProcessInfo.processInfo.systemUptime
+        if let traceContext, let driveDiagnostics {
+            await driveDiagnostics.recordCoordinatorUpdateEntered(
+                context: traceContext,
+                writerID: writerID,
+                connectionGeneration: connectionGeneration,
+                enteredMonotonicTime: actorEntryTime
+            )
+        }
         guard writerID == activeWriterID else {
             await recordStaleWriter(writerID)
             throw POCError(.staleWriter, "Ignoring stale writer \(writerID).")
@@ -108,7 +124,42 @@ public actor LocationCoordinator {
             await recordStaleWriter(writerID)
             throw POCError(.staleWriter, "Ignoring stale writer \(writerID).")
         }
-        try await tunnelClient.set(latitude: latitude, longitude: longitude)
+        let dvtSetBegin = ProcessInfo.processInfo.systemUptime
+        if let driveDiagnostics {
+            await driveDiagnostics.recordDVTSetBegin(
+                context: traceContext,
+                writerID: writerID,
+                connectionGeneration: connectionGeneration,
+                beginMonotonicTime: dvtSetBegin
+            )
+        }
+        do {
+            try await tunnelClient.set(latitude: latitude, longitude: longitude)
+            if let driveDiagnostics {
+                await driveDiagnostics.recordDVTSetEnd(
+                    context: traceContext,
+                    writerID: writerID,
+                    connectionGeneration: connectionGeneration,
+                    beginMonotonicTime: dvtSetBegin,
+                    endMonotonicTime: ProcessInfo.processInfo.systemUptime,
+                    success: true,
+                    nativeErrorCategory: nil
+                )
+            }
+        } catch {
+            if let driveDiagnostics {
+                await driveDiagnostics.recordDVTSetEnd(
+                    context: traceContext,
+                    writerID: writerID,
+                    connectionGeneration: connectionGeneration,
+                    beginMonotonicTime: dvtSetBegin,
+                    endMonotonicTime: ProcessInfo.processInfo.systemUptime,
+                    success: false,
+                    nativeErrorCategory: (error as? POCError)?.code.rawValue ?? "unknown"
+                )
+            }
+            throw error
+        }
         await recorder.record(
             category: "LOCATION_SET",
             component: "LocationCoordinator",
@@ -180,13 +231,26 @@ public actor LocationCoordinator {
         guard let reconnectWriterID = activeWriterID else { return }
         guard reconnectTaskGeneration != connectionGeneration else { return }
         reconnectTaskGeneration = connectionGeneration
+        let reconnectBegin = ProcessInfo.processInfo.systemUptime
         await recorder.record(
-            category: "RECONNECT",
+            category: "RECONNECT_TRIGGER",
+            component: "LocationCoordinator",
+            previousState: connectionState.rawValue,
+            newState: "triggered",
+            message: "reconnect triggered",
+            metadata: ["connection_generation": "\(connectionGeneration)", "writer_id": reconnectWriterID]
+        )
+        await recorder.record(
+            category: "RECONNECT_BEGIN",
             component: "LocationCoordinator",
             previousState: connectionState.rawValue,
             newState: "started",
             message: "reconnect started",
-            metadata: ["connection_generation": "\(connectionGeneration)"]
+            metadata: [
+                "connection_generation": "\(connectionGeneration)",
+                "writer_id": reconnectWriterID,
+                "monotonic_timestamp": String(format: "%.3f", reconnectBegin)
+            ]
         )
 
         await tunnelClient.disconnect()
@@ -219,6 +283,19 @@ public actor LocationCoordinator {
                 return
             }
             if let coordinate = await currentRestoreCoordinate() {
+                await recorder.record(
+                    category: "CURRENT_POSITION_CALCULATED",
+                    component: "LocationCoordinator",
+                    previousState: nil,
+                    newState: "calculated",
+                    message: "current restore position calculated",
+                    metadata: [
+                        "connection_generation": "\(connectionGeneration)",
+                        "writer_id": reconnectWriterID,
+                        "latitude": String(format: "%.6f", coordinate.latitude),
+                        "longitude": String(format: "%.6f", coordinate.longitude)
+                    ]
+                )
                 guard activeWriterID == reconnectWriterID else {
                     reconnectTaskGeneration = nil
                     return
@@ -226,7 +303,7 @@ public actor LocationCoordinator {
                 desiredCoordinate = coordinate
                 try await tunnelClient.set(latitude: coordinate.latitude, longitude: coordinate.longitude)
                 await recorder.record(
-                    category: "RECONNECT",
+                    category: "CURRENT_POSITION_RESTORED",
                     component: "LocationCoordinator",
                     previousState: "connected",
                     newState: "restored",
@@ -239,12 +316,15 @@ public actor LocationCoordinator {
                 )
             }
             await recorder.record(
-                category: "RECONNECT",
+                category: "RECONNECT_COMPLETE",
                 component: "LocationCoordinator",
                 previousState: "started",
                 newState: "succeeded",
                 message: "reconnect succeeded",
-                metadata: ["connection_generation": "\(connectionGeneration)"]
+                metadata: [
+                    "connection_generation": "\(connectionGeneration)",
+                    "total_reconnect_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - reconnectBegin) * 1000)
+                ]
             )
         } catch let error as POCError {
             connectionState = .failed
@@ -275,7 +355,7 @@ public actor LocationCoordinator {
     public func handleConnectionLost(generation: Int, reason: String) async {
         guard generation == connectionGeneration else {
             await recorder.record(
-                category: "RECONNECT",
+                category: "STALE_GENERATION_EVENT_IGNORED",
                 component: "LocationCoordinator",
                 previousState: nil,
                 newState: "stale_generation_ignored",
@@ -333,7 +413,7 @@ public actor LocationCoordinator {
         try await tunnelClient.connect(pairingData: pairingData, endpoint: endpoint)
         guard generation == connectionGeneration else {
             await recorder.record(
-                category: "RECONNECT",
+                category: "STALE_GENERATION_EVENT_IGNORED",
                 component: "LocationCoordinator",
                 previousState: nil,
                 newState: "stale_generation_ignored",
@@ -363,7 +443,7 @@ public actor LocationCoordinator {
 
     private func recordStaleWriter(_ writerID: String) async {
         await recorder.record(
-            category: "WRITER",
+            category: "STALE_WRITER_UPDATE_IGNORED",
             component: "LocationCoordinator",
             previousState: nil,
             newState: "stale_writer_ignored",

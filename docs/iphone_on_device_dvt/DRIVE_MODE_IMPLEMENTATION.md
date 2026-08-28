@@ -220,6 +220,91 @@ Possible snap-back is detected when observed route progress decreases by more th
 
 Sensitive material is still redacted by `SessionDiagnosticRecorder`; Drive diagnostics do not log RPPairing private keys, PSKs, auth blobs, or raw pairing plists.
 
+## Drive Characterization Diagnostics
+
+Phase 2 adds observability for issues D1, D2, and D3 without changing Drive playback behavior, target speed, scheduler cadence, route interpolation, reconnect strategy, or DVT write semantics.
+
+Each scheduler cycle now carries a `tickTraceID` through:
+
+```text
+SCHEDULER_TICK
+  -> COORDINATOR_UPDATE_REQUESTED
+  -> COORDINATOR_UPDATE_ENTERED
+  -> DVT_SET_BEGIN
+  -> DVT_SET_END
+  -> CLLOCATION_OBSERVED
+```
+
+Matching between DVT set calls and later Core Location observations uses the latest completed DVT set sequence. This is documented in each `CLLOCATION_OBSERVED` event as `matching_strategy=latest_dvt_set_sequence`; it is a practical correlation strategy, not proof of exact one-to-one delivery.
+
+Timing fields use monotonic timestamps for duration calculations. Wall-clock timestamps remain in the base JSONL event for human correlation only.
+
+Scheduler trace fields include:
+
+- expected tick offset
+- actual tick offset
+- scheduler wake jitter in milliseconds
+- elapsed time since previous tick
+- route distance delta since previous tick
+- effective scheduler speed
+- expected route coordinate
+- expected route bearing
+- lifecycle state
+
+Coordinator and DVT trace fields include:
+
+- update request timestamp
+- actor entry timestamp
+- actor queue delay
+- DVT set begin timestamp
+- DVT set end timestamp
+- DVT set duration
+- success/failure
+- native error category when available
+- writer ID
+- connection generation
+
+Core Location observation trace fields include:
+
+- callback receive monotonic timestamp
+- `CLLocation.timestamp`
+- coordinate
+- horizontal and vertical accuracy
+- altitude when available
+- `CLLocation.speed`
+- `CLLocation.speedAccuracy`
+- `CLLocation.course`
+- `CLLocation.courseAccuracy`
+- `sourceInformation.isSimulatedBySoftware`
+- `sourceInformation.isProducedByAccessory`
+- most recent requested sequence
+- time since last DVT set
+- distance from the last requested coordinate
+- nearest route-distance projection
+- observed geometric speed
+- Core Location propagation latency when a DVT set can be correlated
+
+Speed values are intentionally separate:
+
+- `selected_drive_speed_mps`: the constant speed selected in IOSSim.
+- `effective_scheduler_speed_mps`: route-distance delta over actual scheduler interval.
+- `observed_geometric_speed_mps`: observed Core Location displacement over observed callback interval.
+- `cllocation_speed_mps`: the speed reported by iOS in `CLLocation.speed`, if valid.
+
+The debug metrics panel in Experimental Drive Mode shows live lifecycle, scheduler interval, scheduler jitter, DVT set latency, Core Location latency, selected speed, `CLLocation.speed`, observed geometric speed, DVT generation, scheduler stalls, DVT stalls, Core Location observation stalls, burst detections, and snap-back detections.
+
+Diagnostic detectors currently record facts only:
+
+- `SCHEDULER_STALL`: scheduler interval greater than 2.5 times target interval.
+- `DVT_SET_STALL`: DVT set duration above the diagnostic threshold.
+- `CORELOCATION_OBSERVATION_STALL`: large gap between Core Location observations.
+- `BURSTY_PROGRESS`: route-distance advance after a long scheduler interval.
+- `POSSIBLE_SNAP_BACK`: observed route progress regressed by more than 50 meters.
+
+At Drive stop/export, `DRIVE_CHARACTERIZATION_SUMMARY` records aggregate counts and summary statistics for scheduler intervals, scheduler wake jitter, DVT set durations, Core Location propagation latency, requested geometric speed, observed geometric speed, valid `CLLocation.speed` percentage, and foreground/background/locked lifecycle segments. If a category lacks data, fields are recorded as insufficient data rather than inferred.
+
+Interpretation guardrail: these diagnostics are intended to answer where timing irregularity occurs. They do not by themselves prove why Life360 did not display speed, why motion looked bursty, or whether iOS background execution is the cause of any delay.
+
 ## First Physical Drive Result
 
 Status: PASS for basic foreground route simulation.

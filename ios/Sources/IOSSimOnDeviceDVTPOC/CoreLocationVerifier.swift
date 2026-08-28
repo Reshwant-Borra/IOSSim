@@ -8,6 +8,7 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
     public let longitude: Double
     public let horizontalAccuracy: Double
     public let verticalAccuracy: Double
+    public let altitude: Double?
     public let speed: Double?
     public let speedAccuracy: Double?
     public let course: Double?
@@ -34,6 +35,7 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
         self.longitude = location.coordinate.longitude
         self.horizontalAccuracy = location.horizontalAccuracy
         self.verticalAccuracy = location.verticalAccuracy
+        self.altitude = location.verticalAccuracy >= 0 ? location.altitude : nil
         self.speed = location.speed >= 0 ? location.speed : nil
         if #available(iOS 10.0, macOS 10.15, *) {
             self.speedAccuracy = location.speedAccuracy >= 0 ? location.speedAccuracy : nil
@@ -84,6 +86,7 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
         longitude: Double,
         horizontalAccuracy: Double,
         verticalAccuracy: Double,
+        altitude: Double? = nil,
         speed: Double? = nil,
         speedAccuracy: Double? = nil,
         course: Double? = nil,
@@ -102,6 +105,7 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
         self.longitude = longitude
         self.horizontalAccuracy = horizontalAccuracy
         self.verticalAccuracy = verticalAccuracy
+        self.altitude = altitude
         self.speed = speed
         self.speedAccuracy = speedAccuracy
         self.course = course

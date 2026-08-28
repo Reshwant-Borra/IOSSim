@@ -39,6 +39,7 @@ final class DriveViewModel: ObservableObject {
     @Published var exportURLs: [URL] = []
     @Published var routeResult: MapKitRouteResult?
     @Published var breadcrumbs: [CLLocationCoordinate2D] = []
+    @Published var liveMetrics = DriveLiveMetrics.empty
 
     private let searchProvider = MapKitSearchProvider()
     private let routeProvider = MapKitRouteProvider()
@@ -93,10 +94,20 @@ final class DriveViewModel: ObservableObject {
             currentCoordinateText = coordinate(snapshot.currentLatitude, snapshot.currentLongitude)
         }
         exportURLs = await diagnostics.exportURLs()
+        liveMetrics = await diagnostics.liveMetrics()
     }
 
     func recordScenePhase(_ phase: String) {
         background.recordLifecycle("scene_\(phase)")
+        Task {
+            let generation = await coordinator.currentConnectionGeneration()
+            await diagnostics.recordLifecycle(
+                "scene_\(phase)",
+                schedulerState: state.rawValue,
+                backgroundSessionActive: background.isBackgroundSessionActive(),
+                connectionGeneration: generation
+            )
+        }
     }
 
     func useCurrentAsStart() {
@@ -184,8 +195,10 @@ final class DriveViewModel: ObservableObject {
                 await diagnostics.start(
                     sessionID: activeController.sessionID,
                     writerID: activeController.writerID,
-                    route: result.driveRoute.resampler
+                    route: result.driveRoute.resampler,
+                    selectedSpeedMps: DriveSpeed.metersPerSecond(fromMPH: speedMPH)
                 )
+                background.setDiagnostics(diagnostics)
                 background.begin()
                 verifier.setRequestedCoordinate(
                     latitude: result.driveRoute.origin.latitude,
@@ -250,8 +263,10 @@ final class DriveViewModel: ObservableObject {
                 status = "FAIL: \(display(error))"
             }
             background.end(reason: "drive stop clear")
+            background.setDiagnostics(nil)
             verifier.stop()
             await diagnostics.recordState("stopped", message: "explicit stop and clear")
+            _ = await diagnostics.finalizeSummary()
             await refresh()
         }
     }
@@ -351,6 +366,23 @@ struct DriveView: View {
                 LabeledContent("Coordinate", value: model.currentCoordinateText)
             }
 
+            DisclosureGroup("Debug Metrics") {
+                LabeledContent("Lifecycle", value: model.liveMetrics.lifecycleState)
+                LabeledContent("Scheduler interval", value: ms(model.liveMetrics.lastSchedulerIntervalMs))
+                LabeledContent("Scheduler jitter", value: ms(model.liveMetrics.lastSchedulerJitterMs))
+                LabeledContent("DVT set latency", value: ms(model.liveMetrics.lastDVTSetLatencyMs))
+                LabeledContent("CL latency", value: ms(model.liveMetrics.lastCoreLocationLatencyMs))
+                LabeledContent("Selected speed", value: mps(model.liveMetrics.selectedSpeedMps))
+                LabeledContent("CLLocation.speed", value: mps(model.liveMetrics.lastCLLocationSpeedMps))
+                LabeledContent("Observed geometric speed", value: mps(model.liveMetrics.lastObservedGeometricSpeedMps))
+                LabeledContent("Generation", value: "\(model.liveMetrics.connectionGeneration)")
+                LabeledContent("Scheduler stalls", value: "\(model.liveMetrics.schedulerStallCount)")
+                LabeledContent("DVT stalls", value: "\(model.liveMetrics.dvtSetStallCount)")
+                LabeledContent("CL stalls", value: "\(model.liveMetrics.coreLocationObservationStallCount)")
+                LabeledContent("Bursts", value: "\(model.liveMetrics.burstyProgressCount)")
+                LabeledContent("Snap-backs", value: "\(model.liveMetrics.snapBackCount)")
+            }
+
             Section("Controls") {
                 Button("START DRIVE") { model.startDrive() }
                 Button("PAUSE") { model.pause() }
@@ -375,6 +407,16 @@ struct DriveView: View {
             ShareSheet(activityItems: model.exportURLs)
         }
     }
+}
+
+private func ms(_ value: Double?) -> String {
+    guard let value else { return "UNKNOWN" }
+    return String(format: "%.0f ms", value)
+}
+
+private func mps(_ value: Double?) -> String {
+    guard let value else { return "UNKNOWN" }
+    return String(format: "%.2f m/s", value)
 }
 
 private struct DriveMapPreview: View {
@@ -433,4 +475,3 @@ private final class OneShotLocationProvider: NSObject, CLLocationManagerDelegate
         continuation = nil
     }
 }
-
