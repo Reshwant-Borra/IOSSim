@@ -5,6 +5,10 @@ final class AppleGPXLocationControlTests: XCTestCase {
     private let requestedVelocityMps = 15.646
     private let expectedGPXDurationSeconds: TimeInterval = 160
 
+    func testDiscoverySmoke() {
+        XCTAssertTrue(true)
+    }
+
     func testAppleGPXJourneyCharacterization() async throws {
         let recorder = AppleLocationControlRecorder()
         let authorized = expectation(description: "location authorization granted")
@@ -36,10 +40,30 @@ final class AppleGPXLocationControlTests: XCTestCase {
             return
         }
 
-        await fulfillment(of: [firstObservation], timeout: 30)
+        let firstObservationResult = await XCTWaiter().fulfillment(
+            of: [firstObservation],
+            timeout: 30
+        )
+        guard firstObservationResult == .completed else {
+            recorder.stop()
+            try exportAndAttachResults(from: recorder, requestedVelocityMps: requestedVelocityMps)
+            XCTFail("No Core Location callback was delivered within 30 seconds; the test was discovered and executed, but GPX/Core Location delivery did not start.")
+            return
+        }
+
         try await Task.sleep(nanoseconds: UInt64((expectedGPXDurationSeconds + 20) * 1_000_000_000))
         recorder.stop()
 
+        try exportAndAttachResults(from: recorder, requestedVelocityMps: requestedVelocityMps)
+
+        let observations = recorder.allObservations()
+        XCTAssertGreaterThanOrEqual(observations.count, 2, "Expected at least two Core Location callbacks from GPX replay.")
+    }
+
+    private func exportAndAttachResults(
+        from recorder: AppleLocationControlRecorder,
+        requestedVelocityMps: Double
+    ) throws {
         let observations = recorder.allObservations()
         let summary = AppleLocationControlAnalysis.summary(
             for: observations,
@@ -61,8 +85,6 @@ final class AppleGPXLocationControlTests: XCTestCase {
 
         attachFile(jsonlURL, name: jsonlURL.lastPathComponent)
         attachFile(summaryURL, name: summaryURL.lastPathComponent)
-
-        XCTAssertGreaterThanOrEqual(observations.count, 2, "Expected at least two Core Location callbacks from GPX replay.")
     }
 
     private func attachFile(_ url: URL, name: String) {
