@@ -18,8 +18,15 @@ struct POCUnitChecks {
         try await bridgeReportsUnavailableWhenIdeviceIsNotLinked()
         try routeInterpolation()
         try constantSpeedDistanceCalculations()
+        try driveCadenceConfiguration()
+        try absoluteDeadlineSchedulerCalculations()
+        try missedDeadlineCalculationsSkipReplay()
+        try cadenceDoesNotChangeRouteTraversalTime()
+        try spatialStepAt35MPH()
         try pauseDoesNotAdvanceRouteProgress()
         try resumeUsesActiveElapsedTime()
+        try pauseResumeDeadlineCalculations()
+        try backgroundDelayCalculationsCollapseMissedTicks()
         try suspensionTickSkipsMissedPoints()
         try monotonicRouteProgression()
         try completedHoldingDoesNotClearSimulation()
@@ -32,6 +39,7 @@ struct POCUnitChecks {
         try driveTraceMetricCalculations()
         try await driveDiagnosticsTraceSerializationAndSummary()
         try await driveDiagnosticsDetectorEvents()
+        try await sessionRecorderBatchesAndTransitions()
         try coordinateParsingAcceptsValidPairs()
         try coordinateParsingRejectsOutOfRangeAndMalformedText()
         try mapKitSearchProviderParsesCoordinatesWithoutNetworkLookup()
@@ -208,6 +216,78 @@ struct POCUnitChecks {
         try require(abs(position.expectedDistanceMeters - 268.224) < 1, "60 mph for 10s advances constant distance")
     }
 
+    static func driveCadenceConfiguration() throws {
+        try require(DriveUpdateCadence.baseline1Hz.intervalSeconds == 1, "baseline cadence is 1 Hz")
+        try require(DriveUpdateCadence.smooth2Hz.intervalSeconds == 0.5, "smooth test cadence is 2 Hz")
+        try require(DriveUpdateCadence.baseline1Hz.effectiveUpdateFrequencyHz == 1, "baseline frequency")
+        try require(DriveUpdateCadence.smooth2Hz.effectiveUpdateFrequencyHz == 2, "smooth frequency")
+    }
+
+    static func absoluteDeadlineSchedulerCalculations() throws {
+        let baseline = (0...3).map {
+            DriveSchedulerTimeline.deadlineOffset(sequence: $0, intervalSeconds: DriveUpdateCadence.baseline1Hz.intervalSeconds)
+        }
+        try require(baseline == [0, 1, 2, 3], "1 Hz deadlines are absolute offsets")
+
+        let smooth = (0...3).map {
+            DriveSchedulerTimeline.deadlineOffset(sequence: $0, intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds)
+        }
+        try require(smooth == [0, 0.5, 1.0, 1.5], "2 Hz deadlines are absolute offsets")
+
+        let deadlineAfterWork = DriveSchedulerTimeline.deadline(
+            start: 10,
+            sequence: 2,
+            intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds
+        )
+        try require(deadlineAfterWork == 11.0, "work duration does not accumulate into absolute deadlines")
+    }
+
+    static func missedDeadlineCalculationsSkipReplay() throws {
+        let next = DriveSchedulerTimeline.nextFutureSequence(
+            start: 0,
+            intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds,
+            now: 1.38,
+            minimumSequence: 2
+        )
+        try require(next == 3, "delayed wake selects next future deadline")
+
+        let missed = DriveSchedulerTimeline.missedDeadlineCount(
+            start: 0,
+            intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds,
+            now: 1.38,
+            scheduledSequence: 1
+        )
+        try require(missed == 1, "missed intermediate deadlines are counted, not replayed")
+    }
+
+    static func cadenceDoesNotChangeRouteTraversalTime() throws {
+        let route = try driveRoute()
+        let speed = DriveSpeed.metersPerSecond(fromMPH: 35)
+        let expectedTraversal = route.routeDistanceMeters / speed
+        let baselineTicks = expectedTraversal / DriveUpdateCadence.baseline1Hz.intervalSeconds
+        let smoothTicks = expectedTraversal / DriveUpdateCadence.smooth2Hz.intervalSeconds
+        try require(abs((smoothTicks / baselineTicks) - 2) < 0.001, "2 Hz doubles update count only")
+
+        let baselineController = DriveSessionController()
+        baselineController.prepareRoute(route, speedMPH: 35)
+        try baselineController.startDrive(now: 0)
+        let smoothController = DriveSessionController()
+        smoothController.prepareRoute(route, speedMPH: 35)
+        try smoothController.startDrive(now: 0)
+        let baselinePosition = try requireValue(baselineController.expectedPosition(now: 12), "baseline position")
+        let smoothPosition = try requireValue(smoothController.expectedPosition(now: 12), "smooth position")
+        try require(abs(baselinePosition.expectedDistanceMeters - smoothPosition.expectedDistanceMeters) < 0.001, "same active elapsed gives same route distance regardless of cadence")
+    }
+
+    static func spatialStepAt35MPH() throws {
+        let speed = DriveSpeed.metersPerSecond(fromMPH: 35)
+        let baselineStep = DriveUpdateCadence.baseline1Hz.expectedDistancePerUpdateMeters(speedMetersPerSecond: speed)
+        let smoothStep = DriveUpdateCadence.smooth2Hz.expectedDistancePerUpdateMeters(speedMetersPerSecond: speed)
+        try require(abs(baselineStep - 15.6464) < 0.01, "35 mph at 1 Hz is about 15.65m per update")
+        try require(abs(smoothStep - 7.8232) < 0.01, "35 mph at 2 Hz is about 7.82m per update")
+        try require(abs((baselineStep / smoothStep) - 2) < 0.001, "2 Hz halves spatial step")
+    }
+
     static func pauseDoesNotAdvanceRouteProgress() throws {
         let controller = DriveSessionController()
         controller.prepareRoute(try driveRoute(), speedMPH: 30)
@@ -226,6 +306,42 @@ struct POCUnitChecks {
         let position = try requireValue(controller.expectedPosition(now: 40), "resumed position")
         let expected = DriveSpeed.metersPerSecond(fromMPH: 30) * 20
         try require(abs(position.expectedDistanceMeters - expected) < 1, "resume excludes paused duration")
+    }
+
+    static func pauseResumeDeadlineCalculations() throws {
+        let controller = DriveSessionController()
+        controller.prepareRoute(try driveRoute(), speedMPH: 30)
+        try controller.startDrive(now: 0)
+        let beforePause = try requireValue(controller.expectedPosition(now: 10), "before pause")
+        _ = controller.pause(now: 10)
+        let duringPause = try requireValue(controller.expectedPosition(now: 90), "during pause")
+        try require(abs(beforePause.expectedDistanceMeters - duringPause.expectedDistanceMeters) < 0.001, "pause stops route progress")
+        controller.resume(now: 90)
+        let resumedDeadline = DriveSchedulerTimeline.deadline(
+            start: 90,
+            sequence: 1,
+            intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds
+        )
+        try require(resumedDeadline == 90.5, "resume establishes future absolute deadline without catch-up")
+        let afterResume = try requireValue(controller.expectedPosition(now: 90.5), "after resume")
+        try require(afterResume.expectedDistanceMeters >= duringPause.expectedDistanceMeters, "resume remains monotonic")
+    }
+
+    static func backgroundDelayCalculationsCollapseMissedTicks() throws {
+        let next = DriveSchedulerTimeline.nextFutureSequence(
+            start: 0,
+            intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds,
+            now: 2.0,
+            minimumSequence: 1
+        )
+        try require(next == 5, "2s delay at 2 Hz skips to next future deadline")
+        let missed = DriveSchedulerTimeline.missedDeadlineCount(
+            start: 0,
+            intervalSeconds: DriveUpdateCadence.smooth2Hz.intervalSeconds,
+            now: 2.0,
+            scheduledSequence: 1
+        )
+        try require(missed == 3, "background delay collapses missed deadlines into one current tick")
     }
 
     static func suspensionTickSkipsMissedPoints() throws {
@@ -432,7 +548,13 @@ struct POCUnitChecks {
         let diagnostics = DriveDiagnostics(recorder: recorder, sampleLimit: 3)
         let route = try testRoute()
         let sessionID = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
-        await diagnostics.start(sessionID: sessionID, writerID: "drive:trace", route: route, selectedSpeedMps: 10)
+        await diagnostics.start(
+            sessionID: sessionID,
+            writerID: "drive:trace",
+            route: route,
+            selectedSpeedMps: 10,
+            updateCadence: .smooth2Hz
+        )
         for tick in 1...5 {
             let actualOffset = Double(tick - 1)
             let coordinate = route.coordinate(atDistance: Double(tick) * 10)
@@ -451,7 +573,8 @@ struct POCUnitChecks {
                 previousExpectedCoordinate: tick == 1 ? nil : route.coordinate(atDistance: Double(tick - 1) * 10),
                 lifecycleState: tick < 4 ? "foreground" : "background",
                 connectionGeneration: 2,
-                targetIntervalSeconds: 1
+                updateCadence: .smooth2Hz,
+                missedDeadlineCount: 0
             )
         }
         let context = DriveTraceContext(
@@ -501,10 +624,18 @@ struct POCUnitChecks {
         try require(summary.totalSchedulerTicks == 5, "summary counts scheduler ticks even with bounded samples")
         try require(summary.totalDVTSetCalls == 1, "summary counts DVT calls")
         try require(summary.totalObservedCLLocations == 1, "summary counts observations")
+        try require(summary.updateCadenceName == DriveUpdateCadence.smooth2Hz.diagnosticName, "cadence metadata in summary")
+        try require(summary.targetIntervalMs == 500, "target interval in summary")
+        try require(summary.effectiveUpdateFrequencyHz == 2, "effective update frequency in summary")
         try require(summary.schedulerIntervals.count == 3, "bounded scheduler interval sample")
+        try require(summary.expectedDistanceDeltaPerTickMeters.count == 3, "bounded spatial step sample")
+        try require(summary.expectedDistanceDeltaPerTickMeters.meanMs == 10, "spatial step statistics preserved")
         try require(summary.foregroundSchedulerIntervals.count > 0, "foreground segmentation")
         try require(summary.backgroundSchedulerIntervals.count > 0, "background segmentation")
         try require(summary.percentageOfCLLocationsWithValidSpeed == 100, "valid CLLocation.speed percentage")
+        try require(summary.percentageOfCLLocationsWithValidCourse == 100, "valid CLLocation.course percentage")
+        try require(summary.diagnosticEventsWritten > 0, "diagnostic write count present")
+        try require(summary.diagnosticFlushCount > 0, "diagnostic flush count present")
         let urls = await diagnostics.exportURLs()
         let jsonl = try requireValue(urls.first(where: { $0.pathExtension == "jsonl" }), "trace jsonl")
         let text = try String(contentsOf: jsonl, encoding: .utf8)
@@ -517,6 +648,10 @@ struct POCUnitChecks {
         try require(text.contains("DRIVE_CHARACTERIZATION_SUMMARY"), "summary serialized")
         try require(text.contains("trace-5"), "trace ID propagated")
         try require(text.contains("corelocation_propagation_latency_ms"), "propagation latency field serialized")
+        try require(text.contains("update_cadence_name"), "cadence metadata serialized")
+        try require(text.contains("mean_expected_distance_delta_per_tick_m"), "spatial metric serialized")
+        try require(text.contains("percentage_cllocations_with_valid_course"), "course percentage serialized")
+        try require(text.contains("diagnostic_flush_count"), "diagnostic overhead serialized")
     }
 
     static func driveDiagnosticsDetectorEvents() async throws {
@@ -540,7 +675,8 @@ struct POCUnitChecks {
             previousExpectedCoordinate: route.coordinate(atDistance: 10),
             lifecycleState: "background",
             connectionGeneration: 4,
-            targetIntervalSeconds: 1
+            updateCadence: .baseline1Hz,
+            missedDeadlineCount: 1
         )
         let context = DriveTraceContext(
             tickTraceID: "trace-stale",
@@ -606,6 +742,8 @@ struct POCUnitChecks {
         try require(summary.dvtSetStallCount == 1, "DVT stall counted")
         try require(summary.burstyProgressCount == 1, "burst counted")
         try require(summary.snapBackCount == 1, "snap-back counted")
+        try require(summary.percentageOfCLLocationsWithValidSpeed == 0, "invalid native speed remains represented")
+        try require(summary.percentageOfCLLocationsWithValidCourse == 0, "invalid native course remains represented")
         let urls = await diagnostics.exportURLs()
         let jsonl = try requireValue(urls.first(where: { $0.pathExtension == "jsonl" }), "detector jsonl")
         let text = try String(contentsOf: jsonl, encoding: .utf8)
@@ -614,6 +752,55 @@ struct POCUnitChecks {
         try require(text.contains("BURSTY_PROGRESS"), "burst serialized")
         try require(text.contains("POSSIBLE_SNAP_BACK"), "snap-back serialized")
         try require(text.contains("tick_trace_id"), "snap-back enrichment includes trace field")
+    }
+
+    static func sessionRecorderBatchesAndTransitions() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-recorder-unit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let recorder = SessionDiagnosticRecorder(
+            baseDirectory: directory,
+            eventLimit: 3,
+            flushEveryEvents: 3
+        )
+        _ = await recorder.startSession(prefix: "UNITA")
+        for index in 1...5 {
+            await recorder.record(
+                category: "ORDER",
+                component: "Test",
+                newState: "event_\(index)",
+                message: "event \(index)"
+            )
+        }
+        var snapshot = await recorder.snapshot()
+        try require(snapshot.eventCount == 6, "total event count includes bounded-out events")
+        try require(snapshot.diagnosticEventsWritten == 6, "all events written to JSONL")
+        try require(snapshot.diagnosticFlushCount >= 2, "batched flushes recorded")
+        try require(snapshot.retainedJSONLHandleOpen, "retained handle stays open during session")
+        let recentTimelineCount = await recorder.recentTimeline(limit: 10).count
+        try require(recentTimelineCount == 3, "recent timeline is bounded")
+
+        let firstURLs = await recorder.exportURLs()
+        let firstJSONL = try requireValue(firstURLs.first(where: { $0.pathExtension == "jsonl" }), "first jsonl")
+        let firstText = try String(contentsOf: firstJSONL, encoding: .utf8)
+        let event1Range = try requireValue(firstText.range(of: "event_1"), "first event serialized")
+        let event5Range = try requireValue(firstText.range(of: "event_5"), "last event serialized")
+        try require(event1Range.lowerBound < event5Range.lowerBound, "JSONL event order preserved")
+        try require(firstURLs.contains { $0.lastPathComponent.contains("summary") }, "summary export available")
+
+        await recorder.endSession(reason: "unit transition")
+        snapshot = await recorder.snapshot()
+        try require(!snapshot.retainedJSONLHandleOpen, "retained handle closes at endSession")
+
+        _ = await recorder.startSession(prefix: "UNITB")
+        await recorder.record(category: "NEW_SESSION_ONLY", component: "Test", newState: "new")
+        let secondURLs = await recorder.exportURLs()
+        let secondJSONL = try requireValue(secondURLs.first(where: { $0.pathExtension == "jsonl" }), "second jsonl")
+        let oldAfterTransition = try String(contentsOf: firstJSONL, encoding: .utf8)
+        let secondText = try String(contentsOf: secondJSONL, encoding: .utf8)
+        try require(!oldAfterTransition.contains("NEW_SESSION_ONLY"), "session transition does not append to previous file")
+        try require(secondText.contains("NEW_SESSION_ONLY"), "new session writes to new file")
     }
 
     static func makePairingPlist(identifier: String = "12345678-1234-1234-1234-123456789abc", omit: String? = nil) throws -> Data {

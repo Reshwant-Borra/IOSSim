@@ -11,6 +11,7 @@ Current status:
 ```text
 BASIC DRIVE POC PHYSICALLY DEMONSTRATED
 WITH FIRST INSTRUMENTED PHYSICAL CHARACTERIZATION COMPLETE
+ABSOLUTE-DEADLINE 1 HZ / 2 HZ CADENCE EXPERIMENT SOFTWARE-VALIDATED
 ```
 
 Implemented:
@@ -29,6 +30,8 @@ Implemented:
 - iPhone target Debug iphoneos build validation.
 - Basic foreground physical Drive route simulation on an actual iPhone.
 - First instrumented physical Drive characterization session `DRIVE-20260828-100624`.
+- Configurable Drive playback cadence: baseline 1 Hz and smooth-test 2 Hz.
+- Absolute-deadline scheduler timing based on `ContinuousClock`.
 
 Proven physical results:
 
@@ -158,7 +161,45 @@ expectedDistance = selectedSpeedMetersPerSecond * activeElapsedSeconds
 
 Distance is clamped to `0...routeDistance`. The controller also prevents accidental decreasing expected route distance while state is `driving`.
 
-If the app is suspended and resumes later, the next scheduler iteration computes the coordinate for the current elapsed time and sends that coordinate directly.
+Scheduler wake deadlines are absolute offsets from the active scheduler segment start:
+
+```text
+tick 0: start + 0.0s
+tick 1: start + interval
+tick 2: start + interval * 2
+```
+
+The scheduler sleeps until the next absolute deadline. Work duration from DVT writes and diagnostics does not get added to the following nominal deadline.
+
+If work or app execution overruns a deadline, missed deadlines are collapsed. The scheduler sends one coordinate for the current active elapsed time, then selects the next future deadline. It does not replay missed route points or issue rapid catch-up DVT writes.
+
+Pause stops route progression through the controller's existing active-elapsed calculation. While paused, the scheduler does not write Drive coordinates. Resume starts a fresh active scheduler segment so it does not replay deadlines that occurred during the pause.
+
+## Playback Cadence
+
+Drive Mode exposes an explicit playback cadence:
+
+```text
+Baseline - 1 update/sec:      1.0s interval
+Smooth Test - 2 updates/sec:  0.5s interval
+```
+
+Baseline 1 Hz remains the default to preserve the physically characterized behavior as the regression baseline. Smooth Test 2 Hz is an experimental comparison mode only.
+
+Route speed is cadence-independent:
+
+```text
+expectedDistance = selectedSpeedMetersPerSecond * activeElapsedSeconds
+```
+
+At 35 mph / ~15.646 m/s, expected spatial step is approximately:
+
+```text
+Baseline 1 Hz:     ~15.65 m/update
+Smooth Test 2 Hz:  ~7.82 m/update
+```
+
+The 2 Hz mode is not yet physically proven to improve visual smoothness or native speed/course metadata.
 
 ## Route Design
 
@@ -192,7 +233,7 @@ This does not guarantee arbitrary indefinite execution. The scheduler is recover
 
 ## Diagnostics
 
-Drive diagnostics are written through `SessionDiagnosticRecorder` as JSONL plus the existing summary export.
+Drive diagnostics are written through `SessionDiagnosticRecorder` as JSONL plus a summary export. JSONL events remain append-only and the important trace categories are preserved.
 
 Per requested update, Drive Mode records:
 
@@ -213,6 +254,10 @@ Per requested update, Drive Mode records:
 - source information simulation/accessory flags
 - lifecycle state
 - background activity state
+- update cadence name
+- target interval and effective update frequency
+- missed-deadline count
+- spatial step distance
 
 Lifecycle and connection events include start, pause, resume, completion, explicit stop, clear, reconnect start/success/failure, and stale generation callbacks.
 
@@ -301,13 +346,15 @@ Diagnostic detectors currently record facts only:
 - `BURSTY_PROGRESS`: route-distance advance after a long scheduler interval.
 - `POSSIBLE_SNAP_BACK`: observed route progress regressed by more than 50 meters.
 
-At Drive stop/export, `DRIVE_CHARACTERIZATION_SUMMARY` records aggregate counts and summary statistics for scheduler intervals, scheduler wake jitter, DVT set durations, Core Location propagation latency, requested geometric speed, observed geometric speed, valid `CLLocation.speed` percentage, and foreground/background/locked lifecycle segments. If a category lacks data, fields are recorded as insufficient data rather than inferred.
+At Drive stop/export, `DRIVE_CHARACTERIZATION_SUMMARY` records aggregate counts and summary statistics for scheduler intervals, scheduler wake jitter, expected distance delta per tick, DVT set durations, Core Location propagation latency, requested geometric speed, observed geometric speed, valid `CLLocation.speed` percentage, valid `CLLocation.course` percentage, foreground/background/locked lifecycle segments, cadence metadata, and diagnostic recorder write/flush metrics. If a category lacks data, fields are recorded as insufficient data rather than inferred.
 
-Interpretation guardrail: these diagnostics are intended to answer where timing irregularity occurs. They do not by themselves prove why Life360 did not display speed, why motion looked bursty, or whether iOS background execution is the cause of any delay.
+`SessionDiagnosticRecorder` now keeps one JSONL file handle open per session and writes events through that retained handle. It flushes periodically and at lifecycle/finalization/export boundaries. The human-readable summary is generated at session start, abnormal/lifecycle events, Drive finalization, and export rather than being atomically rewritten for every trace event. This reduces per-tick I/O overhead while keeping the JSONL event stream available.
+
+Interpretation guardrail: these diagnostics are intended to answer where IOSSim timing irregularity occurs. They do not by themselves prove why native `CLLocation.speed`/`course` were unavailable, why motion looked bursty, or whether iOS background execution is the cause of any delay.
 
 ## First Physical Drive Result
 
-Status: PASS for basic foreground route simulation.
+Status: PASS for first physically characterized route simulation.
 
 Observation:
 
@@ -315,25 +362,23 @@ Observation:
 - IOSSim advanced simulated system location through a generated driving route.
 - The route visibly progressed.
 - The previous catastrophic forward-then-reset-to-origin loop was not the dominant behavior.
-- Life360 recognized the movement as driving.
-- Life360 displayed the driven route/path.
+- The route was visible to third-party location consumers.
 
 The result demonstrates the implemented on-device Drive architecture can perform moving route simulation on a physical iPhone. It does not prove smoothness, speed reporting, long-duration locked-screen execution, network transition reliability, or cellular cold-start behavior.
 
-### Issue D1 - Life360 Drive Speed Missing
+### Issue D1 - Native Speed/Course Unavailable
 
 Physical observation:
 
-Life360 recognized the simulated movement as a Drive and displayed the route/path. However, Life360 did not display the car's speed during the simulated Drive.
+In session `DRIVE-20260828-100624`, native `CLLocation.speed` and `CLLocation.course` were valid on 0% of Drive observations while the route moved geometrically at approximately the configured speed.
 
-This is important because route/Drive detection succeeded while speed presentation did not.
+This is important because geometric route movement succeeded while native speed/course metadata remained unavailable.
 
 Hypotheses for future diagnostics only:
 
 - Core Location `CLLocation.speed` behavior under DVT LocationSimulation.
 - Update cadence.
 - Sparse coordinate timing.
-- Third-party sampling behavior.
 - Background delivery.
 - Differences between geometric speed and system-reported `CLLocation.speed`.
 
@@ -353,7 +398,7 @@ pause
 repeat
 ```
 
-Life360 still records the route.
+The route remained visible to Core Location consumers.
 
 Hypotheses for future diagnostics only:
 
@@ -433,22 +478,40 @@ Foreground test:
 
 1. Open `IOSSim DVT POC`.
 2. Open `Experimental` -> `Drive Mode`.
-3. Tap `USE CURRENT` or enter a start address/coordinate and tap `RESOLVE START`.
-4. Enter a destination and tap `RESOLVE DESTINATION`.
-5. Tap `GENERATE DRIVING ROUTE`.
-6. Select a speed between 15 and 70 mph.
-7. Tap `START DRIVE`.
-8. Let it run for 5 minutes in the foreground.
-9. Tap `STOP / CLEAR SIMULATION`.
-10. Tap `EXPORT DRIVE DIAGNOSTICS`.
+3. Use approximately the same route, selected speed, device, network, app build, and test duration for all comparison runs.
 
-Additional tests to run and label in diagnostics:
+Test A - Baseline 1 Hz:
 
-- Background: start Drive Mode, switch to Maps, run 5 minutes, return and export.
-- Locked screen: start a 10-minute route, lock the screen, unlock, stop/clear, export.
-- Long hold: complete a route and leave it in `completedHolding` for 30 minutes before Stop/Clear.
-- Pause/resume: pause for at least 2 minutes, resume, confirm route progress excludes pause time.
-- Forced recovery: interrupt LocalDevVPN/DVT connectivity, restore it, confirm reconnect sends current route position.
+1. Set `Playback Cadence` to `Baseline - 1 update/sec`.
+2. Select approximately 35 mph.
+3. Use the same short route.
+4. Keep IOSSim foregrounded initially.
+5. Drive approximately 2-5 minutes.
+6. Stop/Clear.
+7. Export diagnostics.
+
+Test B - Smooth Test 2 Hz:
+
+1. Use the same route.
+2. Use the same speed.
+3. Set `Playback Cadence` to `Smooth Test - 2 updates/sec`.
+4. Keep the same foreground state.
+5. Drive a similar duration.
+6. Stop/Clear.
+7. Export diagnostics.
+
+Test C - 2 Hz Background:
+
+1. Run only after foreground 2 Hz works.
+2. Start a 2 Hz Drive.
+3. Keep IOSSim visible approximately 30 seconds.
+4. Switch to another normal app without force-closing IOSSim.
+5. Leave IOSSim backgrounded several minutes.
+6. Return to IOSSim.
+7. Stop/Clear.
+8. Export diagnostics.
+
+Compare visual smoothness, tick interval, distance per tick, DVT latency, Core Location latency, native `CLLocation.speed` availability, native `CLLocation.course` availability, snap-backs, and route completion timing.
 
 ## Rollback
 
