@@ -34,6 +34,7 @@ struct POCUnitChecks {
         try await driveDiagnosticsDetectorEvents()
         try coordinateParsingAcceptsValidPairs()
         try coordinateParsingRejectsOutOfRangeAndMalformedText()
+        try mapKitSearchProviderParsesCoordinatesWithoutNetworkLookup()
         try recentsListDedupesNearbyPlacesAndMovesToFront()
         try recentsListCapsAtLimit()
         try jsonFilePlaceStoreRoundTripsAndOverwrites()
@@ -677,6 +678,20 @@ struct POCUnitChecks {
         try require(CoordinateParsing.parse("40.75") == nil, "single value rejected")
         try require(CoordinateParsing.parse("40.75,-73.98,extra") == nil, "extra component rejected")
         try require(CoordinateParsing.parse("") == nil, "empty text rejected")
+    }
+
+    /// Regression check for the Bug A fix: `MapKitSearchProvider.coordinate(for:)`
+    /// must still short-circuit a raw "lat,lon" pair before falling through to
+    /// an MKLocalSearch network lookup, and a business/POI name like "Popeyes"
+    /// must not be mistaken for a coordinate pair.
+    static func mapKitSearchProviderParsesCoordinatesWithoutNetworkLookup() throws {
+        let coordinate = try requireValue(
+            MapKitSearchProvider.parseCoordinate("40.7580,-73.9855"),
+            "plain pair should parse"
+        )
+        try require(abs(coordinate.latitude - 40.7580) < 0.0001, "latitude parsed")
+        try require(abs(coordinate.longitude - (-73.9855)) < 0.0001, "longitude parsed")
+        try require(MapKitSearchProvider.parseCoordinate("Popeyes") == nil, "business name is not a coordinate")
     }
 
     static func recentsListDedupesNearbyPlacesAndMovesToFront() throws {

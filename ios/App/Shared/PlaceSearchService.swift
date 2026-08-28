@@ -32,6 +32,19 @@ final class PlaceSearchService: NSObject, ObservableObject, MKLocalSearchComplet
         super.init()
         completer.delegate = self
         completer.resultTypes = [.address, .pointOfInterest, .query]
+        // `region` on MKLocalSearchCompleter is a bias, not a hard filter —
+        // it still returns strong global matches (e.g. "Times Square" from
+        // Florida), it just ranks/prefers nearby results, which is what
+        // fixes "Popeyes" surfacing a distant unrelated result first. Reading
+        // `.location` only returns an already-authorized, already-cached
+        // value; it never triggers a new permission prompt or starts updates.
+        if let coordinate = CLLocationManager().location?.coordinate {
+            completer.region = MKCoordinateRegion(
+                center: coordinate,
+                latitudinalMeters: 50_000,
+                longitudinalMeters: 50_000
+            )
+        }
     }
 
     func updateQuery(_ query: String) {

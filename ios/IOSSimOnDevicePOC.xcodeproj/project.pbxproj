@@ -45,6 +45,7 @@
 		953AA68F0F012F5BDB5AA463 /* CurrentLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1790C54039BB3D2136B4A505 /* CurrentLocationProvider.swift */; };
 		D9E578F3220C5FB24267973B /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C89517A440030DAFEBB5471B /* AppRouter.swift */; };
 		03B7DC904F6AD8FD54D374C9 /* PlaceSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F58F318BDD880C68AF7550D /* PlaceSearchField.swift */; };
+		0A32450E78484E2C9BC5FCB1 /* SearchSuggestionsList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59E0EC784E9B4E14A9903926 /* SearchSuggestionsList.swift */; };
 		46ABE8EED5FFC5F6BEE980ED /* LocationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BFB795505D7AB0887C0655 /* LocationViewModel.swift */; };
 		07CF5BFABEEA4E943B495011 /* LocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E7D123C7FD0A02ECE0BEA7A /* LocationView.swift */; };
 		26F81AE7250CAE7FE047317A /* LocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8473EA93220565D7EA261DD /* LocationMapView.swift */; };
@@ -95,6 +96,7 @@
 		1790C54039BB3D2136B4A505 /* CurrentLocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentLocationProvider.swift; sourceTree = "<group>"; };
 		C89517A440030DAFEBB5471B /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
 		4F58F318BDD880C68AF7550D /* PlaceSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSearchField.swift; sourceTree = "<group>"; };
+		59E0EC784E9B4E14A9903926 /* SearchSuggestionsList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchSuggestionsList.swift; sourceTree = "<group>"; };
 		19BFB795505D7AB0887C0655 /* LocationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationViewModel.swift; sourceTree = "<group>"; };
 		3E7D123C7FD0A02ECE0BEA7A /* LocationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationView.swift; sourceTree = "<group>"; };
 		D8473EA93220565D7EA261DD /* LocationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationMapView.swift; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 			isa = PBXGroup;
 			children = (
 				4F58F318BDD880C68AF7550D /* PlaceSearchField.swift */,
+				59E0EC784E9B4E14A9903926 /* SearchSuggestionsList.swift */,
 				C89517A440030DAFEBB5471B /* AppRouter.swift */,
 				1790C54039BB3D2136B4A505 /* CurrentLocationProvider.swift */,
 				4DCFD2F132F827C99E88CE89 /* FavoritesStore.swift */,
@@ -326,6 +329,7 @@
 				07CF5BFABEEA4E943B495011 /* LocationView.swift in Sources */,
 				46ABE8EED5FFC5F6BEE980ED /* LocationViewModel.swift in Sources */,
 				03B7DC904F6AD8FD54D374C9 /* PlaceSearchField.swift in Sources */,
+				0A32450E78484E2C9BC5FCB1 /* SearchSuggestionsList.swift in Sources */,
 				D9E578F3220C5FB24267973B /* AppRouter.swift in Sources */,
 				953AA68F0F012F5BDB5AA463 /* CurrentLocationProvider.swift in Sources */,
 				9754F220443790305C55A5CA /* FavoritesStore.swift in Sources */,

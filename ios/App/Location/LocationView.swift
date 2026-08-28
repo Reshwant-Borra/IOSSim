@@ -30,7 +30,10 @@ struct LocationView: View {
                 searchBar
 
                 if searchFocused, !model.search.suggestions.isEmpty {
-                    suggestionsList
+                    SearchSuggestionsList(suggestions: model.search.suggestions) { suggestion in
+                        model.selectSuggestion(suggestion)
+                        searchFocused = false
+                    }
                 }
 
                 if let activeSimulation = model.activeSimulation {
@@ -126,36 +129,6 @@ struct LocationView: View {
             }
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var suggestionsList: some View {
-        let suggestions = model.search.suggestions
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(suggestions.indices, id: \.self) { index in
-                let suggestion = suggestions[index]
-                Button {
-                    model.selectSuggestion(suggestion)
-                    searchFocused = false
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(suggestion.title)
-                            .foregroundStyle(.primary)
-                        if !suggestion.subtitle.isEmpty {
-                            Text(suggestion.subtitle)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                }
-                if index != suggestions.count - 1 {
-                    Divider().padding(.leading, 12)
-                }
-            }
-        }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 }

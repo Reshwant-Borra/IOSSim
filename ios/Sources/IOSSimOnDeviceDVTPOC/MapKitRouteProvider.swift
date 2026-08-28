@@ -42,16 +42,25 @@ public final class MapKitRouteProvider: @unchecked Sendable {
 }
 
 public final class MapKitSearchProvider: @unchecked Sendable {
-    private let geocoder = CLGeocoder()
-
     public init() {}
 
+    /// Resolves free-typed text to a coordinate: a raw "lat,lon" pair first,
+    /// otherwise an `MKLocalSearch` natural-language lookup. Uses `MKLocalSearch`
+    /// rather than `CLGeocoder.geocodeAddressString` because the latter only
+    /// understands structured postal addresses — it throws
+    /// `kCLErrorDomain` Code 8 (`.geocodeFoundNoResult`) for business/POI
+    /// names like "Popeyes", which `MKLocalSearch` resolves correctly (it's
+    /// the same lookup `PlaceSearchService.resolveFreeText` already uses for
+    /// suggestion-less free text).
     public func coordinate(for query: String) async throws -> CLLocationCoordinate2D {
         if let coordinate = Self.parseCoordinate(query) {
             return coordinate
         }
-        let placemarks = try await geocoder.geocodeAddressString(query)
-        guard let coordinate = placemarks.first?.location?.coordinate else {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query
+        let search = MKLocalSearch(request: request)
+        let response = try await search.start()
+        guard let coordinate = response.mapItems.first?.placemark.coordinate else {
             throw POCError(.routeCalculationFailed, "No location found for \(query).")
         }
         return coordinate

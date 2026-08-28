@@ -50,6 +50,11 @@ final class DriveViewModel: ObservableObject {
     @Published var startCoordinateText = "UNKNOWN"
     @Published var destinationCoordinateText = "UNKNOWN"
     @Published var status = "Ready. Experimental testing feature."
+    /// Exact technical detail (error domain/code/operation) for the most
+    /// recent failure, kept separate from `status` so Drive Diagnostics can
+    /// show the raw underlying error while the normal Drive screen only ever
+    /// shows `status`'s human-readable text.
+    @Published var lastTechnicalError: String?
     @Published var speedMPH = 35.0
     @Published var state = DriveSessionState.idle
     @Published var connectionState = LocationCoordinatorConnectionState.disconnected
@@ -65,7 +70,7 @@ final class DriveViewModel: ObservableObject {
 
     private let searchProvider = MapKitSearchProvider()
     private let routeProvider = MapKitRouteProvider()
-    private let locationProvider = OneShotLocationProvider()
+    private let locationProvider = CurrentLocationProvider()
     private let coordinator = POCAppDependencies.locationCoordinator
     private let background = DriveBackgroundManager(recorder: POCAppDependencies.recorder)
     private let verifier = CoreLocationVerifier()
@@ -142,7 +147,7 @@ final class DriveViewModel: ObservableObject {
                 startQuery = startCoordinateText
                 status = "Start set to current observed location."
             } catch {
-                status = "FAIL: \(display(error))"
+                fail(error, operation: "useCurrentAsStart")
             }
         }
     }
@@ -155,7 +160,7 @@ final class DriveViewModel: ObservableObject {
                 startCoordinateText = Self.coordinate(coordinate)
                 status = "Start resolved."
             } catch {
-                status = "FAIL: \(display(error))"
+                fail(error, operation: "resolveStart")
             }
         }
     }
@@ -205,7 +210,7 @@ final class DriveViewModel: ObservableObject {
                 destinationCoordinateText = Self.coordinate(coordinate)
                 status = "Destination resolved."
             } catch {
-                status = "FAIL: \(display(error))"
+                fail(error, operation: "resolveDestination")
             }
         }
     }
@@ -235,7 +240,7 @@ final class DriveViewModel: ObservableObject {
                 breadcrumbs = [startCoordinate]
                 status = "Route ready. Review preview, choose speed, then Start Drive."
             } catch {
-                status = "FAIL: \(display(error))"
+                fail(error, operation: "generateRoute")
             }
         }
     }
@@ -282,7 +287,7 @@ final class DriveViewModel: ObservableObject {
                 await diagnostics.recordState("driving", message: "drive started")
                 await refresh()
             } catch {
-                status = "FAIL: \(display(error))"
+                fail(error, operation: "startDrive")
             }
         }
     }
@@ -319,7 +324,7 @@ final class DriveViewModel: ObservableObject {
                 try await coordinator.stopSimulation(writerID: writerID, clearLocation: true)
                 status = "Drive stopped and simulation cleared."
             } catch {
-                status = "FAIL: \(display(error))"
+                fail(error, operation: "stopAndClear")
             }
             background.end(reason: "drive stop clear")
             background.setDiagnostics(nil)
@@ -360,11 +365,37 @@ final class DriveViewModel: ObservableObject {
         String(format: "%.6f, %.6f", coordinate.latitude, coordinate.longitude)
     }
 
+    /// Sets `status` to a clean, human-facing message and `lastTechnicalError`
+    /// to the exact underlying error (domain/code/description) plus which
+    /// operation threw it. Normal Drive UI only ever reads `status`; Drive
+    /// Diagnostics reads both, so the raw `kCLErrorDomain`/`MKErrorDomain`
+    /// text a user should never see (e.g. `Error Domain=kCLErrorDomain
+    /// Code=8 "(null)"`) stays available to developers without leaking into
+    /// the product UI.
+    private func fail(_ error: Error, operation: String) {
+        status = "FAIL: \(display(error))"
+        let nsError = error as NSError
+        lastTechnicalError = "operation=\(operation) domain=\(nsError.domain) code=\(nsError.code) message=\(nsError.localizedDescription)"
+    }
+
     private func display(_ error: Error) -> String {
         if let error = error as? POCError {
             return HumanReadableError.describe(code: error.code.rawValue, detail: error.message)
         }
-        return String(describing: error)
+        let nsError = error as NSError
+        if nsError.domain == kCLErrorDomain {
+            switch CLError.Code(rawValue: nsError.code) {
+            case .denied:
+                return "Location access is off for IOSSim. Enable it in Settings > Privacy > Location Services."
+            case .geocodeFoundNoResult, .geocodeFoundPartialResult:
+                return "Couldn't find that location. Try another search."
+            case .network:
+                return "Couldn't reach location services. Check your connection and try again."
+            default:
+                return "Couldn't determine your current location. Try again."
+            }
+        }
+        return "Something went wrong. Try again."
     }
 }
 
@@ -422,21 +453,40 @@ struct DriveView: View {
             Text("Drive")
                 .font(.headline)
 
-            PlaceSearchField(
-                placeholder: "Start: Current Location or search",
-                text: $model.startQuery,
-                search: startSearch,
-                trailingSystemImage: "location.fill",
-                onTrailingTap: { model.useCurrentAsStart() },
-                onSelect: { model.setStart($0) }
-            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Start")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            PlaceSearchField(
-                placeholder: "Destination",
-                text: $model.destinationQuery,
-                search: destinationSearch,
-                onSelect: { model.setDestination($0) }
-            )
+                Button {
+                    model.useCurrentAsStart()
+                } label: {
+                    Label("Current Location", systemImage: "location.fill")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+
+                PlaceSearchField(
+                    placeholder: "Or search for a start location",
+                    text: $model.startQuery,
+                    search: startSearch,
+                    onSelect: { model.setStart($0) }
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Destination")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                PlaceSearchField(
+                    placeholder: "Search for a destination",
+                    text: $model.destinationQuery,
+                    search: destinationSearch,
+                    onSelect: { model.setDestination($0) }
+                )
+            }
 
             if model.status.hasPrefix("FAIL") {
                 Label(model.status, systemImage: "exclamationmark.triangle.fill")
@@ -577,6 +627,14 @@ struct DriveDiagnosticsView: View {
                     .textSelection(.enabled)
             }
 
+            if let lastTechnicalError = model.lastTechnicalError {
+                Section("Technical Error") {
+                    Text(lastTechnicalError)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+
             Section("Drive State") {
                 LabeledContent("State", value: model.state.rawValue)
                 LabeledContent("Connection", value: model.connectionState.rawValue)
@@ -654,39 +712,5 @@ private struct DriveMapPreview: View {
                 Marker("Current", systemImage: "location.fill", coordinate: current)
             }
         }
-    }
-}
-
-private final class OneShotLocationProvider: NSObject, CLLocationManagerDelegate {
-    private let manager = CLLocationManager()
-    private var continuation: CheckedContinuation<CLLocationCoordinate2D, Error>?
-
-    override init() {
-        super.init()
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = kCLDistanceFilterNone
-        #if os(iOS)
-        manager.activityType = .automotiveNavigation
-        #endif
-    }
-
-    func requestCurrentCoordinate() async throws -> CLLocationCoordinate2D {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            manager.requestWhenInUseAuthorization()
-            manager.requestLocation()
-        }
-    }
-
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let coordinate = locations.last?.coordinate else { return }
-        continuation?.resume(returning: coordinate)
-        continuation = nil
-    }
-
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        continuation?.resume(throwing: error)
-        continuation = nil
     }
 }
