@@ -51,10 +51,14 @@ struct SettingsView: View {
                 NavigationLink("Drive Diagnostics") {
                     DriveDiagnosticsView(model: POCAppDependencies.driveModel)
                 }
+                NavigationLink("Apple Location Controls") {
+                    AppleLocationControlsView()
+                }
+                .accessibilityIdentifier("Settings.AppleLocationControls")
             } header: {
                 Text("Developer")
             } footer: {
-                Text("Pairing, connection diagnostics, E1 stage detail, session timeline, raw log, scheduler/DVT/Core Location metrics, and diagnostic export.")
+                Text("Pairing, connection diagnostics, E1 stage detail, session timeline, raw log, scheduler/DVT/Core Location metrics, passive Apple location controls, and diagnostic export.")
             }
 
             Section {

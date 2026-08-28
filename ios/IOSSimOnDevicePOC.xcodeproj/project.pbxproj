@@ -29,6 +29,9 @@
 		000000000000000000000120 /* BackgroundManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000228 /* BackgroundManager.swift */; };
 		000000000000000000000126 /* DriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000229 /* DriveView.swift */; };
 		000000000000000000000128 /* DriveTraceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000232 /* DriveTraceModels.swift */; };
+		B10000000000000000000101 /* AppleLocationControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000201 /* AppleLocationControlsView.swift */; };
+		B10000000000000000000102 /* AppleLocationControlModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* AppleLocationControlModels.swift */; };
+		B10000000000000000000103 /* AppleXCUILocationControlUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000202 /* AppleXCUILocationControlUITests.swift */; };
 		A00000000000000000000101 /* AppleGPXLocationControlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000201 /* AppleGPXLocationControlTests.swift */; };
 		A00000000000000000000102 /* AppleLocationControlModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* AppleLocationControlModels.swift */; };
 		A00000000000000000000103 /* apple-gpx-35mph.gpx in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000203 /* apple-gpx-35mph.gpx */; };
@@ -58,6 +61,13 @@
 
 /* Begin PBXContainerItemProxy section */
 		A00000000000000000000A01 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000501;
+			remoteInfo = IOSSimOnDevicePOC;
+		};
+		B10000000000000000000A01 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000001 /* Project object */;
 			proxyType = 1;
@@ -106,6 +116,9 @@
 		A00000000000000000000205 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		A00000000000000000000206 /* AppleLocationControl.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = AppleLocationControl.xctestplan; sourceTree = "<group>"; };
 		A00000000000000000000207 /* IOSSimLocationControlTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IOSSimLocationControlTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000201 /* AppleLocationControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLocationControlsView.swift; sourceTree = "<group>"; };
+		B10000000000000000000202 /* AppleXCUILocationControlUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleXCUILocationControlUITests.swift; sourceTree = "<group>"; };
+		B10000000000000000000203 /* IOSSimLocationControlUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IOSSimLocationControlUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		365421394EB69E9120D4FE53 /* SavedPlace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlace.swift; sourceTree = "<group>"; };
 		2DF861DC237C3506E2C7ED42 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		47F84B93B0D84339A83F4B02 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -145,6 +158,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B10000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -167,6 +187,7 @@
 				60A8C95B614CD0C1EF289D2A /* Shared */,
 				CDC1D55166F0E50366694880 /* SetupView.swift */,
 				47F84B93B0D84339A83F4B02 /* SettingsView.swift */,
+				B10000000000000000000201 /* AppleLocationControlsView.swift */,
 				2DF861DC237C3506E2C7ED42 /* RootTabView.swift */,
 				000000000000000000000201 /* IOSSimOnDeviceDVTPOCApp.swift */,
 				000000000000000000000202 /* ContentView.swift */,
@@ -210,6 +231,7 @@
 			children = (
 				000000000000000000000231 /* IOSSim DVT POC.app */,
 				A00000000000000000000207 /* IOSSimLocationControlTests.xctest */,
+				B10000000000000000000203 /* IOSSimLocationControlUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -299,6 +321,7 @@
 				A00000000000000000000403 /* Fixtures */,
 				A00000000000000000000205 /* README.md */,
 				A00000000000000000000201 /* AppleGPXLocationControlTests.swift */,
+				B10000000000000000000202 /* AppleXCUILocationControlUITests.swift */,
 				A00000000000000000000206 /* AppleLocationControl.xctestplan */,
 			);
 			path = LocationControl;
@@ -351,6 +374,24 @@
 			productReference = A00000000000000000000207 /* IOSSimLocationControlTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		B10000000000000000000501 /* IOSSimLocationControlUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000000000000000000701 /* Build configuration list for PBXNativeTarget "IOSSimLocationControlUITests" */;
+			buildPhases = (
+				B10000000000000000000601 /* Sources */,
+				B10000000000000000000301 /* Frameworks */,
+				B10000000000000000000602 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B10000000000000000000A02 /* PBXTargetDependency */,
+			);
+			name = IOSSimLocationControlUITests;
+			productName = IOSSimLocationControlUITests;
+			productReference = B10000000000000000000203 /* IOSSimLocationControlUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -365,6 +406,10 @@
 						CreatedOnToolsVersion = 26.6;
 					};
 					A00000000000000000000501 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = 000000000000000000000501;
+					};
+					B10000000000000000000501 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = 000000000000000000000501;
 					};
@@ -385,6 +430,7 @@
 			targets = (
 				000000000000000000000501 /* IOSSimOnDevicePOC */,
 				A00000000000000000000501 /* IOSSimLocationControlTests */,
+				B10000000000000000000501 /* IOSSimLocationControlUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -402,6 +448,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000103 /* apple-gpx-35mph.gpx in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000602 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -450,6 +503,8 @@
 				000000000000000000000120 /* BackgroundManager.swift in Sources */,
 				000000000000000000000126 /* DriveView.swift in Sources */,
 				000000000000000000000128 /* DriveTraceModels.swift in Sources */,
+				B10000000000000000000102 /* AppleLocationControlModels.swift in Sources */,
+				B10000000000000000000101 /* AppleLocationControlsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -462,6 +517,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B10000000000000000000601 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000103 /* AppleXCUILocationControlUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -469,6 +532,11 @@
 			isa = PBXTargetDependency;
 			target = 000000000000000000000501 /* IOSSimOnDevicePOC */;
 			targetProxy = A00000000000000000000A01 /* PBXContainerItemProxy */;
+		};
+		B10000000000000000000A02 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000501 /* IOSSimOnDevicePOC */;
+			targetProxy = B10000000000000000000A01 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -650,6 +718,57 @@
 			};
 			name = Release;
 		};
+		B10000000000000000000801 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T8SL4SG87F;
+				ENABLE_TESTING_SEARCH_PATHS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.iossim.location-control-uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = IOSSimOnDevicePOC;
+			};
+			name = Debug;
+		};
+		B10000000000000000000802 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T8SL4SG87F;
+				ENABLE_TESTING_SEARCH_PATHS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.iossim.location-control-uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = IOSSimOnDevicePOC;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -676,6 +795,15 @@
 			buildConfigurations = (
 				A00000000000000000000801 /* Debug */,
 				A00000000000000000000802 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B10000000000000000000701 /* Build configuration list for PBXNativeTarget "IOSSimLocationControlUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000801 /* Debug */,
+				B10000000000000000000802 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

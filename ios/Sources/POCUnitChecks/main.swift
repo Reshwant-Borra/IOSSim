@@ -38,6 +38,8 @@ struct POCUnitChecks {
         try await driveDiagnosticsSerialize()
         try driveTraceMetricCalculations()
         try appleLocationControlMetricCalculations()
+        try passiveAppleLocationRecorderPreservesRawCallbacks()
+        try appleLocationControlComparisonReportGeneration()
         try coreLocationVerifierRawCallbacksAreNotPublicationFiltered()
         try await driveDiagnosticsTraceSerializationAndSummary()
         try await driveDiagnosticsDetectorEvents()
@@ -601,21 +603,160 @@ struct POCUnitChecks {
             "native speed difference calculated"
         )
 
-        let summary = AppleLocationControlAnalysis.summary(for: [first, second], requestedVelocityMps: 15.646)
+        let batches = [
+            AppleLocationControlCallbackBatch(
+                callbackSequence: 1,
+                wallClockTimestamp: startDate,
+                monotonicTimestamp: 10,
+                locationCount: 2,
+                firstObservationSequence: 1,
+                lastObservationSequence: 2
+            )
+        ]
+        let summary = AppleLocationControlAnalysis.summary(
+            for: [first, second],
+            callbackBatches: batches,
+            requestedVelocityMps: 15.646,
+            metadataLabel: .xcodeDebugGPX
+        )
+        try require(summary.metadataLabel == .xcodeDebugGPX, "metadata label serialized into summary")
+        try require(summary.rawDelegateCallbackCount == 1, "delegate callback count recorded separately")
         try require(summary.observationCount == 2, "summary count")
+        try require(summary.rawLocationObjectCount == 2, "raw CLLocation object count recorded")
+        try require(summary.callbackBatchesGreaterThanOne == 1, "batched callbacks counted")
         try require(summary.nativeSpeedValidCount == 1, "native speed valid count")
         try require(summary.nativeSpeedValidityPercent == 50, "native speed validity percentage")
+        try require(summary.speedAccuracyValidityPercent == 50, "speed accuracy validity percentage")
         try require(summary.nativeCourseValidCount == 1, "native course valid count")
         try require(summary.nativeCourseValidityPercent == 50, "native course validity percentage")
+        try require(summary.courseAccuracyValidityPercent == 50, "course accuracy validity percentage")
         try require(summary.altitudeValidityPercent == 50, "altitude validity percentage")
+        try require(summary.horizontalAccuracyMeters.mean == 5, "horizontal accuracy summarized")
+        try require(summary.verticalAccuracyMeters.count == 1, "invalid vertical accuracy excluded from stats")
         try require(summary.simulatedBySoftwareTruePercent == 100, "software simulation percentage")
         try require(summary.producedByAccessoryTruePercent == 0, "accessory percentage")
-        let jsonl = try AppleLocationControlAnalysis.jsonLines(observations: [first, second], summary: summary)
+        let jsonl = try AppleLocationControlAnalysis.jsonLines(
+            observations: [first, second],
+            callbackBatches: batches,
+            summary: summary
+        )
+        try require(jsonl.contains("\"type\":\"callback_batch\""), "callback batch JSONL serialized")
         try require(jsonl.contains("\"type\":\"observation\""), "observation JSONL serialized")
         try require(jsonl.contains("\"rawSpeed\":-1"), "raw negative speed serialized")
         try require(jsonl.contains("\"normalizedSpeed\":15.646"), "normalized valid speed serialized")
         try require(jsonl.contains("\"type\":\"pair_measurement\""), "pair JSONL serialized")
         try require(jsonl.contains("\"type\":\"summary\""), "summary JSONL serialized")
+        let summaryText = AppleLocationControlAnalysis.summaryText(summary)
+        try require(summaryText.contains("native_speed_validity_percent"), "native speed terminology in summary")
+        try require(summaryText.contains("mean_geometric_speed_callback_mps"), "geometric speed terminology in summary")
+    }
+
+    static func passiveAppleLocationRecorderPreservesRawCallbacks() throws {
+        let recorder = AppleLocationControlRecorder()
+        let startDate = Date(timeIntervalSince1970: 1_800_000_100)
+        let first = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            altitude: 123,
+            horizontalAccuracy: 4,
+            verticalAccuracy: 2,
+            course: -1,
+            speed: -1,
+            timestamp: startDate
+        )
+        let second = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0.00007024),
+            altitude: 124,
+            horizontalAccuracy: 4,
+            verticalAccuracy: 2,
+            course: 90,
+            speed: 15.646,
+            timestamp: startDate.addingTimeInterval(0.5)
+        )
+        let third = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0.00014048),
+            altitude: 125,
+            horizontalAccuracy: 4,
+            verticalAccuracy: 2,
+            course: 90,
+            speed: 15.646,
+            timestamp: startDate.addingTimeInterval(1.0)
+        )
+
+        recorder.recordDeliveredLocations([first], wallClockTimestamp: startDate, monotonicTimestamp: 100)
+        recorder.recordDeliveredLocations([second], wallClockTimestamp: startDate.addingTimeInterval(0.5), monotonicTimestamp: 100.5)
+        recorder.recordDeliveredLocations([third], wallClockTimestamp: startDate.addingTimeInterval(1.0), monotonicTimestamp: 101.0)
+
+        let observations = recorder.allObservations()
+        let batches = recorder.allCallbackBatches()
+        try require(observations.count == 3, "passive recorder keeps all synthetic CLLocation objects")
+        try require(batches.count == 3, "passive recorder keeps every delegate callback")
+        try require(observations[0].rawSpeed == -1, "recorder preserves raw invalid speed")
+        try require(observations[0].normalizedSpeed == nil, "recorder normalizes invalid speed to nil")
+        try require(observations[0].rawCourse == -1, "recorder preserves raw invalid course")
+
+        let pairs = AppleLocationControlAnalysis.pairMeasurements(for: observations)
+        try require(abs(pairs[0].callbackIntervalMs - 500) < 0.01, "500 ms callback interval preserved")
+        try require(abs(pairs[0].distanceMeters - 7.82) < 0.1, "7.82 meter step preserved")
+
+        recorder.reset()
+        recorder.recordDeliveredLocations([first, second], wallClockTimestamp: startDate, monotonicTimestamp: 200)
+        let resetObservations = recorder.allObservations()
+        let resetBatches = recorder.allCallbackBatches()
+        try require(resetObservations.map(\.sequence) == [1, 2], "reset restarts sequence")
+        try require(resetBatches.first?.locationCount == 2, "callback batch size preserved")
+    }
+
+    static func appleLocationControlComparisonReportGeneration() throws {
+        let startDate = Date(timeIntervalSince1970: 1_800_000_200)
+        let first = AppleLocationControlObservation(
+            sequence: 1,
+            wallClockTimestamp: startDate,
+            monotonicTimestamp: 10,
+            locationTimestamp: startDate,
+            latitude: 0,
+            longitude: 0,
+            horizontalAccuracy: 5,
+            verticalAccuracy: 5,
+            altitude: 10,
+            rawSpeed: 15.646,
+            speedAccuracy: 1,
+            rawCourse: 90,
+            courseAccuracy: 1,
+            isSimulatedBySoftware: true,
+            isProducedByAccessory: false
+        )
+        let second = AppleLocationControlObservation(
+            sequence: 2,
+            wallClockTimestamp: startDate.addingTimeInterval(1),
+            monotonicTimestamp: 11,
+            locationTimestamp: startDate.addingTimeInterval(1),
+            latitude: 0,
+            longitude: 0.000140705,
+            horizontalAccuracy: 5,
+            verticalAccuracy: 5,
+            altitude: 10,
+            rawSpeed: 15.646,
+            speedAccuracy: 1,
+            rawCourse: 90,
+            courseAccuracy: 1,
+            isSimulatedBySoftware: true,
+            isProducedByAccessory: false
+        )
+        let summary = AppleLocationControlAnalysis.summary(
+            for: [first, second],
+            callbackBatches: [],
+            requestedVelocityMps: 15.646,
+            metadataLabel: .xcuiLocation
+        )
+        let rows = [
+            AppleLocationComparisonRow(pathway: "IOSSim_DVT_2HZ", requestedVelocityMps: 15.646, summary: nil),
+            AppleLocationComparisonRow(pathway: "XCUILOCATION", requestedVelocityMps: nil, summary: summary)
+        ]
+        let report = try AppleLocationControlAnalysis.comparisonJSONLines(rows: rows)
+        try require(report.contains("IOSSim_DVT_2HZ"), "comparison includes DVT row")
+        try require(report.contains("XCUILOCATION"), "comparison includes XCUILocation row")
+        try require(report.contains("nativeSpeedValidityPercent"), "comparison includes native speed field")
+        try require(report.contains("meanGeometricSpeedMps"), "comparison includes geometric speed field")
     }
 
     static func coreLocationVerifierRawCallbacksAreNotPublicationFiltered() throws {

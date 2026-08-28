@@ -1,6 +1,15 @@
 import CoreLocation
 import Foundation
 
+public enum AppleLocationControlMetadataLabel: String, Codable, CaseIterable, Identifiable, Sendable {
+    case realDevice = "REAL_DEVICE"
+    case xcodeDebugGPX = "XCODE_DEBUG_GPX"
+    case xcuiLocation = "XCUILOCATION"
+    case other = "OTHER"
+
+    public var id: String { rawValue }
+}
+
 public struct AppleLocationControlObservation: Codable, Equatable, Sendable {
     public let sequence: Int
     public let wallClockTimestamp: Date
@@ -108,6 +117,31 @@ public struct AppleLocationControlObservation: Codable, Equatable, Sendable {
     }
 }
 
+public struct AppleLocationControlCallbackBatch: Codable, Equatable, Sendable {
+    public let callbackSequence: Int
+    public let wallClockTimestamp: Date
+    public let monotonicTimestamp: TimeInterval
+    public let locationCount: Int
+    public let firstObservationSequence: Int?
+    public let lastObservationSequence: Int?
+
+    public init(
+        callbackSequence: Int,
+        wallClockTimestamp: Date,
+        monotonicTimestamp: TimeInterval,
+        locationCount: Int,
+        firstObservationSequence: Int?,
+        lastObservationSequence: Int?
+    ) {
+        self.callbackSequence = callbackSequence
+        self.wallClockTimestamp = wallClockTimestamp
+        self.monotonicTimestamp = monotonicTimestamp
+        self.locationCount = locationCount
+        self.firstObservationSequence = firstObservationSequence
+        self.lastObservationSequence = lastObservationSequence
+    }
+}
+
 public struct AppleLocationControlPairMeasurement: Codable, Equatable, Sendable {
     public let fromSequence: Int
     public let toSequence: Int
@@ -138,10 +172,16 @@ public struct AppleLocationControlStatistics: Codable, Equatable, Sendable {
 }
 
 public struct AppleLocationControlSummary: Codable, Equatable, Sendable {
+    public let metadataLabel: AppleLocationControlMetadataLabel?
+    public let rawDelegateCallbackCount: Int
     public let observationCount: Int
+    public let rawLocationObjectCount: Int
     public let durationSeconds: Double?
     public let requestedVelocityMps: Double
     public let effectiveObservationHz: Double?
+    public let effectiveRawCallbackHz: Double?
+    public let callbackBatchSize: AppleLocationControlStatistics
+    public let callbackBatchesGreaterThanOne: Int
     public let callbackIntervalMs: AppleLocationControlStatistics
     public let locationTimestampIntervalMs: AppleLocationControlStatistics
     public let distanceMeters: AppleLocationControlStatistics
@@ -149,14 +189,88 @@ public struct AppleLocationControlSummary: Codable, Equatable, Sendable {
     public let geometricSpeedFromLocationTimestampsMps: AppleLocationControlStatistics
     public let nativeSpeedValidCount: Int
     public let nativeSpeedValidityPercent: Double?
+    public let speedAccuracyValidityPercent: Double?
     public let nativeCourseValidCount: Int
     public let nativeCourseValidityPercent: Double?
+    public let courseAccuracyValidityPercent: Double?
     public let meanNativeSpeedWhenValidMps: Double?
     public let meanNativeSpeedMinusCallbackGeometricSpeedMps: Double?
     public let meanNativeSpeedMinusLocationGeometricSpeedMps: Double?
     public let altitudeValidityPercent: Double?
+    public let horizontalAccuracyMeters: AppleLocationControlStatistics
+    public let verticalAccuracyMeters: AppleLocationControlStatistics
     public let simulatedBySoftwareTruePercent: Double?
     public let producedByAccessoryTruePercent: Double?
+}
+
+public struct AppleLocationControlRun: Codable, Equatable, Sendable {
+    public let metadataLabel: AppleLocationControlMetadataLabel
+    public let observations: [AppleLocationControlObservation]
+    public let callbackBatches: [AppleLocationControlCallbackBatch]
+
+    public init(
+        metadataLabel: AppleLocationControlMetadataLabel,
+        observations: [AppleLocationControlObservation],
+        callbackBatches: [AppleLocationControlCallbackBatch]
+    ) {
+        self.metadataLabel = metadataLabel
+        self.observations = observations
+        self.callbackBatches = callbackBatches
+    }
+}
+
+public struct AppleLocationComparisonRow: Codable, Equatable, Sendable {
+    public let pathway: String
+    public let requestedVelocityMps: Double?
+    public let totalDurationSeconds: Double?
+    public let rawDelegateCallbacks: Int?
+    public let totalRawLocationObjects: Int?
+    public let effectiveRawCallbackHz: Double?
+    public let meanCallbackIntervalMs: Double?
+    public let medianCallbackIntervalMs: Double?
+    public let p95CallbackIntervalMs: Double?
+    public let maxCallbackIntervalMs: Double?
+    public let callbackBatchesGreaterThanOne: Int?
+    public let meanCoordinateStepMeters: Double?
+    public let meanGeometricSpeedMps: Double?
+    public let p95GeometricSpeedMps: Double?
+    public let nativeSpeedValidityPercent: Double?
+    public let meanNativeSpeedMps: Double?
+    public let speedAccuracyValidityPercent: Double?
+    public let nativeCourseValidityPercent: Double?
+    public let courseAccuracyValidityPercent: Double?
+    public let altitudeValidityPercent: Double?
+    public let meanHorizontalAccuracyMeters: Double?
+    public let meanVerticalAccuracyMeters: Double?
+    public let simulatedBySoftwareTruePercent: Double?
+    public let producedByAccessoryTruePercent: Double?
+
+    public init(pathway: String, requestedVelocityMps: Double?, summary: AppleLocationControlSummary?) {
+        self.pathway = pathway
+        self.requestedVelocityMps = requestedVelocityMps ?? summary?.requestedVelocityMps
+        self.totalDurationSeconds = summary?.durationSeconds
+        self.rawDelegateCallbacks = summary?.rawDelegateCallbackCount
+        self.totalRawLocationObjects = summary?.rawLocationObjectCount
+        self.effectiveRawCallbackHz = summary?.effectiveRawCallbackHz
+        self.meanCallbackIntervalMs = summary?.callbackIntervalMs.mean
+        self.medianCallbackIntervalMs = summary?.callbackIntervalMs.median
+        self.p95CallbackIntervalMs = summary?.callbackIntervalMs.p95
+        self.maxCallbackIntervalMs = summary?.callbackIntervalMs.max
+        self.callbackBatchesGreaterThanOne = summary?.callbackBatchesGreaterThanOne
+        self.meanCoordinateStepMeters = summary?.distanceMeters.mean
+        self.meanGeometricSpeedMps = summary?.geometricSpeedFromCallbackTimestampsMps.mean
+        self.p95GeometricSpeedMps = summary?.geometricSpeedFromCallbackTimestampsMps.p95
+        self.nativeSpeedValidityPercent = summary?.nativeSpeedValidityPercent
+        self.meanNativeSpeedMps = summary?.meanNativeSpeedWhenValidMps
+        self.speedAccuracyValidityPercent = summary?.speedAccuracyValidityPercent
+        self.nativeCourseValidityPercent = summary?.nativeCourseValidityPercent
+        self.courseAccuracyValidityPercent = summary?.courseAccuracyValidityPercent
+        self.altitudeValidityPercent = summary?.altitudeValidityPercent
+        self.meanHorizontalAccuracyMeters = summary?.horizontalAccuracyMeters.mean
+        self.meanVerticalAccuracyMeters = summary?.verticalAccuracyMeters.mean
+        self.simulatedBySoftwareTruePercent = summary?.simulatedBySoftwareTruePercent
+        self.producedByAccessoryTruePercent = summary?.producedByAccessoryTruePercent
+    }
 }
 
 public enum AppleLocationControlAnalysis {
@@ -190,7 +304,9 @@ public enum AppleLocationControlAnalysis {
 
     public static func summary(
         for observations: [AppleLocationControlObservation],
-        requestedVelocityMps: Double
+        callbackBatches: [AppleLocationControlCallbackBatch] = [],
+        requestedVelocityMps: Double,
+        metadataLabel: AppleLocationControlMetadataLabel? = nil
     ) -> AppleLocationControlSummary {
         let pairs = pairMeasurements(for: observations)
         let durationSeconds: Double?
@@ -203,11 +319,21 @@ public enum AppleLocationControlAnalysis {
         let speedValidity = percentage(count: nativeSpeeds.count, total: observations.count)
         let nativeCourseValidCount = observations.filter(\.courseValid).count
         let courseValidity = percentage(count: nativeCourseValidCount, total: observations.count)
+        let callbackCount = callbackBatches.isEmpty ? observations.count : callbackBatches.count
+        let callbackDurationSeconds = durationSeconds
         return AppleLocationControlSummary(
+            metadataLabel: metadataLabel,
+            rawDelegateCallbackCount: callbackCount,
             observationCount: observations.count,
+            rawLocationObjectCount: observations.count,
             durationSeconds: durationSeconds,
             requestedVelocityMps: requestedVelocityMps,
             effectiveObservationHz: hz(observationCount: observations.count, durationSeconds: durationSeconds),
+            effectiveRawCallbackHz: hz(observationCount: callbackCount, durationSeconds: callbackDurationSeconds),
+            callbackBatchSize: statistics(
+                callbackBatches.isEmpty ? Array(repeating: 1.0, count: observations.count) : callbackBatches.map { Double($0.locationCount) }
+            ),
+            callbackBatchesGreaterThanOne: callbackBatches.filter { $0.locationCount > 1 }.count,
             callbackIntervalMs: statistics(pairs.map(\.callbackIntervalMs)),
             locationTimestampIntervalMs: statistics(pairs.map(\.locationTimestampIntervalMs)),
             distanceMeters: statistics(pairs.map(\.distanceMeters)),
@@ -219,8 +345,16 @@ public enum AppleLocationControlAnalysis {
             ),
             nativeSpeedValidCount: nativeSpeeds.count,
             nativeSpeedValidityPercent: speedValidity,
+            speedAccuracyValidityPercent: percentage(
+                count: observations.filter { ($0.speedAccuracy ?? -1) >= 0 }.count,
+                total: observations.count
+            ),
             nativeCourseValidCount: nativeCourseValidCount,
             nativeCourseValidityPercent: courseValidity,
+            courseAccuracyValidityPercent: percentage(
+                count: observations.filter { ($0.courseAccuracy ?? -1) >= 0 }.count,
+                total: observations.count
+            ),
             meanNativeSpeedWhenValidMps: mean(nativeSpeeds),
             meanNativeSpeedMinusCallbackGeometricSpeedMps: mean(
                 pairs.compactMap(\.nativeSpeedMinusCallbackGeometricSpeedMps)
@@ -232,6 +366,8 @@ public enum AppleLocationControlAnalysis {
                 count: observations.filter(\.altitudeValid).count,
                 total: observations.count
             ),
+            horizontalAccuracyMeters: statistics(observations.map(\.horizontalAccuracy)),
+            verticalAccuracyMeters: statistics(observations.map(\.verticalAccuracy)),
             simulatedBySoftwareTruePercent: percentage(
                 count: observations.filter { $0.isSimulatedBySoftware == true }.count,
                 total: observations.count
@@ -284,11 +420,15 @@ public enum AppleLocationControlAnalysis {
 
     public static func jsonLines(
         observations: [AppleLocationControlObservation],
+        callbackBatches: [AppleLocationControlCallbackBatch] = [],
         summary: AppleLocationControlSummary
     ) throws -> String {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
+        let callbackLines = try callbackBatches.map { callbackBatch in
+            try encodedLine(["type": "callback_batch"], value: callbackBatch, encoder: encoder)
+        }
         let observationLines = try observations.map { observation in
             try encodedLine(["type": "observation"], value: observation, encoder: encoder)
         }
@@ -296,16 +436,22 @@ public enum AppleLocationControlAnalysis {
             try encodedLine(["type": "pair_measurement"], value: pair, encoder: encoder)
         }
         let summaryLine = try encodedLine(["type": "summary"], value: summary, encoder: encoder)
-        return (observationLines + pairLines + [summaryLine]).joined(separator: "\n") + "\n"
+        return (callbackLines + observationLines + pairLines + [summaryLine]).joined(separator: "\n") + "\n"
     }
 
     public static func summaryText(_ summary: AppleLocationControlSummary) -> String {
         [
-            "Apple GPX Core Location Control Summary",
+            "Apple Core Location Control Summary",
+            "metadata_label=\(summary.metadataLabel?.rawValue ?? "UNKNOWN")",
+            "raw_delegate_callback_count=\(summary.rawDelegateCallbackCount)",
             "observation_count=\(summary.observationCount)",
+            "raw_location_object_count=\(summary.rawLocationObjectCount)",
             "duration_s=\(format(summary.durationSeconds))",
             "requested_velocity_mps=\(format(summary.requestedVelocityMps))",
             "effective_observation_hz=\(format(summary.effectiveObservationHz))",
+            "effective_raw_callback_hz=\(format(summary.effectiveRawCallbackHz))",
+            "mean_callback_batch_size=\(format(summary.callbackBatchSize.mean))",
+            "callback_batches_gt_one=\(summary.callbackBatchesGreaterThanOne)",
             "mean_callback_interval_ms=\(format(summary.callbackIntervalMs.mean))",
             "median_callback_interval_ms=\(format(summary.callbackIntervalMs.median))",
             "p95_callback_interval_ms=\(format(summary.callbackIntervalMs.p95))",
@@ -320,15 +466,27 @@ public enum AppleLocationControlAnalysis {
             "mean_geometric_speed_location_timestamp_mps=\(format(summary.geometricSpeedFromLocationTimestampsMps.mean))",
             "native_speed_valid_count=\(summary.nativeSpeedValidCount)",
             "native_speed_validity_percent=\(format(summary.nativeSpeedValidityPercent))",
+            "speed_accuracy_validity_percent=\(format(summary.speedAccuracyValidityPercent))",
             "native_course_valid_count=\(summary.nativeCourseValidCount)",
             "native_course_validity_percent=\(format(summary.nativeCourseValidityPercent))",
+            "course_accuracy_validity_percent=\(format(summary.courseAccuracyValidityPercent))",
             "mean_native_speed_when_valid_mps=\(format(summary.meanNativeSpeedWhenValidMps))",
             "mean_native_speed_minus_callback_geometric_speed_mps=\(format(summary.meanNativeSpeedMinusCallbackGeometricSpeedMps))",
             "mean_native_speed_minus_location_geometric_speed_mps=\(format(summary.meanNativeSpeedMinusLocationGeometricSpeedMps))",
             "altitude_validity_percent=\(format(summary.altitudeValidityPercent))",
+            "mean_horizontal_accuracy_m=\(format(summary.horizontalAccuracyMeters.mean))",
+            "mean_vertical_accuracy_m=\(format(summary.verticalAccuracyMeters.mean))",
             "simulated_by_software_true_percent=\(format(summary.simulatedBySoftwareTruePercent))",
             "produced_by_accessory_true_percent=\(format(summary.producedByAccessoryTruePercent))"
         ].joined(separator: "\n") + "\n"
+    }
+
+    public static func comparisonJSONLines(rows: [AppleLocationComparisonRow]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try rows.map { row in
+            try encodedLine(["type": "comparison_row"], value: row, encoder: encoder)
+        }.joined(separator: "\n") + "\n"
     }
 
     private static func speedMetersPerSecond(distanceMeters: Double, intervalMs: Double) -> Double? {
@@ -385,7 +543,9 @@ public final class AppleLocationControlRecorder: NSObject, CLLocationManagerDele
     private let manager: CLLocationManager
     private let lock = NSLock()
     private var sequence = 0
+    private var callbackSequence = 0
     private var observations: [AppleLocationControlObservation] = []
+    private var callbackBatches: [AppleLocationControlCallbackBatch] = []
     private var observationHandler: ObservationHandler?
     private var authorizationHandler: AuthorizationHandler?
 
@@ -414,6 +574,7 @@ public final class AppleLocationControlRecorder: NSObject, CLLocationManagerDele
     }
 
     public func start() {
+        reset()
         manager.requestWhenInUseAuthorization()
         manager.startUpdatingLocation()
     }
@@ -428,6 +589,31 @@ public final class AppleLocationControlRecorder: NSObject, CLLocationManagerDele
         return observations
     }
 
+    public func allCallbackBatches() -> [AppleLocationControlCallbackBatch] {
+        lock.lock()
+        defer { lock.unlock() }
+        return callbackBatches
+    }
+
+    public func currentRun(metadataLabel: AppleLocationControlMetadataLabel) -> AppleLocationControlRun {
+        lock.lock()
+        defer { lock.unlock() }
+        return AppleLocationControlRun(
+            metadataLabel: metadataLabel,
+            observations: observations,
+            callbackBatches: callbackBatches
+        )
+    }
+
+    public func reset() {
+        lock.lock()
+        sequence = 0
+        callbackSequence = 0
+        observations.removeAll()
+        callbackBatches.removeAll()
+        lock.unlock()
+    }
+
     public var authorizationStatus: CLAuthorizationStatus {
         manager.authorizationStatus
     }
@@ -437,31 +623,49 @@ public final class AppleLocationControlRecorder: NSObject, CLLocationManagerDele
     }
 
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        recordDeliveredLocations(locations, wallClockTimestamp: Date(), monotonicTimestamp: ProcessInfo.processInfo.systemUptime)
+    }
+
+    public func recordDeliveredLocations(
+        _ locations: [CLLocation],
+        wallClockTimestamp: Date,
+        monotonicTimestamp: TimeInterval
+    ) {
+        let callbackID: Int
+        let startSequence: Int
+        var recorded: [AppleLocationControlObservation] = []
+        lock.lock()
+        callbackSequence += 1
+        callbackID = callbackSequence
+        startSequence = sequence + 1
         for location in locations {
-            let observedAt = Date()
-            let monotonicTimestamp = ProcessInfo.processInfo.systemUptime
+            sequence += 1
             let observation = AppleLocationControlObservation(
-                sequence: nextSequence(),
-                wallClockTimestamp: observedAt,
+                sequence: sequence,
+                wallClockTimestamp: wallClockTimestamp,
                 monotonicTimestamp: monotonicTimestamp,
                 location: location
             )
-            lock.lock()
             observations.append(observation)
-            let handler = observationHandler
-            lock.unlock()
+            recorded.append(observation)
+        }
+        callbackBatches.append(AppleLocationControlCallbackBatch(
+            callbackSequence: callbackID,
+            wallClockTimestamp: wallClockTimestamp,
+            monotonicTimestamp: monotonicTimestamp,
+            locationCount: locations.count,
+            firstObservationSequence: locations.isEmpty ? nil : startSequence,
+            lastObservationSequence: locations.isEmpty ? nil : sequence
+        ))
+        let handler = observationHandler
+        lock.unlock()
+
+        for observation in recorded {
             handler?(observation)
         }
     }
 
     public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
-
-    private func nextSequence() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        sequence += 1
-        return sequence
-    }
 
     private func currentAuthorizationHandler() -> AuthorizationHandler? {
         lock.lock()
