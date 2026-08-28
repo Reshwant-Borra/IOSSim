@@ -5,7 +5,7 @@ IOSSim contains two runtime implementations. They share the product goal of sett
 | Implementation | Runtime Host | Language | DVT Library | Pairing | Current Status |
 | --- | --- | --- | --- | --- | --- |
 | Mac-hosted IOSSim | Mac or Windows host | Python/FastAPI backend + React/TypeScript frontend | pymobiledevice3 | host-side pairing/trust | stable/current |
-| iPhone on-device POC | iPhone | Swift + Rust FFI | pinned jkcoxson/idevice | imported RPPairing stored on iPhone | static simulation physically validated; Drive POC physically characterized at ~1 Hz with monotonic route progress, repeated DVT updates, no severe snap-back, and native speed/course unavailable |
+| iPhone on-device POC | iPhone | Swift + Rust FFI | pinned jkcoxson/idevice | imported RPPairing stored on iPhone | static simulation physically validated; Drive POC physically characterized at ~1 Hz; absolute-deadline scheduler and 2 Hz cadence experiment software-validated, physical A/B still required |
 
 ## Why Both Are Retained
 

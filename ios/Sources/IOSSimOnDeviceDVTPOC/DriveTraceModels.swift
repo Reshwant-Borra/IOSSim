@@ -64,22 +64,32 @@ public struct DriveTimingStatistics: Codable, Equatable, Sendable {
 }
 
 public struct DriveCharacterizationSummary: Codable, Equatable, Sendable {
+    public let updateCadenceName: String
+    public let targetIntervalMs: Double
+    public let effectiveUpdateFrequencyHz: Double
     public let totalDriveDuration: TimeInterval
     public let totalSchedulerTicks: Int
     public let totalDVTSetCalls: Int
     public let totalObservedCLLocations: Int
     public let schedulerIntervals: DriveTimingStatistics
     public let schedulerWakeJitter: DriveTimingStatistics
+    public let expectedDistanceDeltaPerTickMeters: DriveTimingStatistics
     public let dvtSetDurations: DriveTimingStatistics
     public let coreLocationPropagationLatencies: DriveTimingStatistics
     public let selectedSpeedMps: Double?
     public let meanRequestedGeometricSpeedMps: Double?
     public let meanObservedGeometricSpeedMps: Double?
     public let percentageOfCLLocationsWithValidSpeed: Double?
+    public let percentageOfCLLocationsWithValidCourse: Double?
     public let meanCLLocationSpeedWhenValid: Double?
     public let foregroundSchedulerIntervals: DriveTimingStatistics
     public let backgroundSchedulerIntervals: DriveTimingStatistics
     public let lockedSchedulerIntervals: DriveTimingStatistics
+    public let diagnosticEventCount: Int
+    public let diagnosticEventsWritten: Int
+    public let diagnosticFlushCount: Int
+    public let diagnosticMeanWriteDurationMs: Double?
+    public let diagnosticMaxWriteDurationMs: Double?
     public let schedulerStallCount: Int
     public let dvtSetStallCount: Int
     public let coreLocationObservationStallCount: Int
@@ -142,6 +152,11 @@ public enum DriveTraceMetrics {
     public static func validCLLocationSpeed(_ speed: Double?) -> Bool {
         guard let speed else { return false }
         return speed.isFinite && speed >= 0
+    }
+
+    public static func validCLLocationCourse(_ course: Double?) -> Bool {
+        guard let course else { return false }
+        return course.isFinite && course >= 0
     }
 
     public static func isSchedulerStall(intervalMs: Double, targetIntervalMs: Double) -> Bool {

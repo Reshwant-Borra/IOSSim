@@ -1,6 +1,6 @@
 # Diagnostic Recorder
 
-Date: 2026-08-27
+Date: 2026-08-28
 
 Scope: E1 session persistence and observability only.
 
@@ -21,6 +21,10 @@ Documents/Diagnostics/E1-YYYYMMDD-HHMMSS-summary.txt
 
 The JSONL file is append-only structured event data. The summary is regenerated as events arrive so a partially completed run still has a readable state summary.
 
+For Drive characterization runs, the recorder now keeps the JSONL file handle open for the active diagnostic session instead of opening and closing it for every event. Events are still appended continuously, then flushed periodically and at session lifecycle/finalization/export boundaries. Drive finalization closes the retained handle after flushing. This preserves the trace stream while reducing per-event I/O overhead on the scheduler path.
+
+The human-readable summary is no longer atomically rewritten for every trace event. It is generated at session start, abnormal or lifecycle-significant events, explicit Drive finalization, and export. The final exported summary remains complete for the bounded in-memory timeline and aggregate session state.
+
 ## Event Schema
 
 Each JSONL event contains:
@@ -39,6 +43,15 @@ Each JSONL event contains:
 - `metadata`
 
 Timestamps use wall-clock `Date` plus `ProcessInfo.systemUptime` for monotonic elapsed timing.
+
+Recorder overhead metrics are exposed in summaries:
+
+- total event count;
+- JSONL events written;
+- JSONL flush count;
+- mean JSONL write duration;
+- maximum JSONL write duration;
+- whether the retained JSONL handle is currently open.
 
 ## Recorded Components
 
@@ -115,6 +128,8 @@ The POC screen now shows:
 Press `EXPORT DIAGNOSTICS` in the POC. The iOS share sheet opens with the JSONL and summary files. Use AirDrop, Save to Files, or another local share target.
 
 The app also enables iOS File Sharing and "open documents in place" for easier retrieval from the container.
+
+Export forces a JSONL flush and rewrites the summary before returning URLs.
 
 ## Security
 

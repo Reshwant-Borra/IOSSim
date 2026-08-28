@@ -44,6 +44,7 @@ public actor DriveDiagnostics {
     private var route: RouteResampler?
     private var sessionStartMonotonic: TimeInterval?
     private var selectedSpeedMps: Double?
+    private var updateCadence: DriveUpdateCadence = .baseline1Hz
 
     private var lastObservedRouteDistance: CLLocationDistance?
     private var lastObservedCoordinate: CLLocationCoordinate2D?
@@ -62,11 +63,13 @@ public actor DriveDiagnostics {
 
     private var schedulerIntervalsMs: [Double] = []
     private var schedulerJitterMs: [Double] = []
+    private var expectedDistanceDeltasMeters: [Double] = []
     private var dvtSetDurationsMs: [Double] = []
     private var propagationLatenciesMs: [Double] = []
     private var requestedGeometricSpeedsMps: [Double] = []
     private var observedGeometricSpeedsMps: [Double] = []
     private var validCLLocationSpeedsMps: [Double] = []
+    private var validCLLocationCourseCount = 0
     private var foregroundIntervalsMs: [Double] = []
     private var backgroundIntervalsMs: [Double] = []
     private var lockedIntervalsMs: [Double] = []
@@ -92,11 +95,18 @@ public actor DriveDiagnostics {
         self.sampleLimit = sampleLimit
     }
 
-    public func start(sessionID: UUID, writerID: String, route: RouteResampler, selectedSpeedMps: Double? = nil) async {
+    public func start(
+        sessionID: UUID,
+        writerID: String,
+        route: RouteResampler,
+        selectedSpeedMps: Double? = nil,
+        updateCadence: DriveUpdateCadence = .baseline1Hz
+    ) async {
         self.sessionID = sessionID.uuidString
         self.writerID = writerID
         self.route = route
         self.selectedSpeedMps = selectedSpeedMps
+        self.updateCadence = updateCadence
         sessionStartMonotonic = processInfo.systemUptime
         resetSamples()
         _ = await recorder.startSession(prefix: "DRIVE")
@@ -110,7 +120,10 @@ public actor DriveDiagnostics {
                 "drive_session_id": self.sessionID,
                 "writer_id": writerID,
                 "route_distance_m": String(format: "%.1f", route.totalDistanceMeters),
-                "selected_speed_mps": format(selectedSpeedMps)
+                "selected_speed_mps": format(selectedSpeedMps),
+                "update_cadence_name": updateCadence.diagnosticName,
+                "target_interval_ms": format(updateCadence.targetIntervalMs),
+                "effective_update_frequency_hz": format(updateCadence.effectiveUpdateFrequencyHz)
             ]
         )
     }
@@ -130,9 +143,12 @@ public actor DriveDiagnostics {
         previousExpectedCoordinate: CLLocationCoordinate2D?,
         lifecycleState: String,
         connectionGeneration: Int,
-        targetIntervalSeconds: TimeInterval
+        updateCadence: DriveUpdateCadence,
+        missedDeadlineCount: Int
     ) async {
+        let targetIntervalSeconds = updateCadence.intervalSeconds
         schedulerTickCount += 1
+        self.updateCadence = updateCadence
         latestConnectionGeneration = connectionGeneration
         latestLifecycleState = lifecycleState
         latestExpectedRouteDistance = expectedRouteDistanceMeters
@@ -150,6 +166,9 @@ public actor DriveDiagnostics {
         var effectiveSchedulerSpeed: Double?
         if let previous = previousExpectedRouteDistanceMeters {
             distanceDelta = max(0, expectedRouteDistanceMeters - previous)
+            if let distanceDelta {
+                append(&expectedDistanceDeltasMeters, distanceDelta)
+            }
             effectiveSchedulerSpeed = DriveTraceMetrics.speedMetersPerSecond(
                 distanceDeltaMeters: distanceDelta ?? 0,
                 elapsedSeconds: previousActualTickOffset.map { max(0, actualTickOffset - $0) } ?? targetIntervalSeconds
@@ -158,6 +177,7 @@ public actor DriveDiagnostics {
                 append(&requestedGeometricSpeedsMps, effectiveSchedulerSpeed)
             }
         }
+
         if let previousActualTickOffset {
             let interval = max(0, actualTickOffset - previousActualTickOffset) * 1000
             elapsedSincePreviousTickMs = interval
@@ -228,13 +248,18 @@ public actor DriveDiagnostics {
                 "expected_tick_offset": format(expectedTickOffset),
                 "actual_tick_offset": format(actualTickOffset),
                 "scheduler_wake_jitter_ms": format(jitter),
+                "missed_deadline_count": "\(missedDeadlineCount)",
                 "active_elapsed_seconds": format(activeElapsedSeconds),
                 "expected_route_distance_m": format(expectedRouteDistanceMeters),
                 "previous_expected_route_distance_m": format(previousExpectedRouteDistanceMeters),
                 "distance_delta_since_previous_tick_m": format(distanceDelta),
+                "spatial_step_meters": format(distanceDelta),
                 "elapsed_since_previous_tick_ms": format(elapsedSincePreviousTickMs),
                 "effective_scheduler_speed_mps": format(effectiveSchedulerSpeed),
                 "selected_speed_mps": format(selectedSpeedMetersPerSecond),
+                "update_cadence_name": updateCadence.diagnosticName,
+                "target_interval_ms": format(updateCadence.targetIntervalMs),
+                "effective_update_frequency_hz": format(updateCadence.effectiveUpdateFrequencyHz),
                 "expected_latitude": format(expectedCoordinate.latitude),
                 "expected_longitude": format(expectedCoordinate.longitude),
                 "expected_route_bearing_deg": format(expectedBearing),
@@ -465,6 +490,9 @@ public actor DriveDiagnostics {
         if DriveTraceMetrics.validCLLocationSpeed(observation.speed) {
             append(&validCLLocationSpeedsMps, observation.speed ?? 0)
         }
+        if DriveTraceMetrics.validCLLocationCourse(observation.course) {
+            validCLLocationCourseCount += 1
+        }
 
         var metadata: [String: String] = [
             "drive_session_id": sessionID,
@@ -612,23 +640,34 @@ public actor DriveDiagnostics {
 
     public func finalizeSummary() async -> DriveCharacterizationSummary {
         let duration = sessionStartMonotonic.map { max(0, processInfo.systemUptime - $0) } ?? 0
+        let recorderMetrics = await recorder.metrics()
         let summary = DriveCharacterizationSummary(
+            updateCadenceName: updateCadence.diagnosticName,
+            targetIntervalMs: updateCadence.targetIntervalMs,
+            effectiveUpdateFrequencyHz: updateCadence.effectiveUpdateFrequencyHz,
             totalDriveDuration: duration,
             totalSchedulerTicks: schedulerTickCount,
             totalDVTSetCalls: dvtSetCount,
             totalObservedCLLocations: clLocationCount,
             schedulerIntervals: DriveTraceMetrics.timingStatistics(milliseconds: schedulerIntervalsMs),
             schedulerWakeJitter: DriveTraceMetrics.timingStatistics(milliseconds: schedulerJitterMs.map(abs)),
+            expectedDistanceDeltaPerTickMeters: DriveTraceMetrics.timingStatistics(milliseconds: expectedDistanceDeltasMeters),
             dvtSetDurations: DriveTraceMetrics.timingStatistics(milliseconds: dvtSetDurationsMs),
             coreLocationPropagationLatencies: DriveTraceMetrics.timingStatistics(milliseconds: propagationLatenciesMs),
             selectedSpeedMps: selectedSpeedMps,
             meanRequestedGeometricSpeedMps: mean(requestedGeometricSpeedsMps),
             meanObservedGeometricSpeedMps: mean(observedGeometricSpeedsMps),
             percentageOfCLLocationsWithValidSpeed: clLocationCount > 0 ? Double(validCLLocationSpeedsMps.count) / Double(clLocationCount) * 100 : nil,
+            percentageOfCLLocationsWithValidCourse: clLocationCount > 0 ? Double(validCLLocationCourseCount) / Double(clLocationCount) * 100 : nil,
             meanCLLocationSpeedWhenValid: mean(validCLLocationSpeedsMps),
             foregroundSchedulerIntervals: DriveTraceMetrics.timingStatistics(milliseconds: foregroundIntervalsMs),
             backgroundSchedulerIntervals: DriveTraceMetrics.timingStatistics(milliseconds: backgroundIntervalsMs),
             lockedSchedulerIntervals: DriveTraceMetrics.timingStatistics(milliseconds: lockedIntervalsMs),
+            diagnosticEventCount: recorderMetrics.eventCount,
+            diagnosticEventsWritten: recorderMetrics.eventsWritten,
+            diagnosticFlushCount: recorderMetrics.flushCount,
+            diagnosticMeanWriteDurationMs: recorderMetrics.meanWriteDurationMs,
+            diagnosticMaxWriteDurationMs: recorderMetrics.maxWriteDurationMs,
             schedulerStallCount: schedulerStallCount,
             dvtSetStallCount: dvtSetStallCount,
             coreLocationObservationStallCount: coreLocationObservationStallCount,
@@ -643,6 +682,7 @@ public actor DriveDiagnostics {
             message: "drive characterization summary generated",
             metadata: summaryMetadata(summary)
         )
+        await recorder.finalizeCurrentSession()
         return summary
     }
 
@@ -757,15 +797,23 @@ public actor DriveDiagnostics {
     private func summaryMetadata(_ summary: DriveCharacterizationSummary) -> [String: String] {
         [
             "total_drive_duration_s": format(summary.totalDriveDuration),
+            "update_cadence_name": summary.updateCadenceName,
+            "target_interval_ms": format(summary.targetIntervalMs),
+            "effective_update_frequency_hz": format(summary.effectiveUpdateFrequencyHz),
             "total_scheduler_ticks": "\(summary.totalSchedulerTicks)",
             "total_dvt_set_calls": "\(summary.totalDVTSetCalls)",
             "total_observed_cllocations": "\(summary.totalObservedCLLocations)",
             "scheduler_mean_interval_ms": format(summary.schedulerIntervals.meanMs),
+            "scheduler_median_interval_ms": format(summary.schedulerIntervals.medianMs),
             "scheduler_p95_interval_ms": format(summary.schedulerIntervals.p95Ms),
             "scheduler_max_interval_ms": format(summary.schedulerIntervals.maxMs),
             "scheduler_mean_wake_jitter_ms": format(summary.schedulerWakeJitter.meanMs),
             "scheduler_p95_wake_jitter_ms": format(summary.schedulerWakeJitter.p95Ms),
             "scheduler_max_wake_jitter_ms": format(summary.schedulerWakeJitter.maxMs),
+            "mean_expected_distance_delta_per_tick_m": format(summary.expectedDistanceDeltaPerTickMeters.meanMs),
+            "median_expected_distance_delta_per_tick_m": format(summary.expectedDistanceDeltaPerTickMeters.medianMs),
+            "p95_expected_distance_delta_per_tick_m": format(summary.expectedDistanceDeltaPerTickMeters.p95Ms),
+            "max_expected_distance_delta_per_tick_m": format(summary.expectedDistanceDeltaPerTickMeters.maxMs),
             "dvt_mean_set_duration_ms": format(summary.dvtSetDurations.meanMs),
             "dvt_p95_set_duration_ms": format(summary.dvtSetDurations.p95Ms),
             "dvt_max_set_duration_ms": format(summary.dvtSetDurations.maxMs),
@@ -776,6 +824,7 @@ public actor DriveDiagnostics {
             "mean_requested_geometric_speed_mps": format(summary.meanRequestedGeometricSpeedMps),
             "mean_observed_geometric_speed_mps": format(summary.meanObservedGeometricSpeedMps),
             "percentage_cllocations_with_valid_speed": format(summary.percentageOfCLLocationsWithValidSpeed),
+            "percentage_cllocations_with_valid_course": format(summary.percentageOfCLLocationsWithValidCourse),
             "mean_cllocation_speed_when_valid": format(summary.meanCLLocationSpeedWhenValid),
             "foreground_scheduler_mean_interval_ms": format(summary.foregroundSchedulerIntervals.meanMs),
             "foreground_scheduler_p95_interval_ms": format(summary.foregroundSchedulerIntervals.p95Ms),
@@ -783,6 +832,11 @@ public actor DriveDiagnostics {
             "background_scheduler_p95_interval_ms": format(summary.backgroundSchedulerIntervals.p95Ms),
             "locked_scheduler_mean_interval_ms": format(summary.lockedSchedulerIntervals.meanMs),
             "locked_scheduler_p95_interval_ms": format(summary.lockedSchedulerIntervals.p95Ms),
+            "diagnostic_event_count": "\(summary.diagnosticEventCount)",
+            "diagnostic_events_written": "\(summary.diagnosticEventsWritten)",
+            "diagnostic_flush_count": "\(summary.diagnosticFlushCount)",
+            "diagnostic_mean_write_duration_ms": format(summary.diagnosticMeanWriteDurationMs),
+            "diagnostic_max_write_duration_ms": format(summary.diagnosticMaxWriteDurationMs),
             "scheduler_stall_count": "\(summary.schedulerStallCount)",
             "dvt_set_stall_count": "\(summary.dvtSetStallCount)",
             "corelocation_observation_stall_count": "\(summary.coreLocationObservationStallCount)",
@@ -852,11 +906,13 @@ public actor DriveDiagnostics {
         heartbeatSequence = 0
         schedulerIntervalsMs = []
         schedulerJitterMs = []
+        expectedDistanceDeltasMeters = []
         dvtSetDurationsMs = []
         propagationLatenciesMs = []
         requestedGeometricSpeedsMps = []
         observedGeometricSpeedsMps = []
         validCLLocationSpeedsMps = []
+        validCLLocationCourseCount = 0
         foregroundIntervalsMs = []
         backgroundIntervalsMs = []
         lockedIntervalsMs = []

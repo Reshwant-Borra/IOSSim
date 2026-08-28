@@ -31,6 +31,20 @@ public struct SessionDiagnosticSummary: Codable, Equatable, Sendable {
     public let coreLocationState: String
     public let lastDVTEventElapsed: TimeInterval?
     public let lastCoreLocationElapsed: TimeInterval?
+    public let diagnosticEventsWritten: Int
+    public let diagnosticFlushCount: Int
+    public let diagnosticMeanWriteDurationMs: Double?
+    public let diagnosticMaxWriteDurationMs: Double?
+    public let retainedJSONLHandleOpen: Bool
+}
+
+public struct SessionDiagnosticRecorderMetrics: Codable, Equatable, Sendable {
+    public let eventCount: Int
+    public let eventsWritten: Int
+    public let flushCount: Int
+    public let meanWriteDurationMs: Double?
+    public let maxWriteDurationMs: Double?
+    public let retainedJSONLHandleOpen: Bool
 }
 
 public actor SessionDiagnosticRecorder {
@@ -40,15 +54,19 @@ public actor SessionDiagnosticRecorder {
     private let fileManager: FileManager
     private let processInfo: ProcessInfo
     private let baseDirectory: URL?
+    private let eventLimit: Int
+    private let flushEveryEvents: Int
 
     private var sessionID = "NO_SESSION"
     private var startedAt: Date?
     private var startedUptime: TimeInterval?
     private var events: [SessionDiagnosticEvent] = []
+    private var totalEventCount = 0
     private var componentStates: [String: String] = [:]
     private var firstAbnormalEvent: SessionDiagnosticEvent?
     private var jsonlURL: URL?
     private var summaryURL: URL?
+    private var jsonlHandle: FileHandle?
     private var requestedLatitude: Double?
     private var requestedLongitude: Double?
     private var observedLatitude: Double?
@@ -56,15 +74,23 @@ public actor SessionDiagnosticRecorder {
     private var coreLocationState = "NO_LOCATION"
     private var lastDVTEventElapsed: TimeInterval?
     private var lastCoreLocationElapsed: TimeInterval?
+    private var diagnosticEventsWritten = 0
+    private var diagnosticFlushCount = 0
+    private var diagnosticWriteDurationsMs: [Double] = []
+    private var unflushedEventCount = 0
 
     public init(
         fileManager: FileManager = .default,
         processInfo: ProcessInfo = .processInfo,
-        baseDirectory: URL? = nil
+        baseDirectory: URL? = nil,
+        eventLimit: Int = 4096,
+        flushEveryEvents: Int = 32
     ) {
         self.fileManager = fileManager
         self.processInfo = processInfo
         self.baseDirectory = baseDirectory
+        self.eventLimit = max(1, eventLimit)
+        self.flushEveryEvents = max(1, flushEveryEvents)
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
     }
@@ -77,10 +103,12 @@ public actor SessionDiagnosticRecorder {
         formatter.timeZone = .current
         formatter.dateFormat = "yyyyMMdd-HHmmss"
 
+        closeJSONLHandle()
         sessionID = "\(prefix)-\(formatter.string(from: now))"
         startedAt = now
         startedUptime = processInfo.systemUptime
         events = []
+        totalEventCount = 0
         componentStates = [:]
         firstAbnormalEvent = nil
         requestedLatitude = nil
@@ -90,6 +118,10 @@ public actor SessionDiagnosticRecorder {
         coreLocationState = "NO_LOCATION"
         lastDVTEventElapsed = nil
         lastCoreLocationElapsed = nil
+        diagnosticEventsWritten = 0
+        diagnosticFlushCount = 0
+        diagnosticWriteDurationsMs = []
+        unflushedEventCount = 0
 
         let directory = diagnosticsDirectory()
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -97,6 +129,7 @@ public actor SessionDiagnosticRecorder {
         summaryURL = directory.appendingPathComponent("\(sessionID)-summary.txt")
         if let jsonlURL {
             fileManager.createFile(atPath: jsonlURL.path, contents: nil)
+            jsonlHandle = try? FileHandle(forWritingTo: jsonlURL)
         }
 
         record(
@@ -107,6 +140,7 @@ public actor SessionDiagnosticRecorder {
             message: "diagnostic session created",
             metadata: ["format": "jsonl"]
         )
+        writeSummary()
         return snapshot()
     }
 
@@ -118,6 +152,9 @@ public actor SessionDiagnosticRecorder {
             newState: "ended",
             message: reason
         )
+        flushJSONL(force: true)
+        writeSummary()
+        closeJSONLHandle()
     }
 
     public func setRequestedCoordinate(latitude: Double, longitude: Double) {
@@ -167,7 +204,11 @@ public actor SessionDiagnosticRecorder {
             redactedMessage: message.map(Self.redact),
             metadata: Self.redacted(metadata)
         )
+        totalEventCount += 1
         events.append(event)
+        if events.count > eventLimit {
+            events.removeFirst(events.count - eventLimit)
+        }
 
         if isAbnormal(event), firstAbnormalEvent == nil {
             firstAbnormalEvent = event
@@ -180,7 +221,9 @@ public actor SessionDiagnosticRecorder {
         }
 
         persist(event)
-        writeSummary()
+        if shouldUpdateSummary(for: event) {
+            writeSummary()
+        }
     }
 
     public func recordLocation(_ observation: LocationObservation) {
@@ -231,7 +274,7 @@ public actor SessionDiagnosticRecorder {
             elapsed: elapsed,
             jsonlURL: jsonlURL,
             summaryURL: summaryURL,
-            eventCount: events.count,
+            eventCount: totalEventCount,
             componentStates: componentStates,
             firstAbnormalEvent: firstAbnormalEvent,
             requestedLatitude: requestedLatitude,
@@ -240,12 +283,41 @@ public actor SessionDiagnosticRecorder {
             observedLongitude: observedLongitude,
             coreLocationState: coreLocationState,
             lastDVTEventElapsed: lastDVTEventElapsed,
-            lastCoreLocationElapsed: lastCoreLocationElapsed
+            lastCoreLocationElapsed: lastCoreLocationElapsed,
+            diagnosticEventsWritten: diagnosticEventsWritten,
+            diagnosticFlushCount: diagnosticFlushCount,
+            diagnosticMeanWriteDurationMs: mean(diagnosticWriteDurationsMs),
+            diagnosticMaxWriteDurationMs: diagnosticWriteDurationsMs.max(),
+            retainedJSONLHandleOpen: jsonlHandle != nil
         )
     }
 
     public func exportURLs() -> [URL] {
-        [jsonlURL, summaryURL].compactMap { $0 }.filter { fileManager.fileExists(atPath: $0.path) }
+        flushJSONL(force: true)
+        writeSummary()
+        return [jsonlURL, summaryURL].compactMap { $0 }.filter { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    public func flushAndWriteSummary() {
+        flushJSONL(force: true)
+        writeSummary()
+    }
+
+    public func finalizeCurrentSession() {
+        flushJSONL(force: true)
+        writeSummary()
+        closeJSONLHandle()
+    }
+
+    public func metrics() -> SessionDiagnosticRecorderMetrics {
+        SessionDiagnosticRecorderMetrics(
+            eventCount: totalEventCount,
+            eventsWritten: diagnosticEventsWritten,
+            flushCount: diagnosticFlushCount,
+            meanWriteDurationMs: mean(diagnosticWriteDurationsMs),
+            maxWriteDurationMs: diagnosticWriteDurationsMs.max(),
+            retainedJSONLHandleOpen: jsonlHandle != nil
+        )
     }
 
     public func recentTimeline(limit: Int = 40) -> [String] {
@@ -267,14 +339,20 @@ public actor SessionDiagnosticRecorder {
     }
 
     private func persist(_ event: SessionDiagnosticEvent) {
-        guard let jsonlURL, let data = try? encoder.encode(event) else { return }
+        guard let data = try? encoder.encode(event) else { return }
         guard let newline = "\n".data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: jsonlURL) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            handle.write(data)
-            handle.write(newline)
+        guard let handle = jsonlHandle else { return }
+        let begin = processInfo.systemUptime
+        handle.write(data)
+        handle.write(newline)
+        let duration = max(0, processInfo.systemUptime - begin) * 1000
+        diagnosticEventsWritten += 1
+        unflushedEventCount += 1
+        diagnosticWriteDurationsMs.append(duration)
+        if diagnosticWriteDurationsMs.count > 256 {
+            diagnosticWriteDurationsMs.removeFirst(diagnosticWriteDurationsMs.count - 256)
         }
+        flushJSONL(force: shouldFlushImmediately(event))
     }
 
     private func writeSummary() {
@@ -293,6 +371,10 @@ public actor SessionDiagnosticRecorder {
             "REQUESTED \(coordinate(snapshot.requestedLatitude, snapshot.requestedLongitude))",
             "OBSERVED \(coordinate(snapshot.observedLatitude, snapshot.observedLongitude))",
             "CORE LOCATION \(snapshot.coreLocationState)",
+            "EVENTS WRITTEN \(snapshot.diagnosticEventsWritten)",
+            "JSONL FLUSHES \(snapshot.diagnosticFlushCount)",
+            "JSONL MEAN WRITE MS \(snapshot.diagnosticMeanWriteDurationMs.map { String(format: "%.3f", $0) } ?? "UNKNOWN")",
+            "JSONL MAX WRITE MS \(snapshot.diagnosticMaxWriteDurationMs.map { String(format: "%.3f", $0) } ?? "UNKNOWN")",
             "",
             "COMPONENT STATES"
         ]
@@ -326,6 +408,33 @@ public actor SessionDiagnosticRecorder {
         lines.append(contentsOf: recentTimeline(limit: 80))
         lines.append("")
         return lines.joined(separator: "\n")
+    }
+
+    private func flushJSONL(force: Bool) {
+        guard force || unflushedEventCount >= flushEveryEvents else { return }
+        guard unflushedEventCount > 0, let jsonlHandle else { return }
+        try? jsonlHandle.synchronize()
+        diagnosticFlushCount += 1
+        unflushedEventCount = 0
+    }
+
+    private func closeJSONLHandle() {
+        flushJSONL(force: true)
+        try? jsonlHandle?.close()
+        jsonlHandle = nil
+    }
+
+    private func shouldFlushImmediately(_ event: SessionDiagnosticEvent) -> Bool {
+        event.category == "SESSION" || event.category == "DRIVE_CHARACTERIZATION_SUMMARY"
+    }
+
+    private func shouldUpdateSummary(for event: SessionDiagnosticEvent) -> Bool {
+        shouldFlushImmediately(event) || event.errorCode != nil
+    }
+
+    private func mean(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
     }
 
     private func coordinate(_ latitude: Double?, _ longitude: Double?) -> String {

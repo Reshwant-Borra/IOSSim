@@ -56,6 +56,7 @@ final class DriveViewModel: ObservableObject {
     /// shows `status`'s human-readable text.
     @Published var lastTechnicalError: String?
     @Published var speedMPH = 35.0
+    @Published var updateCadence = DriveUpdateCadence.baseline1Hz
     @Published var state = DriveSessionState.idle
     @Published var connectionState = LocationCoordinatorConnectionState.disconnected
     @Published var connectionGeneration = 0
@@ -260,7 +261,8 @@ final class DriveViewModel: ObservableObject {
                     sessionID: activeController.sessionID,
                     writerID: activeController.writerID,
                     route: result.driveRoute.resampler,
-                    selectedSpeedMps: DriveSpeed.metersPerSecond(fromMPH: speedMPH)
+                    selectedSpeedMps: DriveSpeed.metersPerSecond(fromMPH: speedMPH),
+                    updateCadence: updateCadence
                 )
                 background.setDiagnostics(diagnostics)
                 background.begin()
@@ -278,6 +280,7 @@ final class DriveViewModel: ObservableObject {
                     locationCoordinator: coordinator,
                     diagnostics: diagnostics,
                     clock: clock,
+                    updateCadence: updateCadence,
                     observedProvider: { [weak verifier] in verifier?.latestObservation() },
                     lifecycleProvider: { [background] in background.applicationLifecycleState() },
                     backgroundActiveProvider: { [background] in background.isBackgroundSessionActive() }
@@ -354,6 +357,13 @@ final class DriveViewModel: ObservableObject {
         guard let value else { return "UNKNOWN" }
         let minutes = Int((value / 60).rounded())
         return "\(minutes) min"
+    }
+
+    var expectedDistancePerUpdateText: String {
+        let meters = updateCadence.expectedDistancePerUpdateMeters(
+            speedMetersPerSecond: DriveSpeed.metersPerSecond(fromMPH: speedMPH)
+        )
+        return String(format: "~%.1f m/update", meters)
     }
 
     private func coordinate(_ latitude: Double?, _ longitude: Double?) -> String {
@@ -531,6 +541,21 @@ struct DriveView: View {
                 Slider(value: $model.speedMPH, in: DriveSpeed.minimumMPH...DriveSpeed.maximumMPH, step: 5)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Playback Cadence")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Playback Cadence", selection: $model.updateCadence) {
+                    ForEach(DriveUpdateCadence.allCases) { cadence in
+                        Text(cadence.displayName).tag(cadence)
+                    }
+                }
+                .pickerStyle(.segmented)
+                LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack(spacing: 10) {
                 Button("Change Route") {
                     model.editRoute()
@@ -643,6 +668,8 @@ struct DriveDiagnosticsView: View {
                 LabeledContent("MapKit ETA", value: model.expectedTravelTimeText)
                 LabeledContent("Progress", value: model.expectedProgressText)
                 LabeledContent("Coordinate", value: model.currentCoordinateText)
+                LabeledContent("Playback Cadence", value: model.updateCadence.displayName)
+                LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
             }
 
             Section("Debug Metrics") {

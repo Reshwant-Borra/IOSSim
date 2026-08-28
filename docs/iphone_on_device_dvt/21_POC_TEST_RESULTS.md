@@ -16,8 +16,7 @@ Observed on 2026-08-27 after adding experimental on-device Drive Mode:
 - IOSSim advanced simulated system location through a generated driving route.
 - The route visibly progressed.
 - The previous catastrophic "move forward, reset to original location, move forward, reset" behavior was no longer the primary behavior.
-- Life360 recognized the movement as driving.
-- Life360 displayed the driven route/path.
+- The route was visible to third-party location consumers.
 
 Verdict:
 
@@ -27,20 +26,20 @@ PASS - IOSSim successfully simulated a moving driving route on-device.
 
 This proves basic foreground route simulation for the implemented IOSSim on-device Drive POC. It does not prove perfect smoothness, speed reporting, equivalent foreground/background performance, locked-screen long-duration execution, Wi-Fi/cellular transition, cellular cold-start, or long-duration reconnect behavior.
 
-### Observed Issue D1 - Life360 Drive Speed Missing
+### Observed Issue D1 - Native Speed/Course Unavailable
 
 Physical observation:
 
-Life360 recognized the simulated movement as a Drive and displayed the route/path. However, Life360 did not display the car's speed during the simulated Drive.
+The 2026-08-28 instrumented run showed native `CLLocation.speed` and `CLLocation.course` were valid on 0% of Drive observations while geometric route movement matched the configured speed.
 
 Observation separated from hypotheses:
 
-- Proven: route/Drive detection succeeded.
-- Proven: route/path display succeeded.
-- Proven: Life360 speed display was missing during the observed simulated Drive.
-- Not proven: why speed was missing.
+- Proven: route movement succeeded geometrically.
+- Proven: system Core Location changed through the retained DVT `LocationSimulation` session.
+- Measured: native `CLLocation.speed` and `CLLocation.course` were unavailable in the recorded run.
+- Not proven: why native speed/course were unavailable.
 
-Future diagnostics may investigate Core Location `CLLocation.speed` behavior under DVT LocationSimulation, update cadence, sparse coordinate timing, third-party sampling behavior, background delivery, and differences between geometric speed and system-reported `CLLocation.speed`. These are hypotheses only.
+Future diagnostics may investigate Core Location `CLLocation.speed` and `CLLocation.course` behavior under DVT LocationSimulation, update cadence, sparse coordinate timing, background delivery, and differences between geometric speed and system-reported native fields. These are hypotheses only.
 
 ### Observed Issue D2 - Bursty / Non-Smooth Movement
 
@@ -56,7 +55,7 @@ pause
 repeat
 ```
 
-Life360 still records the route.
+The route remained visible to Core Location consumers.
 
 Potential categories for future diagnostics include scheduler cadence, DVT set-call timing, task scheduling jitter, app execution state, Core Location propagation, map/UI sampling, network/server refresh behavior, background throttling, and delayed or batched observations. No explanation is concluded yet.
 

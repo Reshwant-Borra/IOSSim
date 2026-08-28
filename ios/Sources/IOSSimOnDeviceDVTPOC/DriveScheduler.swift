@@ -6,6 +6,7 @@ public final class DriveScheduler: @unchecked Sendable {
     private let locationCoordinator: LocationCoordinator
     private let diagnostics: DriveDiagnostics
     private let clock: DriveClock
+    private let updateCadence: DriveUpdateCadence
     private let cadenceSeconds: TimeInterval
     private let observedProvider: @Sendable () -> LocationObservation?
     private let lifecycleProvider: @Sendable () -> String
@@ -25,7 +26,7 @@ public final class DriveScheduler: @unchecked Sendable {
         locationCoordinator: LocationCoordinator,
         diagnostics: DriveDiagnostics,
         clock: DriveClock = ContinuousDriveClock(),
-        cadenceSeconds: TimeInterval = 1,
+        updateCadence: DriveUpdateCadence = .baseline1Hz,
         observedProvider: @escaping @Sendable () -> LocationObservation? = { nil },
         lifecycleProvider: @escaping @Sendable () -> String = { "unknown" },
         backgroundActiveProvider: @escaping @Sendable () -> Bool = { false }
@@ -34,7 +35,8 @@ public final class DriveScheduler: @unchecked Sendable {
         self.locationCoordinator = locationCoordinator
         self.diagnostics = diagnostics
         self.clock = clock
-        self.cadenceSeconds = cadenceSeconds
+        self.updateCadence = updateCadence
+        self.cadenceSeconds = updateCadence.intervalSeconds
         self.observedProvider = observedProvider
         self.lifecycleProvider = lifecycleProvider
         self.backgroundActiveProvider = backgroundActiveProvider
@@ -76,16 +78,64 @@ public final class DriveScheduler: @unchecked Sendable {
             return SimulatedCoordinate(position.coordinate)
         }
 
+        var scheduleStart = clock.nowSeconds()
+        var deadlineSequence = 0
+        var wasRunnable = false
+
         while !Task.isCancelled {
-            let now = clock.nowSeconds()
-            guard let position = controller.expectedPosition(now: now) else {
-                try? await clock.sleep(seconds: cadenceSeconds)
+            let state = controller.currentState()
+            guard state == .driving || state == .completedHolding else {
+                wasRunnable = false
+                resetSchedulerSegment()
+                do {
+                    try await clock.sleep(until: clock.nowSeconds() + cadenceSeconds)
+                } catch {
+                    break
+                }
                 continue
             }
 
-            if controller.currentState() == .driving || controller.currentState() == .completedHolding {
-                await send(position: position, now: now)
+            if !wasRunnable {
+                scheduleStart = clock.nowSeconds()
+                deadlineSequence = 0
+                wasRunnable = true
+                resetSchedulerSegment()
             }
+
+            let deadline = DriveSchedulerTimeline.deadline(
+                start: scheduleStart,
+                sequence: deadlineSequence,
+                intervalSeconds: cadenceSeconds
+            )
+            do {
+                try await clock.sleep(until: deadline)
+            } catch {
+                break
+            }
+
+            let now = clock.nowSeconds()
+            guard let position = controller.expectedPosition(now: now) else {
+                wasRunnable = false
+                continue
+            }
+
+            let expectedTickOffset = DriveSchedulerTimeline.deadlineOffset(
+                sequence: deadlineSequence,
+                intervalSeconds: cadenceSeconds
+            )
+            let missedDeadlines = DriveSchedulerTimeline.missedDeadlineCount(
+                start: scheduleStart,
+                intervalSeconds: cadenceSeconds,
+                now: now,
+                scheduledSequence: deadlineSequence
+            )
+            await send(
+                position: position,
+                now: now,
+                scheduleStart: scheduleStart,
+                expectedTickOffset: expectedTickOffset,
+                missedDeadlines: missedDeadlines
+            )
 
             if position.completed, controller.currentState() == .driving {
                 _ = controller.completeHolding(now: now)
@@ -93,24 +143,35 @@ public final class DriveScheduler: @unchecked Sendable {
                 break
             }
 
-            do {
-                try await clock.sleep(seconds: cadenceSeconds)
-            } catch {
-                break
-            }
+            deadlineSequence = DriveSchedulerTimeline.nextFutureSequence(
+                start: scheduleStart,
+                intervalSeconds: cadenceSeconds,
+                now: clock.nowSeconds(),
+                minimumSequence: deadlineSequence + 1
+            )
         }
     }
 
-    private func send(position: DrivePosition, now: TimeInterval) async {
+    private func resetSchedulerSegment() {
+        firstTickClockTime = nil
+        previousActualTickOffset = nil
+    }
+
+    private func send(
+        position: DrivePosition,
+        now: TimeInterval,
+        scheduleStart: TimeInterval,
+        expectedTickOffset: TimeInterval,
+        missedDeadlines: Int
+    ) async {
         sequenceNumber += 1
         tickNumber += 1
         let coordinate = position.coordinate
         let lifecycleState = lifecycleProvider()
         let generation = await locationCoordinator.currentConnectionGeneration()
-        let start = firstTickClockTime ?? now
+        let start = firstTickClockTime ?? scheduleStart
         firstTickClockTime = start
         let actualTickOffset = max(0, now - start)
-        let expectedTickOffset = Double(max(0, tickNumber - 1)) * cadenceSeconds
         let previousActualOffset = previousActualTickOffset
         let previousExpectedDistance = previousExpectedDistanceForDiagnostics
         let previousExpectedCoordinate = previousExpectedCoordinateForDiagnostics
@@ -144,7 +205,8 @@ public final class DriveScheduler: @unchecked Sendable {
             previousExpectedCoordinate: previousExpectedCoordinate,
             lifecycleState: lifecycleState,
             connectionGeneration: generation,
-            targetIntervalSeconds: cadenceSeconds
+            updateCadence: updateCadence,
+            missedDeadlineCount: missedDeadlines
         )
         await diagnostics.recordCoordinatorUpdateRequested(
             context: traceContext,
