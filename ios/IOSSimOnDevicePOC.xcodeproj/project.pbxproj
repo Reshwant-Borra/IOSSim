@@ -36,6 +36,20 @@
 		000000000000000000000125 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000225 /* UniformTypeIdentifiers.framework */; };
 		000000000000000000000127 /* MapKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000230 /* MapKit.framework */; };
 		BC1FCFA3059F620F336001C2 /* SavedPlace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 365421394EB69E9120D4FE53 /* SavedPlace.swift */; };
+		D8F78CC97C607936B5439E28 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DF861DC237C3506E2C7ED42 /* RootTabView.swift */; };
+		7BEDE8ACBDF9F7AC49320B34 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F84B93B0D84339A83F4B02 /* SettingsView.swift */; };
+		AC0AAE41E5C719FBE67F0940 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDC1D55166F0E50366694880 /* SetupView.swift */; };
+		0E3643F93905AE50BE248231 /* ConnectionStatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0006690495AEE81A254EFD7 /* ConnectionStatusModel.swift */; };
+		E9E6454CE8002901F90D6FD3 /* PlaceSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D4E71D927C27AD593CB41C7 /* PlaceSearchService.swift */; };
+		9754F220443790305C55A5CA /* FavoritesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DCFD2F132F827C99E88CE89 /* FavoritesStore.swift */; };
+		953AA68F0F012F5BDB5AA463 /* CurrentLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1790C54039BB3D2136B4A505 /* CurrentLocationProvider.swift */; };
+		D9E578F3220C5FB24267973B /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C89517A440030DAFEBB5471B /* AppRouter.swift */; };
+		03B7DC904F6AD8FD54D374C9 /* PlaceSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F58F318BDD880C68AF7550D /* PlaceSearchField.swift */; };
+		46ABE8EED5FFC5F6BEE980ED /* LocationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BFB795505D7AB0887C0655 /* LocationViewModel.swift */; };
+		07CF5BFABEEA4E943B495011 /* LocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E7D123C7FD0A02ECE0BEA7A /* LocationView.swift */; };
+		26F81AE7250CAE7FE047317A /* LocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8473EA93220565D7EA261DD /* LocationMapView.swift */; };
+		FE1E484C8CAE3A63496825B2 /* LocationSelectionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E735C94A7AB4F990C5E89C0 /* LocationSelectionSheet.swift */; };
+		7DEAFEF5B08C5CB699343E19 /* SavedPlacesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B142C3568B149FF997FEB15 /* SavedPlacesSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -72,6 +86,20 @@
 		000000000000000000000230 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
 		000000000000000000000231 /* IOSSim DVT POC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "IOSSim DVT POC.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		365421394EB69E9120D4FE53 /* SavedPlace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlace.swift; sourceTree = "<group>"; };
+		2DF861DC237C3506E2C7ED42 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		47F84B93B0D84339A83F4B02 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		CDC1D55166F0E50366694880 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
+		B0006690495AEE81A254EFD7 /* ConnectionStatusModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatusModel.swift; sourceTree = "<group>"; };
+		5D4E71D927C27AD593CB41C7 /* PlaceSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSearchService.swift; sourceTree = "<group>"; };
+		4DCFD2F132F827C99E88CE89 /* FavoritesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStore.swift; sourceTree = "<group>"; };
+		1790C54039BB3D2136B4A505 /* CurrentLocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentLocationProvider.swift; sourceTree = "<group>"; };
+		C89517A440030DAFEBB5471B /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
+		4F58F318BDD880C68AF7550D /* PlaceSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSearchField.swift; sourceTree = "<group>"; };
+		19BFB795505D7AB0887C0655 /* LocationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationViewModel.swift; sourceTree = "<group>"; };
+		3E7D123C7FD0A02ECE0BEA7A /* LocationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationView.swift; sourceTree = "<group>"; };
+		D8473EA93220565D7EA261DD /* LocationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationMapView.swift; sourceTree = "<group>"; };
+		9E735C94A7AB4F990C5E89C0 /* LocationSelectionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSelectionSheet.swift; sourceTree = "<group>"; };
+		9B142C3568B149FF997FEB15 /* SavedPlacesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlacesSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +133,11 @@
 		000000000000000000000402 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				41AE183E79B6DD2006BB0AAB /* Location */,
+				60A8C95B614CD0C1EF289D2A /* Shared */,
+				CDC1D55166F0E50366694880 /* SetupView.swift */,
+				47F84B93B0D84339A83F4B02 /* SettingsView.swift */,
+				2DF861DC237C3506E2C7ED42 /* RootTabView.swift */,
 				000000000000000000000201 /* IOSSimOnDeviceDVTPOCApp.swift */,
 				000000000000000000000202 /* ContentView.swift */,
 				000000000000000000000229 /* DriveView.swift */,
@@ -194,6 +227,31 @@
 			path = include;
 			sourceTree = "<group>";
 		};
+		60A8C95B614CD0C1EF289D2A /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				4F58F318BDD880C68AF7550D /* PlaceSearchField.swift */,
+				C89517A440030DAFEBB5471B /* AppRouter.swift */,
+				1790C54039BB3D2136B4A505 /* CurrentLocationProvider.swift */,
+				4DCFD2F132F827C99E88CE89 /* FavoritesStore.swift */,
+				5D4E71D927C27AD593CB41C7 /* PlaceSearchService.swift */,
+				B0006690495AEE81A254EFD7 /* ConnectionStatusModel.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		41AE183E79B6DD2006BB0AAB /* Location */ = {
+			isa = PBXGroup;
+			children = (
+				9B142C3568B149FF997FEB15 /* SavedPlacesSheet.swift */,
+				9E735C94A7AB4F990C5E89C0 /* LocationSelectionSheet.swift */,
+				D8473EA93220565D7EA261DD /* LocationMapView.swift */,
+				3E7D123C7FD0A02ECE0BEA7A /* LocationView.swift */,
+				19BFB795505D7AB0887C0655 /* LocationViewModel.swift */,
+			);
+			path = Location;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -262,6 +320,20 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7DEAFEF5B08C5CB699343E19 /* SavedPlacesSheet.swift in Sources */,
+				FE1E484C8CAE3A63496825B2 /* LocationSelectionSheet.swift in Sources */,
+				26F81AE7250CAE7FE047317A /* LocationMapView.swift in Sources */,
+				07CF5BFABEEA4E943B495011 /* LocationView.swift in Sources */,
+				46ABE8EED5FFC5F6BEE980ED /* LocationViewModel.swift in Sources */,
+				03B7DC904F6AD8FD54D374C9 /* PlaceSearchField.swift in Sources */,
+				D9E578F3220C5FB24267973B /* AppRouter.swift in Sources */,
+				953AA68F0F012F5BDB5AA463 /* CurrentLocationProvider.swift in Sources */,
+				9754F220443790305C55A5CA /* FavoritesStore.swift in Sources */,
+				E9E6454CE8002901F90D6FD3 /* PlaceSearchService.swift in Sources */,
+				0E3643F93905AE50BE248231 /* ConnectionStatusModel.swift in Sources */,
+				AC0AAE41E5C719FBE67F0940 /* SetupView.swift in Sources */,
+				7BEDE8ACBDF9F7AC49320B34 /* SettingsView.swift in Sources */,
+				D8F78CC97C607936B5439E28 /* RootTabView.swift in Sources */,
 				BC1FCFA3059F620F336001C2 /* SavedPlace.swift in Sources */,
 				000000000000000000000101 /* IOSSimOnDeviceDVTPOCApp.swift in Sources */,
 				000000000000000000000102 /* ContentView.swift in Sources */,

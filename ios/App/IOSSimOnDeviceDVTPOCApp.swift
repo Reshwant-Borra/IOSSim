@@ -4,7 +4,7 @@ import SwiftUI
 struct IOSSimOnDeviceDVTPOCApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootTabView()
         }
     }
 }

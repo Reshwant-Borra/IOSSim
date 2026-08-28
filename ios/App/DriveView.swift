@@ -19,6 +19,28 @@ enum POCAppDependencies {
         locationCoordinator: locationCoordinator,
         recorder: recorder
     )
+
+    /// Owned once for the app's lifetime so an active Drive session (its scheduler,
+    /// controller, background manager, and verifier) is never torn down by navigation
+    /// or tab switches. Views must reference this shared instance rather than
+    /// constructing their own `DriveViewModel()`.
+    @MainActor
+    static let driveModel = DriveViewModel()
+
+    /// Shared product-facing readiness state (Pairing/LocalDevVPN/Endpoint/Session),
+    /// observed by Location, Drive, Settings, and Setup so they agree on whether the
+    /// app is ready without each re-running diagnostics independently.
+    @MainActor
+    static let connectionStatus = ConnectionStatusModel(runner: runner, coordinator: locationCoordinator)
+
+    @MainActor
+    static let favoritesStore = FavoritesStore()
+
+    @MainActor
+    static let recentsStore = RecentsStore()
+
+    @MainActor
+    static let router = AppRouter()
 }
 
 @MainActor
@@ -136,6 +158,43 @@ final class DriveViewModel: ObservableObject {
                 status = "FAIL: \(display(error))"
             }
         }
+    }
+
+    /// Sets the start directly from an already-resolved place (search
+    /// suggestion, favorite, or recent), bypassing text search. Mirrors
+    /// `setDestination`; does not touch the engine.
+    func setStart(_ place: ResolvedPlace) {
+        startCoordinate = place.coordinate
+        startCoordinateText = Self.coordinate(place.coordinate)
+        startQuery = place.name
+    }
+
+    /// Discards an in-progress route preview and returns to route setup.
+    /// Only ever touches the preview `controller` created by `generateRoute()`
+    /// for distance/ETA display — a real drive is a separate controller
+    /// created fresh by `startDrive()`, so this can never interrupt an active
+    /// Drive session.
+    func editRoute() {
+        controller = nil
+        routeResult = nil
+        state = .idle
+        routeDistanceText = "UNKNOWN"
+        expectedTravelTimeText = "UNKNOWN"
+        expectedProgressText = "UNKNOWN"
+        breadcrumbs = []
+        status = "Ready. Experimental testing feature."
+    }
+
+    /// Sets the destination directly from an already-resolved place (e.g. a
+    /// "Drive Here" handoff from the Location tab or a favorite), bypassing
+    /// text search. Does not touch the engine — it only populates the same
+    /// destinationCoordinate/destinationQuery fields generateRoute() already
+    /// reads.
+    func setDestination(_ place: ResolvedPlace) {
+        destinationCoordinate = place.coordinate
+        destinationCoordinateText = Self.coordinate(place.coordinate)
+        destinationQuery = place.name
+        status = "Destination set to \(place.name). Choose a start, then generate a route."
     }
 
     func resolveDestination() {
@@ -303,70 +362,232 @@ final class DriveViewModel: ObservableObject {
 
     private func display(_ error: Error) -> String {
         if let error = error as? POCError {
-            return "\(error.code.rawValue): \(error.message)"
+            return HumanReadableError.describe(code: error.code.rawValue, detail: error.message)
         }
         return String(describing: error)
     }
 }
 
 struct DriveView: View {
-    @StateObject private var model = DriveViewModel()
-    @State private var exporting = false
+    // Shared, app-lifetime instance (see POCAppDependencies.driveModel) so switching
+    // tabs or pushing/popping navigation never stops an active Drive session.
+    @ObservedObject private var model = POCAppDependencies.driveModel
+    @StateObject private var startSearch = PlaceSearchService()
+    @StateObject private var destinationSearch = PlaceSearchService()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        ZStack(alignment: .top) {
+            DriveMapPreview(route: model.routeResult, breadcrumbs: model.breadcrumbs)
+                .ignoresSafeArea(edges: .bottom)
+
+            VStack(spacing: 8) {
+                switch model.state {
+                case .idle, .stopped:
+                    routeSetupCard
+                case .routeReady:
+                    routeReviewCard
+                case .driving, .paused, .completedHolding:
+                    activeDriveCard
+                }
+                Spacer()
+            }
+            .padding()
+        }
+        .navigationTitle("Drive")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    DriveDiagnosticsView(model: model)
+                } label: {
+                    Image(systemName: "wrench.and.screwdriver")
+                }
+                .accessibilityLabel("Drive Diagnostics")
+            }
+        }
+        .task {
+            model.startRefreshLoop()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            model.recordScenePhase(String(describing: phase))
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            model.updateBreadcrumb()
+        }
+    }
+
+    private var routeSetupCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Drive")
+                .font(.headline)
+
+            PlaceSearchField(
+                placeholder: "Start: Current Location or search",
+                text: $model.startQuery,
+                search: startSearch,
+                trailingSystemImage: "location.fill",
+                onTrailingTap: { model.useCurrentAsStart() },
+                onSelect: { model.setStart($0) }
+            )
+
+            PlaceSearchField(
+                placeholder: "Destination",
+                text: $model.destinationQuery,
+                search: destinationSearch,
+                onSelect: { model.setDestination($0) }
+            )
+
+            if model.status.hasPrefix("FAIL") {
+                Label(model.status, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
+            Button {
+                model.generateRoute()
+            } label: {
+                Text("Preview Route")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var routeReviewCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(model.startQuery.isEmpty ? "Current Location" : model.startQuery, systemImage: "circle.fill")
+                    .font(.subheadline)
+                Label(model.destinationQuery, systemImage: "mappin")
+                    .font(.subheadline)
+            }
+
+            HStack {
+                LabeledContent("Distance", value: model.routeDistanceText)
+                Spacer()
+                LabeledContent("ETA", value: model.expectedTravelTimeText)
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Speed: \(Int(model.speedMPH)) mph")
+                    .font(.subheadline)
+                Slider(value: $model.speedMPH, in: DriveSpeed.minimumMPH...DriveSpeed.maximumMPH, step: 5)
+            }
+
+            HStack(spacing: 10) {
+                Button("Change Route") {
+                    model.editRoute()
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    model.startDrive()
+                } label: {
+                    Text("Start Drive")
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.large)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var activeDriveCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Circle()
+                    .fill(model.state == .paused ? Color.orange : Color.green)
+                    .frame(width: 8, height: 8)
+                Text(driveStateLabel)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(Int(model.speedMPH)) mph")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Text("\(model.expectedProgressText) of \(model.routeDistanceText)")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                if model.state == .paused {
+                    Button {
+                        model.resume()
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if model.state == .driving {
+                    Button {
+                        model.pause()
+                    } label: {
+                        Label("Pause", systemImage: "pause.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Button(role: .destructive) {
+                    model.stopAndClear()
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .controlSize(.large)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var driveStateLabel: String {
+        switch model.state {
+        case .driving: return "Driving"
+        case .paused: return "Paused"
+        case .completedHolding: return "Arrived"
+        default: return model.state.rawValue
+        }
+    }
+}
+
+/// Full diagnostic detail for Drive, unchanged in substance from the original
+/// developer console — only re-homed under Settings -> Developer so the
+/// normal Drive screen stays uncluttered. All instrumentation is preserved.
+struct DriveDiagnosticsView: View {
+    @ObservedObject var model: DriveViewModel
+    @State private var exporting = false
+
+    var body: some View {
         List {
-            Section("Experimental / Testing Feature") {
-                Text("Drive Mode is isolated from the primary static-location workflow and is for controlled developer-owned device testing.")
-                    .font(.caption)
+            Section("Status") {
                 Text(model.status)
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
-            }
-
-            Section("Route") {
-                TextField("Start location or lat,lon", text: $model.startQuery)
-                    .textInputAutocapitalization(.words)
-                HStack {
-                    Button("USE CURRENT") { model.useCurrentAsStart() }
-                    Button("RESOLVE START") { model.resolveStart() }
-                }
-                Text(model.startCoordinateText)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-
-                TextField("Destination or lat,lon", text: $model.destinationQuery)
-                    .textInputAutocapitalization(.words)
-                Button("RESOLVE DESTINATION") { model.resolveDestination() }
-                Text(model.destinationCoordinateText)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-
-                Button("GENERATE DRIVING ROUTE") { model.generateRoute() }
-            }
-
-            Section("Preview") {
-                DriveMapPreview(route: model.routeResult, breadcrumbs: model.breadcrumbs)
-                    .frame(height: 260)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                LabeledContent("Route distance", value: model.routeDistanceText)
-                LabeledContent("MapKit ETA", value: model.expectedTravelTimeText)
-            }
-
-            Section("Speed") {
-                Slider(value: $model.speedMPH, in: DriveSpeed.minimumMPH...DriveSpeed.maximumMPH, step: 5)
-                LabeledContent("Selected", value: "\(Int(model.speedMPH)) mph")
             }
 
             Section("Drive State") {
                 LabeledContent("State", value: model.state.rawValue)
                 LabeledContent("Connection", value: model.connectionState.rawValue)
                 LabeledContent("Generation", value: "\(model.connectionGeneration)")
+                LabeledContent("Route distance", value: model.routeDistanceText)
+                LabeledContent("MapKit ETA", value: model.expectedTravelTimeText)
                 LabeledContent("Progress", value: model.expectedProgressText)
                 LabeledContent("Coordinate", value: model.currentCoordinateText)
             }
 
-            DisclosureGroup("Debug Metrics") {
+            Section("Debug Metrics") {
                 LabeledContent("Lifecycle", value: model.liveMetrics.lifecycleState)
                 LabeledContent("Scheduler interval", value: ms(model.liveMetrics.lastSchedulerIntervalMs))
                 LabeledContent("Scheduler jitter", value: ms(model.liveMetrics.lastSchedulerJitterMs))
@@ -383,26 +604,20 @@ struct DriveView: View {
                 LabeledContent("Snap-backs", value: "\(model.liveMetrics.snapBackCount)")
             }
 
-            Section("Controls") {
+            Section("Manual Controls") {
                 Button("START DRIVE") { model.startDrive() }
                 Button("PAUSE") { model.pause() }
                 Button("RESUME") { model.resume() }
                 Button("STOP / CLEAR SIMULATION", role: .destructive) { model.stopAndClear() }
+            }
+
+            Section("Export") {
                 Button("EXPORT DRIVE DIAGNOSTICS") {
                     exporting = true
                 }
             }
         }
-        .navigationTitle("Drive Simulation")
-        .task {
-            model.startRefreshLoop()
-        }
-        .onChange(of: scenePhase) { _, phase in
-            model.recordScenePhase(String(describing: phase))
-        }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            model.updateBreadcrumb()
-        }
+        .navigationTitle("Drive Diagnostics")
         .sheet(isPresented: $exporting) {
             ShareSheet(activityItems: model.exportURLs)
         }
