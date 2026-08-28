@@ -2,6 +2,8 @@
 
 Date: 2026-08-27
 
+Update: 2026-08-28 first instrumented physical Drive characterization is preserved in [DRIVE_CHARACTERIZATION_2026-08-28.md](DRIVE_CHARACTERIZATION_2026-08-28.md).
+
 IOSSim commit under test: working tree on `poc/on-device-dvt` after `82c8b06`.
 
 ## Physical Drive Mode Result
@@ -88,6 +90,63 @@ This has not been instrumentally confirmed. It must not yet be described as a pr
 - 30-minute Drive.
 - Network transition reliability.
 - Cold-start over cellular.
+
+## Instrumented Physical Drive Characterization - 2026-08-28
+
+Session:
+
+```text
+DRIVE-20260828-100624
+```
+
+STATUS: PHYSICALLY CHARACTERIZED / SMOOTHING NOT YET PROVEN
+
+The first instrumented physical Drive run lasted approximately 2 minutes on an approximately 1.9 km / 1.2 mile route at approximately 35 mph. IOSSim progressed through the route, repeatedly updated system Core Location through the retained DVT `LocationSimulation` session, maintained monotonic scheduler progress, avoided significant backward-reset behavior, and ran while foregrounded and backgrounded.
+
+Measured scheduler cadence remained close to the existing ~1 Hz baseline:
+
+```text
+observed mean interval: ~1.067 s
+foreground mean:        ~1.053 s
+background mean:        ~1.071 s
+foreground p95:         ~1.084 s
+background p95:         ~1.112 s
+maximum:                ~1.14 s
+```
+
+Measured DVT set latency was low:
+
+```text
+mean: ~11 ms
+p95:  ~19 ms
+max:  ~46 ms
+```
+
+Measured Drive events:
+
+```text
+scheduler stalls:      0
+DVT set stalls:        0
+snap-back detections:  0
+burst detector events: 0 under current thresholds
+```
+
+Native Core Location speed/course finding:
+
+```text
+CLLocation.speed valid:  0%
+CLLocation.course valid: 0%
+```
+
+The selected speed was approximately 15.646 m/s and observed geometric route speed was approximately 16.1 m/s. Therefore IOSSim moved geometrically at the configured route speed while native `CLLocation.speed` and `CLLocation.course` were unavailable in this physical run. This is a physical characterization result, not evidence of a route interpolation bug.
+
+Foreground/background status:
+
+```text
+SMALL MEASURED CADENCE DIFFERENCE - NOT PRIMARY CAUSE BASED ON CURRENT RUN
+```
+
+At 35 mph, the measured ~1.067 second cadence implies approximately 16.7 meters per coordinate update. This is now the primary IOSSim-level smoothing hypothesis. A 2 Hz experiment is not yet physically proven and must be tested with an A/B comparison before any smoothness claim is made.
 
 ### Working Drive Architecture To Preserve
 

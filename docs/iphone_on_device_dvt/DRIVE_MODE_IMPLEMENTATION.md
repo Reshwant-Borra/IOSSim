@@ -1,6 +1,6 @@
 # Experimental Drive Mode Implementation
 
-Status date: 2026-08-27
+Status date: 2026-08-28
 
 This document describes the testing-only Drive Mode added to the existing IOSSim iPhone app. It does not replace the proven static on-device DVT location simulation flow.
 
@@ -10,7 +10,7 @@ Current status:
 
 ```text
 BASIC DRIVE POC PHYSICALLY DEMONSTRATED
-WITH CADENCE, SPEED, AND BACKGROUND CHARACTERIZATION ISSUES UNDER INVESTIGATION
+WITH FIRST INSTRUMENTED PHYSICAL CHARACTERIZATION COMPLETE
 ```
 
 Implemented:
@@ -28,33 +28,31 @@ Implemented:
 - Unit checks covering route interpolation, speed timing, pause/resume, delayed ticks, monotonic progress, completed holding, stale writers, generation guards, reconnect restoration, stop behavior, clamping, and diagnostics serialization.
 - iPhone target Debug iphoneos build validation.
 - Basic foreground physical Drive route simulation on an actual iPhone.
+- First instrumented physical Drive characterization session `DRIVE-20260828-100624`.
 
 Proven physical results:
 
 - Drive Mode physically runs on the iPhone.
-- Route movement successfully changes simulated system location.
-- Life360 recognizes the movement as driving.
-- Life360 displays the route/path.
-- The previous severe reset-to-origin behavior is not the dominant behavior during this successful test.
+- Route movement successfully changes simulated system Core Location.
+- The route is visible to third-party location consumers.
+- The scheduler maintained monotonic route progress.
+- Repeated DVT `LocationSimulation` updates were accepted successfully.
+- The previous severe reset-to-origin behavior was absent in the first instrumented characterization run.
 
 Observed issues:
 
-- D1: Life360 recognized the movement as a Drive and displayed the route/path, but did not display the car's speed during the simulated Drive.
-- D2: Movement visually occurred in bursts: forward movement, pause, forward movement, pause.
-- D3: Drive Mode may appear to run faster or more smoothly while IOSSim itself is open in the foreground. When the user switches to another app without force-closing IOSSim, movement may become slower, more delayed, or more bursty. This is a physical observation and requires measurement.
+- D1: Native `CLLocation.speed` and `CLLocation.course` were valid for 0% of Drive observations in session `DRIVE-20260828-100624`, while geometric route speed matched the selected speed.
+- D2: Visual movement remains bursty. Current diagnostics show no multi-second scheduler or DVT stalls; the primary IOSSim-level hypothesis is coarse ~1 Hz spatial stepping, approximately 16-18 meters per update at 35 mph.
+- D3: Foreground/background difference is now classified as `SMALL MEASURED CADENCE DIFFERENCE - NOT PRIMARY CAUSE BASED ON CURRENT RUN`.
 
 Not yet proven:
 
 - Cause of missing speed.
 - Cause of burstiness.
-- Actual foreground scheduler frequency.
-- Actual background scheduler frequency.
-- Actual DVT call latency foreground vs background.
-- Core Location propagation delay.
-- Whether `CLLocation.speed` is valid during DVT Drive.
-- Whether `CLLocation.course` is valid during DVT Drive.
-- Whether `sourceInformation.isSimulatedBySoftware` is true during Drive.
-- Whether background execution causes timer coalescing.
+- Whether 2 Hz reduces physical visual burstiness.
+- Whether 2 Hz changes native `CLLocation.speed` or `CLLocation.course` availability.
+- Core Location propagation behavior under 2 Hz.
+- Whether background execution causes timer coalescing in longer runs.
 - Locked-screen 10-minute Drive.
 - 30-minute Drive or destination hold.
 - Network transition reliability.
@@ -137,6 +135,8 @@ Drive remains authoritative
 `LocationCoordinator` owns the current connection generation. Every fresh DVT connection increments `connectionGeneration`. Stale callbacks from older generations are logged as `STALE_GENERATION` and ignored.
 
 The native `IdeviceOnDeviceTunnelClient` continues to retain one `LocationSimulation` handle per active connection. Drive playback sends repeated `set` operations through that retained session. It does not create a new DVT connection for every route point.
+
+The 2026-08-28 instrumented characterization confirms this architecture remains physically valuable and must be preserved for smoothing experiments.
 
 On reconnect during Drive Mode:
 
@@ -382,6 +382,44 @@ User impression:
 Drive Mode may appear to run faster or more smoothly while IOSSim itself is open in the foreground. When the user switches to another app but does not force-close IOSSim, Drive movement may become slower, more delayed, or more bursty.
 
 This is not yet instrumentally confirmed. Future diagnostics must compare monotonic scheduler timing, DVT set timing, Core Location observation timing, and lifecycle transitions.
+
+## First Instrumented Physical Drive Characterization
+
+Detailed result: [DRIVE_CHARACTERIZATION_2026-08-28.md](DRIVE_CHARACTERIZATION_2026-08-28.md).
+
+Session:
+
+```text
+DRIVE-20260828-100624
+```
+
+Measured result:
+
+- Approximate active Drive duration: ~2 minutes.
+- Approximate route distance: 1.9 km / ~1.2 miles.
+- Selected speed: ~35 mph / ~15.646 m/s.
+- Observed geometric route speed: ~16.1 m/s.
+- Scheduler mean interval: ~1.067 s.
+- Foreground mean interval: ~1.053 s.
+- Background mean interval: ~1.071 s.
+- Foreground p95 interval: ~1.084 s.
+- Background p95 interval: ~1.112 s.
+- Maximum interval: ~1.14 s.
+- DVT set latency mean/p95/max: ~11 ms / ~19 ms / ~46 ms.
+- Scheduler stalls: 0.
+- DVT set stalls: 0.
+- Snap-back detections: 0.
+- Burst detector events: 0 under current thresholds.
+- `CLLocation.speed` valid: 0%.
+- `CLLocation.course` valid: 0%.
+- `sourceInformation.isSimulatedBySoftware == true` for simulated Drive locations.
+
+Interpretation:
+
+- PROVEN: route interpolation appears healthy, DVT latency is low, and snap-back was absent in this run.
+- MEASURED: foreground/background cadence difference was small.
+- INFERRED: at 35 mph, the ~1 Hz cadence naturally creates ~16-18 meter coordinate steps and is the primary IOSSim-level smoothing hypothesis.
+- NOT YET TESTED: 2 Hz smoothing, 2 Hz background behavior, and native speed/course behavior under 2 Hz.
 
 ## Physical Test Procedure
 
