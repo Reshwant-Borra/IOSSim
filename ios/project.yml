@@ -1,0 +1,40 @@
+name: IOSSimOnDeviceDVTPOC
+options:
+  bundleIdPrefix: com.iossim
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+targets:
+  IOSSimOnDeviceDVTPOC:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Sources/IOSSimOnDeviceDVTPOC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.iossim.on-device-dvt-poc
+        PRODUCT_NAME: IOSSim DVT POC
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        SUPPORTS_MACCATALYST: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) IOS_SIM_IDEVICE_FFI"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/Vendor/idevice/lib"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/Vendor/idevice/include"
+        SWIFT_INCLUDE_PATHS: "$(PROJECT_DIR)/Vendor/idevice/include"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lidevice_ffi"
+          - "-lc++"
+          - "-lz"

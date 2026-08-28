@@ -136,11 +136,11 @@ Locus attempts 4 Hz joystick updates and periodic resends, and IOSSim already ha
 
 Suggested next files/components:
 
-- `ios-poc/PairingImport`: import RPPairing plist, validate semantic keys, store securely.
-- `ios-poc/LocalTunnelProbe`: check LocalDevVPN presence, interface addresses, and TCP reachability to `10.7.0.1:49152`.
-- `ios-poc/IdeviceBridge`: pinned idevice FFI wrapper for connect/set/clear.
-- `ios-poc/OneShotLocationSet`: hard-coded coordinate command.
-- `ios-poc/LocationVerifier`: separate Core Location consumer logging coordinate and source information.
-- `ios-poc/DiagnosticsLog`: redacted structured events for E1-E10.
+- `ios/PairingImport`: import RPPairing plist, validate semantic keys, store securely.
+- `ios/LocalTunnelProbe`: check LocalDevVPN presence, interface addresses, and TCP reachability to `10.7.0.1:49152`.
+- `ios/IdeviceBridge`: pinned idevice FFI wrapper for connect/set/clear.
+- `ios/OneShotLocationSet`: hard-coded coordinate command.
+- `ios/LocationVerifier`: separate Core Location consumer logging coordinate and source information.
+- `ios/DiagnosticsLog`: redacted structured events for E1-E10.
 
 Do not integrate with the production IOSSim UI until E1 passes and E4 is classified.

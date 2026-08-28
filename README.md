@@ -4,6 +4,13 @@ Free, open-source iOS location testing tool. Windows-first with macOS support, U
 
 **Stack**: Python 3.11+ / FastAPI / pymobiledevice3, React 18 / TypeScript / Vite, OpenStreetMap via Leaflet.
 
+This repository contains two runtime implementations:
+
+- The stable Mac-hosted IOSSim app in `backend/` and `frontend/`.
+- The experimental iPhone on-device DVT POC in `ios/`.
+
+See [docs/IMPLEMENTATIONS.md](docs/IMPLEMENTATIONS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
+
 ---
 
 ## Stability Model

@@ -1,0 +1,4 @@
+module IOSSimIdeviceFFI [system] {
+  header "idevice_minimal.h"
+  export *
+}
