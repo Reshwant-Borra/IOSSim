@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="IOSSim Apple GPX Control" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Apple GPX Core Location Control - 35 mph</name>
+    <desc>Deterministic 160 second route with 10 second waypoint spacing at 15.646 m/s.</desc>
+  </metadata>
+  <wpt lat="37.33170000" lon="-122.03070000">
+    <ele>15.00</ele>
+    <time>2026-01-01T00:00:00Z</time>
+  </wpt>
+  <wpt lat="37.33169999" lon="-122.02893040">
+    <ele>16.46</ele>
+    <time>2026-01-01T00:00:10Z</time>
+  </wpt>
+  <wpt lat="37.33169997" lon="-122.02716079">
+    <ele>17.77</ele>
+    <time>2026-01-01T00:00:20Z</time>
+  </wpt>
+  <wpt lat="37.33169996" lon="-122.02539119">
+    <ele>18.82</ele>
+    <time>2026-01-01T00:00:30Z</time>
+  </wpt>
+  <wpt lat="37.33269491" lon="-122.02413988">
+    <ele>19.49</ele>
+    <time>2026-01-01T00:00:40Z</time>
+  </wpt>
+  <wpt lat="37.33368986" lon="-122.02288855">
+    <ele>19.73</ele>
+    <time>2026-01-01T00:00:50Z</time>
+  </wpt>
+  <wpt lat="37.33509694" lon="-122.02288855">
+    <ele>19.54</ele>
+    <time>2026-01-01T00:01:00Z</time>
+  </wpt>
+  <wpt lat="37.33650401" lon="-122.02288855">
+    <ele>18.94</ele>
+    <time>2026-01-01T00:01:10Z</time>
+  </wpt>
+  <wpt lat="37.33650400" lon="-122.02465826">
+    <ele>18.03</ele>
+    <time>2026-01-01T00:01:20Z</time>
+  </wpt>
+  <wpt lat="37.33650399" lon="-122.02642798">
+    <ele>16.91</ele>
+    <time>2026-01-01T00:01:30Z</time>
+  </wpt>
+  <wpt lat="37.33749894" lon="-122.02767937">
+    <ele>15.74</ele>
+    <time>2026-01-01T00:01:40Z</time>
+  </wpt>
+  <wpt lat="37.33849388" lon="-122.02893078">
+    <ele>14.64</ele>
+    <time>2026-01-01T00:01:50Z</time>
+  </wpt>
+  <wpt lat="37.33708681" lon="-122.02893078">
+    <ele>13.77</ele>
+    <time>2026-01-01T00:02:00Z</time>
+  </wpt>
+  <wpt lat="37.33567973" lon="-122.02893078">
+    <ele>13.23</ele>
+    <time>2026-01-01T00:02:10Z</time>
+  </wpt>
+  <wpt lat="37.33468477" lon="-122.02767944">
+    <ele>13.10</ele>
+    <time>2026-01-01T00:02:20Z</time>
+  </wpt>
+  <wpt lat="37.33368980" lon="-122.02642810">
+    <ele>13.41</ele>
+    <time>2026-01-01T00:02:30Z</time>
+  </wpt>
+  <wpt lat="37.33368979" lon="-122.02465845">
+    <ele>14.15</ele>
+    <time>2026-01-01T00:02:40Z</time>
+  </wpt>
+</gpx>

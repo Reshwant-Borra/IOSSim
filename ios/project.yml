@@ -38,3 +38,23 @@ targets:
           - "-lidevice_ffi"
           - "-lc++"
           - "-lz"
+  IOSSimLocationControlTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/LocationControl/AppleGPXLocationControlTests.swift
+      - path: Sources/IOSSimOnDeviceDVTPOC/AppleLocationControlModels.swift
+      - path: Tests/LocationControl/Fixtures/apple-gpx-35mph.gpx
+        buildPhase: resources
+    dependencies:
+      - target: IOSSimOnDeviceDVTPOC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.iossim.location-control-tests
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: The Apple GPX control test characterizes Core Location output during Xcode location simulation.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/IOSSim DVT POC.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/IOSSim DVT POC"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        ENABLE_TESTING_SEARCH_PATHS: true

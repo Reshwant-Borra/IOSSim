@@ -37,6 +37,8 @@ struct POCUnitChecks {
         try routeDistanceClamping()
         try await driveDiagnosticsSerialize()
         try driveTraceMetricCalculations()
+        try appleLocationControlMetricCalculations()
+        try coreLocationVerifierRawCallbacksAreNotPublicationFiltered()
         try await driveDiagnosticsTraceSerializationAndSummary()
         try await driveDiagnosticsDetectorEvents()
         try await sessionRecorderBatchesAndTransitions()
@@ -543,6 +545,124 @@ struct POCUnitChecks {
         ), "bursty progress detected")
     }
 
+    static func appleLocationControlMetricCalculations() throws {
+        let startDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = AppleLocationControlObservation(
+            sequence: 1,
+            wallClockTimestamp: startDate,
+            monotonicTimestamp: 10,
+            locationTimestamp: startDate,
+            latitude: 0,
+            longitude: 0,
+            horizontalAccuracy: 5,
+            verticalAccuracy: 3,
+            altitude: 10,
+            rawSpeed: -1,
+            speedAccuracy: -1,
+            rawCourse: -1,
+            courseAccuracy: -1,
+            isSimulatedBySoftware: true,
+            isProducedByAccessory: false
+        )
+        let second = AppleLocationControlObservation(
+            sequence: 2,
+            wallClockTimestamp: startDate.addingTimeInterval(1),
+            monotonicTimestamp: 11,
+            locationTimestamp: startDate.addingTimeInterval(1),
+            latitude: 0,
+            longitude: 0.000140705,
+            horizontalAccuracy: 5,
+            verticalAccuracy: -1,
+            altitude: 0,
+            rawSpeed: 15.646,
+            speedAccuracy: 0.5,
+            rawCourse: 90,
+            courseAccuracy: 1,
+            isSimulatedBySoftware: true,
+            isProducedByAccessory: false
+        )
+
+        try require(first.rawSpeed == -1, "raw negative speed retained")
+        try require(!first.speedValid, "negative speed marked invalid")
+        try require(first.normalizedSpeed == nil, "negative speed normalizes to nil")
+        try require(first.rawCourse == -1, "raw negative course retained")
+        try require(!first.courseValid, "negative course marked invalid")
+        try require(first.normalizedCourse == nil, "negative course normalizes to nil")
+
+        let pairs = AppleLocationControlAnalysis.pairMeasurements(for: [first, second])
+        let pair = try requireValue(pairs.first, "pair measurement")
+        try require(abs(pair.callbackIntervalMs - 1000) < 0.01, "callback interval calculated")
+        try require(abs(pair.locationTimestampIntervalMs - 1000) < 0.01, "location timestamp interval calculated")
+        try require(abs(pair.distanceMeters - 15.66) < 0.1, "distance calculated")
+        try require(abs((pair.geometricSpeedFromCallbackTimestampsMps ?? 0) - 15.66) < 0.1, "callback geometric speed")
+        try require(abs((pair.bearingDegrees ?? 0) - 90) < 0.1, "bearing calculated")
+        try require(
+            abs((pair.nativeSpeedMinusCallbackGeometricSpeedMps ?? 0) - (15.646 - pair.distanceMeters)) < 0.1,
+            "native speed difference calculated"
+        )
+
+        let summary = AppleLocationControlAnalysis.summary(for: [first, second], requestedVelocityMps: 15.646)
+        try require(summary.observationCount == 2, "summary count")
+        try require(summary.nativeSpeedValidCount == 1, "native speed valid count")
+        try require(summary.nativeSpeedValidityPercent == 50, "native speed validity percentage")
+        try require(summary.nativeCourseValidCount == 1, "native course valid count")
+        try require(summary.nativeCourseValidityPercent == 50, "native course validity percentage")
+        try require(summary.altitudeValidityPercent == 50, "altitude validity percentage")
+        try require(summary.simulatedBySoftwareTruePercent == 100, "software simulation percentage")
+        try require(summary.producedByAccessoryTruePercent == 0, "accessory percentage")
+        let jsonl = try AppleLocationControlAnalysis.jsonLines(observations: [first, second], summary: summary)
+        try require(jsonl.contains("\"type\":\"observation\""), "observation JSONL serialized")
+        try require(jsonl.contains("\"rawSpeed\":-1"), "raw negative speed serialized")
+        try require(jsonl.contains("\"normalizedSpeed\":15.646"), "normalized valid speed serialized")
+        try require(jsonl.contains("\"type\":\"pair_measurement\""), "pair JSONL serialized")
+        try require(jsonl.contains("\"type\":\"summary\""), "summary JSONL serialized")
+    }
+
+    static func coreLocationVerifierRawCallbacksAreNotPublicationFiltered() throws {
+        let verifier = CoreLocationVerifier()
+        let rawCallbacks = LockedValues<CoreLocationRawCallback>()
+        let publishedObservations = LockedValues<LocationObservation>()
+        verifier.setRawCallbackHandler { callback in
+            rawCallbacks.append(callback)
+        }
+        verifier.setObservationHandler { observation in
+            publishedObservations.append(observation)
+        }
+
+        let firstLocation = testCLLocation(latitude: 0, longitude: 0, timestamp: Date(timeIntervalSince1970: 100))
+        let secondLocation = testCLLocation(
+            latitude: 0,
+            longitude: 0.00007025,
+            timestamp: Date(timeIntervalSince1970: 100.5)
+        )
+        verifier.locationManager(CLLocationManager(), didUpdateLocations: [firstLocation, secondLocation])
+
+        try require(rawCallbacks.count == 2, "raw callback handler receives both CLLocation callbacks")
+        try require(verifier.allObservations().count == 2, "verifier appends both callbacks before publication filtering")
+        try require(publishedObservations.count == 1, "filtered observation handler suppresses the second nearby callback")
+        try require(rawCallbacks.values().map(\.sequence) == [1, 2], "raw callback sequence increments")
+
+        let firstObservation = LocationObservation(
+            observedAt: Date(timeIntervalSince1970: 100),
+            location: firstLocation
+        )
+        let secondObservation = LocationObservation(
+            observedAt: Date(timeIntervalSince1970: 100.5),
+            location: secondLocation
+        )
+        let distance = CoreLocationVerifier.distanceMeters(
+            fromLatitude: firstObservation.latitude,
+            longitude: firstObservation.longitude,
+            toLatitude: secondObservation.latitude,
+            longitude: secondObservation.longitude
+        )
+        try require(abs(distance - 7.82) < 0.05, "synthetic points are 7.82 meters apart")
+        try require(
+            !CoreLocationVerifier.shouldPublish(previous: firstObservation, observation: secondObservation),
+            "500 ms and 7.82 m falls below the existing publication thresholds"
+        )
+    }
+
     static func driveDiagnosticsTraceSerializationAndSummary() async throws {
         let recorder = testRecorder()
         let diagnostics = DriveDiagnostics(recorder: recorder, sampleLimit: 3)
@@ -601,6 +721,28 @@ struct POCUnitChecks {
             success: true,
             nativeErrorCategory: nil
         )
+        await diagnostics.recordRawLocationCallback(
+            CoreLocationRawCallback(
+                sequence: 1,
+                wallClockTimestamp: Date(),
+                monotonicTimestamp: 101,
+                locationTimestamp: Date(),
+                latitude: route.coordinate(atDistance: 50).latitude,
+                longitude: route.coordinate(atDistance: 50).longitude,
+                horizontalAccuracy: 5,
+                verticalAccuracy: 6,
+                altitude: 11,
+                rawSpeed: 9.5,
+                speedAccuracy: 1,
+                rawCourse: 89,
+                courseAccuracy: 2,
+                isSimulatedBySoftware: true,
+                isProducedByAccessory: false
+            ),
+            applicationLifecycleState: "background",
+            backgroundSessionActive: true,
+            connectionGeneration: 2
+        )
         await diagnostics.recordObservation(
             LocationObservation(
                 latitude: route.coordinate(atDistance: 50).latitude,
@@ -623,6 +765,7 @@ struct POCUnitChecks {
         let summary = await diagnostics.finalizeSummary()
         try require(summary.totalSchedulerTicks == 5, "summary counts scheduler ticks even with bounded samples")
         try require(summary.totalDVTSetCalls == 1, "summary counts DVT calls")
+        try require(summary.totalRawCLLocationCallbacks == 1, "summary counts raw Core Location callbacks")
         try require(summary.totalObservedCLLocations == 1, "summary counts observations")
         try require(summary.updateCadenceName == DriveUpdateCadence.smooth2Hz.diagnosticName, "cadence metadata in summary")
         try require(summary.targetIntervalMs == 500, "target interval in summary")
@@ -644,12 +787,14 @@ struct POCUnitChecks {
         try require(text.contains("COORDINATOR_UPDATE_ENTERED"), "coordinator entry serialized")
         try require(text.contains("DVT_SET_BEGIN"), "DVT begin serialized")
         try require(text.contains("DVT_SET_END"), "DVT end serialized")
+        try require(text.contains("CLLOCATION_CALLBACK_RAW"), "raw CL callback serialized")
         try require(text.contains("CLLOCATION_OBSERVED"), "CL observation serialized")
         try require(text.contains("DRIVE_CHARACTERIZATION_SUMMARY"), "summary serialized")
         try require(text.contains("trace-5"), "trace ID propagated")
         try require(text.contains("corelocation_propagation_latency_ms"), "propagation latency field serialized")
         try require(text.contains("update_cadence_name"), "cadence metadata serialized")
         try require(text.contains("mean_expected_distance_delta_per_tick_m"), "spatial metric serialized")
+        try require(text.contains("total_raw_cllocation_callbacks"), "raw callback count serialized")
         try require(text.contains("percentage_cllocations_with_valid_course"), "course percentage serialized")
         try require(text.contains("diagnostic_flush_count"), "diagnostic overhead serialized")
     }
@@ -954,6 +1099,20 @@ struct POCUnitChecks {
                 .appendingPathComponent("iossim-drive-unit-\(UUID().uuidString)", isDirectory: true)
         )
     }
+
+    static func testCLLocation(latitude: Double, longitude: Double, timestamp: Date) -> CLLocation {
+        CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            altitude: 0,
+            horizontalAccuracy: 5,
+            verticalAccuracy: -1,
+            course: -1,
+            courseAccuracy: -1,
+            speed: -1,
+            speedAccuracy: -1,
+            timestamp: timestamp
+        )
+    }
 }
 
 struct CheckError: Error, CustomStringConvertible {
@@ -961,6 +1120,29 @@ struct CheckError: Error, CustomStringConvertible {
 
     init(_ description: String) {
         self.description = description
+    }
+}
+
+private final class LockedValues<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [T] = []
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.count
+    }
+
+    func append(_ value: T) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    func values() -> [T] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }
 

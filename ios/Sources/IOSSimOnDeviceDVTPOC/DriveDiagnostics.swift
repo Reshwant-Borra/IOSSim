@@ -76,6 +76,7 @@ public actor DriveDiagnostics {
 
     private var schedulerTickCount = 0
     private var dvtSetCount = 0
+    private var rawCLLocationCallbackCount = 0
     private var clLocationCount = 0
     private var schedulerStallCount = 0
     private var dvtSetStallCount = 0
@@ -556,6 +557,49 @@ public actor DriveDiagnostics {
         )
     }
 
+    public func recordRawLocationCallback(
+        _ callback: CoreLocationRawCallback,
+        applicationLifecycleState: String,
+        backgroundSessionActive: Bool,
+        connectionGeneration: Int
+    ) async {
+        rawCLLocationCallbackCount += 1
+        await recorder.record(
+            category: "CLLOCATION_CALLBACK_RAW",
+            component: "CoreLocation",
+            previousState: nil,
+            newState: "callback_received",
+            message: "raw core location callback received",
+            metadata: [
+                "drive_session_id": sessionID,
+                "writer_id": writerID,
+                "callback_sequence": "\(callback.sequence)",
+                "raw_callback_count": "\(rawCLLocationCallbackCount)",
+                "monotonic_receive_timestamp": format(callback.monotonicTimestamp),
+                "wall_clock_timestamp": ISO8601DateFormatter().string(from: callback.wallClockTimestamp),
+                "cllocation_timestamp": ISO8601DateFormatter().string(from: callback.locationTimestamp),
+                "observed_latitude": format(callback.latitude),
+                "observed_longitude": format(callback.longitude),
+                "horizontal_accuracy_m": format(callback.horizontalAccuracy),
+                "vertical_accuracy_m": format(callback.verticalAccuracy),
+                "altitude_m": format(callback.altitude),
+                "raw_speed_mps": format(callback.rawSpeed),
+                "speed_valid": "\(callback.speedValid)",
+                "normalized_speed_mps": format(callback.normalizedSpeed),
+                "speed_accuracy_mps": format(callback.speedAccuracy),
+                "raw_course_deg": format(callback.rawCourse),
+                "course_valid": "\(callback.courseValid)",
+                "normalized_course_deg": format(callback.normalizedCourse),
+                "course_accuracy_deg": format(callback.courseAccuracy),
+                "source_is_simulated_by_software": String(describing: callback.isSimulatedBySoftware),
+                "source_is_produced_by_accessory": String(describing: callback.isProducedByAccessory),
+                "connection_generation": "\(connectionGeneration)",
+                "application_lifecycle_state": applicationLifecycleState,
+                "background_session_active": "\(backgroundSessionActive)"
+            ]
+        )
+    }
+
     public func recordHeartbeat(
         expectedRouteDistance: CLLocationDistance?,
         lifecycleState: String,
@@ -648,6 +692,7 @@ public actor DriveDiagnostics {
             totalDriveDuration: duration,
             totalSchedulerTicks: schedulerTickCount,
             totalDVTSetCalls: dvtSetCount,
+            totalRawCLLocationCallbacks: rawCLLocationCallbackCount,
             totalObservedCLLocations: clLocationCount,
             schedulerIntervals: DriveTraceMetrics.timingStatistics(milliseconds: schedulerIntervalsMs),
             schedulerWakeJitter: DriveTraceMetrics.timingStatistics(milliseconds: schedulerJitterMs.map(abs)),
@@ -802,6 +847,7 @@ public actor DriveDiagnostics {
             "effective_update_frequency_hz": format(summary.effectiveUpdateFrequencyHz),
             "total_scheduler_ticks": "\(summary.totalSchedulerTicks)",
             "total_dvt_set_calls": "\(summary.totalDVTSetCalls)",
+            "total_raw_cllocation_callbacks": "\(summary.totalRawCLLocationCallbacks)",
             "total_observed_cllocations": "\(summary.totalObservedCLLocations)",
             "scheduler_mean_interval_ms": format(summary.schedulerIntervals.meanMs),
             "scheduler_median_interval_ms": format(summary.schedulerIntervals.medianMs),
@@ -918,6 +964,7 @@ public actor DriveDiagnostics {
         lockedIntervalsMs = []
         schedulerTickCount = 0
         dvtSetCount = 0
+        rawCLLocationCallbackCount = 0
         clLocationCount = 0
         schedulerStallCount = 0
         dvtSetStallCount = 0

@@ -131,6 +131,106 @@ public struct LocationObservation: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct CoreLocationRawCallback: Codable, Equatable, Sendable {
+    public let sequence: Int
+    public let wallClockTimestamp: Date
+    public let monotonicTimestamp: TimeInterval
+    public let locationTimestamp: Date
+    public let latitude: Double
+    public let longitude: Double
+    public let horizontalAccuracy: Double
+    public let verticalAccuracy: Double
+    public let altitude: Double
+    public let rawSpeed: Double
+    public let speedValid: Bool
+    public let normalizedSpeed: Double?
+    public let speedAccuracy: Double?
+    public let rawCourse: Double
+    public let courseValid: Bool
+    public let normalizedCourse: Double?
+    public let courseAccuracy: Double?
+    public let isSimulatedBySoftware: Bool?
+    public let isProducedByAccessory: Bool?
+
+    public init(
+        sequence: Int,
+        wallClockTimestamp: Date = Date(),
+        monotonicTimestamp: TimeInterval = ProcessInfo.processInfo.systemUptime,
+        location: CLLocation
+    ) {
+        self.sequence = sequence
+        self.wallClockTimestamp = wallClockTimestamp
+        self.monotonicTimestamp = monotonicTimestamp
+        self.locationTimestamp = location.timestamp
+        self.latitude = location.coordinate.latitude
+        self.longitude = location.coordinate.longitude
+        self.horizontalAccuracy = location.horizontalAccuracy
+        self.verticalAccuracy = location.verticalAccuracy
+        self.altitude = location.altitude
+        self.rawSpeed = location.speed
+        self.speedValid = location.speed.isFinite && location.speed >= 0
+        self.normalizedSpeed = self.speedValid ? location.speed : nil
+        if #available(iOS 10.0, macOS 10.15, *) {
+            self.speedAccuracy = location.speedAccuracy
+        } else {
+            self.speedAccuracy = nil
+        }
+        self.rawCourse = location.course
+        self.courseValid = location.course.isFinite && location.course >= 0
+        self.normalizedCourse = self.courseValid ? location.course : nil
+        if #available(iOS 13.4, macOS 10.15, *) {
+            self.courseAccuracy = location.courseAccuracy
+        } else {
+            self.courseAccuracy = nil
+        }
+        if #available(iOS 15.0, macOS 12.0, *) {
+            self.isSimulatedBySoftware = location.sourceInformation?.isSimulatedBySoftware
+            self.isProducedByAccessory = location.sourceInformation?.isProducedByAccessory
+        } else {
+            self.isSimulatedBySoftware = nil
+            self.isProducedByAccessory = nil
+        }
+    }
+
+    public init(
+        sequence: Int,
+        wallClockTimestamp: Date,
+        monotonicTimestamp: TimeInterval,
+        locationTimestamp: Date,
+        latitude: Double,
+        longitude: Double,
+        horizontalAccuracy: Double,
+        verticalAccuracy: Double,
+        altitude: Double,
+        rawSpeed: Double,
+        speedAccuracy: Double?,
+        rawCourse: Double,
+        courseAccuracy: Double?,
+        isSimulatedBySoftware: Bool?,
+        isProducedByAccessory: Bool?
+    ) {
+        self.sequence = sequence
+        self.wallClockTimestamp = wallClockTimestamp
+        self.monotonicTimestamp = monotonicTimestamp
+        self.locationTimestamp = locationTimestamp
+        self.latitude = latitude
+        self.longitude = longitude
+        self.horizontalAccuracy = horizontalAccuracy
+        self.verticalAccuracy = verticalAccuracy
+        self.altitude = altitude
+        self.rawSpeed = rawSpeed
+        self.speedValid = rawSpeed.isFinite && rawSpeed >= 0
+        self.normalizedSpeed = self.speedValid ? rawSpeed : nil
+        self.speedAccuracy = speedAccuracy
+        self.rawCourse = rawCourse
+        self.courseValid = rawCourse.isFinite && rawCourse >= 0
+        self.normalizedCourse = self.courseValid ? rawCourse : nil
+        self.courseAccuracy = courseAccuracy
+        self.isSimulatedBySoftware = isSimulatedBySoftware
+        self.isProducedByAccessory = isProducedByAccessory
+    }
+}
+
 public final class CoreLocationVerifier: NSObject, CLLocationManagerDelegate, @unchecked Sendable {
     private let manager = CLLocationManager()
     private let lock = NSLock()
@@ -140,6 +240,8 @@ public final class CoreLocationVerifier: NSObject, CLLocationManagerDelegate, @u
     private var requestedLongitude: Double?
     private var lastLoggedObservation: LocationObservation?
     private var observationHandler: (@Sendable (LocationObservation) -> Void)?
+    private var rawCallbackSequence = 0
+    private var rawCallbackHandler: (@Sendable (CoreLocationRawCallback) -> Void)?
     private let duplicateMinimumInterval: TimeInterval = 1.0
     private let duplicateMinimumDistance: CLLocationDistance = 10
 
@@ -188,6 +290,12 @@ public final class CoreLocationVerifier: NSObject, CLLocationManagerDelegate, @u
         lock.unlock()
     }
 
+    public func setRawCallbackHandler(_ handler: (@Sendable (CoreLocationRawCallback) -> Void)?) {
+        lock.lock()
+        rawCallbackHandler = handler
+        lock.unlock()
+    }
+
     public func setRequestedCoordinate(latitude: Double, longitude: Double) {
         lock.lock()
         requestedLatitude = latitude
@@ -225,8 +333,18 @@ public final class CoreLocationVerifier: NSObject, CLLocationManagerDelegate, @u
 
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         for location in locations {
+            let receivedAt = Date()
+            let monotonicTimestamp = ProcessInfo.processInfo.systemUptime
+            let rawCallback = CoreLocationRawCallback(
+                sequence: nextRawCallbackSequence(),
+                wallClockTimestamp: receivedAt,
+                monotonicTimestamp: monotonicTimestamp,
+                location: location
+            )
+            currentRawCallbackHandler()?(rawCallback)
             let requested = currentRequestedCoordinate()
             record(LocationObservation(
+                observedAt: receivedAt,
                 location: location,
                 requestedLatitude: requested.latitude,
                 requestedLongitude: requested.longitude
@@ -279,17 +397,44 @@ public final class CoreLocationVerifier: NSObject, CLLocationManagerDelegate, @u
         return (requestedLatitude, requestedLongitude)
     }
 
+    private func currentRawCallbackHandler() -> (@Sendable (CoreLocationRawCallback) -> Void)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return rawCallbackHandler
+    }
+
+    private func nextRawCallbackSequence() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        rawCallbackSequence += 1
+        return rawCallbackSequence
+    }
+
     private func shouldPublishLocked(_ observation: LocationObservation) -> Bool {
-        guard let last = lastLoggedObservation else { return true }
-        if last.classification != observation.classification { return true }
-        if observation.observedAt.timeIntervalSince(last.observedAt) >= duplicateMinimumInterval {
+        Self.shouldPublish(
+            previous: lastLoggedObservation,
+            observation: observation,
+            duplicateMinimumInterval: duplicateMinimumInterval,
+            duplicateMinimumDistance: duplicateMinimumDistance
+        )
+    }
+
+    public static func shouldPublish(
+        previous: LocationObservation?,
+        observation: LocationObservation,
+        duplicateMinimumInterval: TimeInterval = 1.0,
+        duplicateMinimumDistance: CLLocationDistance = 10
+    ) -> Bool {
+        guard let previous else { return true }
+        if previous.classification != observation.classification { return true }
+        if observation.observedAt.timeIntervalSince(previous.observedAt) >= duplicateMinimumInterval {
             return true
         }
-        let distance = Self.distanceMeters(
+        let distance = distanceMeters(
             fromLatitude: observation.latitude,
             longitude: observation.longitude,
-            toLatitude: last.latitude,
-            longitude: last.longitude
+            toLatitude: previous.latitude,
+            longitude: previous.longitude
         )
         return distance >= duplicateMinimumDistance
     }

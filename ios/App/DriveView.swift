@@ -84,6 +84,18 @@ final class DriveViewModel: ObservableObject {
     private var refreshLoopStarted = false
 
     init() {
+        verifier.setRawCallbackHandler { [weak self] callback in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let generation = await self.coordinator.currentConnectionGeneration()
+                await self.diagnostics.recordRawLocationCallback(
+                    callback,
+                    applicationLifecycleState: self.background.applicationLifecycleState(),
+                    backgroundSessionActive: self.background.isBackgroundSessionActive(),
+                    connectionGeneration: generation
+                )
+            }
+        }
         verifier.setObservationHandler { [weak self] observation in
             Task { @MainActor [weak self] in
                 guard let self else { return }

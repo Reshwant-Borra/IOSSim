@@ -1,0 +1,34 @@
+{
+  "configurations" : [
+    {
+      "id" : "A1000000-0000-0000-0000-000000000001",
+      "name" : "Apple GPX 35 mph",
+      "options" : {
+        "locationScenario" : {
+          "identifier" : "Tests/LocationControl/Fixtures/apple-gpx-35mph.gpx",
+          "referenceType" : "file"
+        },
+        "testExecutionOrdering" : "lexical"
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:IOSSimOnDevicePOC.xcodeproj",
+      "identifier" : "000000000000000000000501",
+      "name" : "IOSSimOnDevicePOC"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:IOSSimOnDevicePOC.xcodeproj",
+        "identifier" : "A00000000000000000000501",
+        "name" : "IOSSimLocationControlTests"
+      }
+    }
+  ],
+  "version" : 1
+}

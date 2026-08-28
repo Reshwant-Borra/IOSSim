@@ -70,6 +70,7 @@ public struct DriveCharacterizationSummary: Codable, Equatable, Sendable {
     public let totalDriveDuration: TimeInterval
     public let totalSchedulerTicks: Int
     public let totalDVTSetCalls: Int
+    public let totalRawCLLocationCallbacks: Int
     public let totalObservedCLLocations: Int
     public let schedulerIntervals: DriveTimingStatistics
     public let schedulerWakeJitter: DriveTimingStatistics
