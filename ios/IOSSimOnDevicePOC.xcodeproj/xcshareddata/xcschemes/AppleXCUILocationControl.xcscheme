@@ -35,6 +35,20 @@
                ReferencedContainer = "container:IOSSimOnDevicePOC.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C10000000000000000000501"
+               BuildableName = "IOSSimLocationWitness.app"
+               BlueprintName = "IOSSimLocationWitness"
+               ReferencedContainer = "container:IOSSimOnDevicePOC.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction

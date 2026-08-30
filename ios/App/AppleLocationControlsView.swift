@@ -12,6 +12,19 @@ final class AppleLocationControlsViewModel: ObservableObject {
     @Published private(set) var elapsedText = "0.0 s"
     @Published private(set) var rawCallbackCount = 0
     @Published private(set) var rawLocationCount = 0
+    @Published private(set) var latestRawMetadataSummaryText = AppleLocationControlsViewModel.unknownLatestRawMetadataSummaryText
+    @Published private(set) var latestSequenceText = "sequence=UNKNOWN"
+    @Published private(set) var latestLatitudeText = "latitude=UNKNOWN"
+    @Published private(set) var latestLongitudeText = "longitude=UNKNOWN"
+    @Published private(set) var latestSpeedText = "speed=UNKNOWN"
+    @Published private(set) var latestCourseText = "course=UNKNOWN"
+    @Published private(set) var latestHorizontalAccuracyText = "horizontalAccuracy=UNKNOWN"
+    @Published private(set) var latestVerticalAccuracyText = "verticalAccuracy=UNKNOWN"
+    @Published private(set) var latestAltitudeText = "altitude=UNKNOWN"
+    @Published private(set) var latestLocationTimestampText = "locationTimestamp=UNKNOWN"
+    @Published private(set) var latestWallClockTimestampText = "wallClockTimestamp=UNKNOWN"
+    @Published private(set) var latestSimulatedBySoftwareText = "isSimulatedBySoftware=UNKNOWN"
+    @Published private(set) var latestProducedByAccessoryText = "isProducedByAccessory=UNKNOWN"
     @Published private(set) var effectiveHzText = "UNKNOWN"
     @Published private(set) var coordinateText = "UNKNOWN"
     @Published private(set) var nativeSpeedText = "UNKNOWN"
@@ -95,9 +108,11 @@ final class AppleLocationControlsViewModel: ObservableObject {
             nativeCourseText = "UNKNOWN"
             horizontalAccuracyText = "UNKNOWN"
             simulatedBySoftwareText = "UNKNOWN"
+            resetLatestRawMetadataText()
             return
         }
 
+        updateLatestRawMetadataText(with: latest)
         coordinateText = String(format: "%.6f, %.6f", latest.latitude, latest.longitude)
         nativeSpeedText = latest.speedValid
             ? String(format: "%.3f m/s", latest.rawSpeed)
@@ -176,6 +191,78 @@ final class AppleLocationControlsViewModel: ObservableObject {
         return formatter.string(from: Date())
     }
 
+    private func updateLatestRawMetadataText(with latest: AppleLocationControlObservation) {
+        latestSequenceText = "sequence=\(latest.sequence)"
+        latestLatitudeText = String(format: "latitude=%.8f", latest.latitude)
+        latestLongitudeText = String(format: "longitude=%.8f", latest.longitude)
+        latestSpeedText = String(format: "speed=%.6f", latest.rawSpeed)
+        latestCourseText = String(format: "course=%.6f", latest.rawCourse)
+        latestHorizontalAccuracyText = String(format: "horizontalAccuracy=%.6f", latest.horizontalAccuracy)
+        latestVerticalAccuracyText = String(format: "verticalAccuracy=%.6f", latest.verticalAccuracy)
+        latestAltitudeText = String(format: "altitude=%.6f", latest.altitude)
+        latestLocationTimestampText = "locationTimestamp=\(Self.iso8601String(from: latest.locationTimestamp))"
+        latestWallClockTimestampText = "wallClockTimestamp=\(Self.iso8601String(from: latest.wallClockTimestamp))"
+        latestSimulatedBySoftwareText = "isSimulatedBySoftware=\(Self.optionalBoolText(latest.isSimulatedBySoftware))"
+        latestProducedByAccessoryText = "isProducedByAccessory=\(Self.optionalBoolText(latest.isProducedByAccessory))"
+        latestRawMetadataSummaryText = [
+            latestSequenceText,
+            latestLatitudeText,
+            latestLongitudeText,
+            latestSpeedText,
+            latestCourseText,
+            latestHorizontalAccuracyText,
+            latestVerticalAccuracyText,
+            latestAltitudeText,
+            latestLocationTimestampText,
+            latestWallClockTimestampText,
+            latestSimulatedBySoftwareText,
+            latestProducedByAccessoryText
+        ].joined(separator: " ")
+    }
+
+    private func resetLatestRawMetadataText() {
+        latestRawMetadataSummaryText = Self.unknownLatestRawMetadataSummaryText
+        latestSequenceText = "sequence=UNKNOWN"
+        latestLatitudeText = "latitude=UNKNOWN"
+        latestLongitudeText = "longitude=UNKNOWN"
+        latestSpeedText = "speed=UNKNOWN"
+        latestCourseText = "course=UNKNOWN"
+        latestHorizontalAccuracyText = "horizontalAccuracy=UNKNOWN"
+        latestVerticalAccuracyText = "verticalAccuracy=UNKNOWN"
+        latestAltitudeText = "altitude=UNKNOWN"
+        latestLocationTimestampText = "locationTimestamp=UNKNOWN"
+        latestWallClockTimestampText = "wallClockTimestamp=UNKNOWN"
+        latestSimulatedBySoftwareText = "isSimulatedBySoftware=UNKNOWN"
+        latestProducedByAccessoryText = "isProducedByAccessory=UNKNOWN"
+    }
+
+    private static var unknownLatestRawMetadataSummaryText: String {
+        [
+            "sequence=UNKNOWN",
+            "latitude=UNKNOWN",
+            "longitude=UNKNOWN",
+            "speed=UNKNOWN",
+            "course=UNKNOWN",
+            "horizontalAccuracy=UNKNOWN",
+            "verticalAccuracy=UNKNOWN",
+            "altitude=UNKNOWN",
+            "locationTimestamp=UNKNOWN",
+            "wallClockTimestamp=UNKNOWN",
+            "isSimulatedBySoftware=UNKNOWN",
+            "isProducedByAccessory=UNKNOWN"
+        ].joined(separator: " ")
+    }
+
+    private static func iso8601String(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private static func optionalBoolText(_ value: Bool?) -> String {
+        value.map { $0 ? "true" : "false" } ?? "UNKNOWN"
+    }
+
     private func format(_ value: Double?, suffix: String) -> String {
         guard let value, value.isFinite else { return "UNKNOWN" }
         return String(format: "%.3f%@", value, suffix)
@@ -230,6 +317,12 @@ struct AppleLocationControlsView: View {
                 }
                 .disabled(model.exportURLs.isEmpty)
                 .accessibilityIdentifier("AppleLocationControls.CopyJSONL")
+
+                Text(model.latestRawMetadataSummaryText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("AppleLocationControls.LatestRawLocationMetadataValue")
             }
 
             Section("Live Metrics") {
@@ -253,6 +346,54 @@ struct AppleLocationControlsView: View {
                 LabeledContent("Geometric speed", value: model.geometricSpeedText)
                 LabeledContent("Horizontal accuracy", value: model.horizontalAccuracyText)
                 LabeledContent("Simulated by software", value: model.simulatedBySoftwareText)
+                Text(model.latestSequenceText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestSequenceValue")
+                Text(model.latestLatitudeText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestLatitudeValue")
+                Text(model.latestLongitudeText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestLongitudeValue")
+                Text(model.latestSpeedText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestSpeedValue")
+                Text(model.latestCourseText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestCourseValue")
+                Text(model.latestHorizontalAccuracyText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestHorizontalAccuracyValue")
+                Text(model.latestVerticalAccuracyText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestVerticalAccuracyValue")
+                Text(model.latestAltitudeText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestAltitudeValue")
+                Text(model.latestLocationTimestampText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestLocationTimestampValue")
+                Text(model.latestWallClockTimestampText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestWallClockTimestampValue")
+                Text(model.latestSimulatedBySoftwareText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestSimulatedBySoftwareValue")
+                Text(model.latestProducedByAccessoryText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleLocationControls.LatestProducedByAccessoryValue")
             }
 
             Section("State") {

@@ -26,8 +26,9 @@ Apple Test Plan GPX result from the prior physical iPhone run:
 | --- | ---: | ---: | ---: | --- | --- |
 | IOSSim DVT 2 Hz | ~2 Hz proven | invalid | invalid | system-wide developer location simulation | physically proven |
 | Apple Test Plan GPX | 0 in current physical run | unknown | unknown | test-plan/test-bundle path | physical negative result |
-| Xcode Debugger GPX | pending | pending | pending | app launched under Xcode debugger | implemented runbook pending physical data |
-| XCUILocation | pending | pending | pending | UI automation `XCUIDevice.location` | implemented target pending physical data |
+| Xcode Debugger GPX | moving coordinates | invalid | invalid | app launched under Xcode debugger | physically proven |
+| XCUILocation app under test | 20/20 route points | valid, preserved | valid, preserved | UI automation `XCUIDevice.location` target app | physically proven |
+| XCUILocation owned witness | route received | valid, preserved | valid, preserved | separate owned Core Location consumer | physically proven with background-permission limitation noted |
 
 Use `native speed` for `CLLocation.speed`. Use `geometric speed` only for speed derived from adjacent raw observations.
 
@@ -134,6 +135,8 @@ Tests:
 - `testOpenAppleLocationControlsSmoke`
 - `testXCUILocationSinglePointMetadataControl`
 - `testXCUILocationRouteControl`
+- `testXCUILocationWitnessForegroundControl`
+- `testXCUILocationWitnessBackgroundSystemScopeExperiment`
 
 Build:
 
@@ -174,7 +177,34 @@ xcodebuild \
   -only-testing:IOSSimLocationControlUITests/AppleXCUILocationControlUITests/testXCUILocationRouteControl
 ```
 
-The UI tests attach copied JSONL as XCTest attachments when the app records observations.
+The UI tests read stable accessibility metadata directly from the recorder UI and attach textual summaries to XCTest. `Copy JSONL` remains available for manual/export workflows, but the characterization tests do not depend on UIPasteboard.
+
+## Physical Checkpoint: 2026-08-30
+
+Validated on physical iPhone 17 Pro running iOS 26.6.
+
+Physically proven:
+
+- Existing IOSSim DVT Drive produced smooth physical route movement at approximately 2 Hz.
+- DVT `LocationSimulation` and Xcode Debugger GPX produced moving coordinates, but native `CLLocation.speed` and `CLLocation.course` remained invalid (`-1`) in the receiving app.
+- `XCUIDevice.shared.location` accepted a single `XCUILocation` wrapping a rich `CLLocation` and the app under UI test received the injected coordinate with `speed=15.646 m/s` and `course=90 degrees`.
+- The 20-point XCUILocation route produced 20/20 matching received route points in the IOSSim app.
+- Route native speed was valid for 20/20 points, with min/median/max `15.646 m/s`.
+- Route native course was valid for 20/20 points and followed the injected changing headings within 1 degree.
+- Altitude, accuracy, coordinates, timestamps, and Core Location source metadata were recorded faithfully by the passive recorder.
+- The owned `IOSSimLocationWitness` second consumer received the simulated route as a separate app on the same physical iPhone.
+- The witness received `speed=15.646 m/s`, changing route course values, and `isSimulatedBySoftware=true`.
+
+Interpretation:
+
+- XCUILocation rich metadata is not merely visible to the IOSSim application under UI test. In the controlled owned-app experiment, coordinates and rich speed/course metadata propagated to a separate Core Location consumer.
+- This creates a materially different architecture option from DVT `LocationSimulation` and Xcode Debugger GPX when native speed/course fidelity matters.
+
+Limitations still recorded by the test output:
+
+- The successful witness run reported `authorizedWhenInUse`, not `authorizedAlways`.
+- The background/system-scope test preserves this as an interpretation limitation instead of silently treating it as full background authorization.
+- The experiment used an owned witness app only. It did not target, inspect, automate, hook, or integrate with Life360, Find My, or any third-party app.
 
 ## Comparison Schema
 
