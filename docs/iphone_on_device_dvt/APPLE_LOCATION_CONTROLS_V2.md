@@ -137,6 +137,7 @@ Tests:
 - `testXCUILocationRouteControl`
 - `testXCUILocationWitnessForegroundControl`
 - `testXCUILocationWitnessBackgroundSystemScopeExperiment`
+- `testGate1NoXcodebuildRichLocationWitnessProof` when `IOSSIM_GATE1_RICH_LOCATION_ONLY=1`
 
 Build:
 
@@ -205,6 +206,96 @@ Limitations still recorded by the test output:
 - The successful witness run reported `authorizedWhenInUse`, not `authorizedAlways`.
 - The background/system-scope test preserves this as an interpretation limitation instead of silently treating it as full background authorization.
 - The experiment used an owned witness app only. It did not target, inspect, automate, hook, or integrate with Life360, Find My, or any third-party app.
+
+## Gate 1: No-Xcodebuild XCUITest Runner Launch
+
+Date: 2026-08-30
+
+Scope:
+
+```text
+Mac host tool
+  -> RSD
+  -> testmanagerd control/main
+  -> DVT ProcessControl
+  -> preinstalled XCUITest runner
+  -> XCUIDevice.shared.location / XCUILocation
+  -> IOSSimLocationWitness
+```
+
+Result:
+
+```text
+PASS - independent developer-service tooling launched the preinstalled runner, executed XCUILocation code, and IOSSimLocationWitness received native rich CLLocation metadata.
+```
+
+Physically proven:
+
+- The installed runner bundle identifier was `com.iossim.location-control-uitests.xctrunner`.
+- The installed runner app was `IOSSimLocationControlUITests-Runner.app`.
+- The UI-test bundle was `IOSSimLocationControlUITests.xctest`.
+- The runner was refreshed with `xcodebuild build-for-testing` and installed with `xcrun devicectl device install app`.
+- Runtime execution did not use `xcodebuild test`, Xcode Test, or normal Xcode XCTest orchestration.
+- Runtime command:
+
+```bash
+backend/.venv/bin/python -m pymobiledevice3 -vv developer dvt xcuitest \
+  --userspace \
+  --output-log /tmp/iossim-gate1-pmd3-userspace-vacc3.log \
+  --timeout 150 \
+  --env IOSSIM_GATE1_RICH_LOCATION_ONLY=1 \
+  com.iossim.location-control-uitests.xctrunner
+```
+
+- `pymobiledevice3 10.7.4` established userspace RSD.
+- DVT capabilities included `com.apple.instruments.server.services.processcontrol` and `com.apple.instruments.server.services.LocationSimulation`.
+- `testmanagerd` control and main sessions initialized.
+- DVT ProcessControl launched the runner and returned PID `23987`.
+- PID authorization returned `True`.
+- The reverse `XCTestDriverInterface` channel was established.
+- `_IDE_startExecutingTestPlanWithProtocolVersion:36` was sent.
+- Test plan began, `testGate1NoXcodebuildRichLocationWitnessProof` ran, and all non-Gate-1 tests were skipped by environment guard.
+- The test process printed `RICH_LOCATION_RUNNER_EXECUTED`.
+- `IOSSimLocationWitness` received the rich point:
+
+```text
+sequence=2
+latitude=37.33490000
+longitude=-122.00902000
+speed=15.646000
+course=90.000000
+horizontalAccuracy=4.000000
+verticalAccuracy=3.000000
+altitude=123.000000
+locationTimestamp=2026-08-30T18:07:14.712Z
+wallClockTimestamp=2026-08-30T18:07:14.735Z
+isSimulatedBySoftware=true
+isProducedByAccessory=false
+authorization=authorizedWhenInUse
+```
+
+Source-audited:
+
+- The pinned `jkcoxson/idevice` checkout is at `c442bd235bd14d6d5c8f28f85c9e6179e3a4c3d5`.
+- `idevice/src/services/dvt/xctest/mod.rs` implements an `XCUITestService` path that builds `XCTestConfiguration`, connects to `testmanagerd` control/main plus DVT, launches the runner through ProcessControl, authorizes the runner PID, waits for the reverse runner channel, and starts the test plan.
+- For iOS 17+, the audited `idevice` path creates a `CoreDeviceProxy` software tunnel and then opens RSD services, rather than accepting a caller-supplied already-open IOSSim RSD connection.
+- `idevice-ffi` currently exposes the IOSSim DVT LocationSimulation surface used by Drive, but does not expose an XCTest runner wrapper.
+- Local `pymobiledevice3` exposes the equivalent audited CLI path at `developer dvt xcuitest`; that path was used for the physical Gate 1 run.
+
+Inferred:
+
+- The pinned Rust `XCUITestService` protocol implementation is likely reusable for a native Gate 2/3 launcher, because the physical `pymobiledevice3` run proved the service sequence on the target iOS 26.6 device and the audited Rust implementation follows the same sequence.
+- `CoreDeviceProxy` is not a Gate 1 blocker. For on-device IOSSim, it is an integration boundary because IOSSim already owns a working RSD provider through LocalDevVPN/RPPairing.
+- Existing IOSSim RSD should be able to substitute for a newly-created `CoreDeviceProxy` tunnel if the Rust XCTest layer is refactored to accept a caller-supplied RSD service connector.
+- The smallest FFI gap for Gate 2/3 is an XCTest-runner API that can start/stop/query a preinstalled runner with bundle ID, environment, optional target bundle ID, and status callbacks while reusing IOSSim's existing RSD provider.
+
+Unresolved:
+
+- A locked physical iPhone can prevent the runner from launching `IOSSimLocationWitness`; the first failing stage in that case is SpringBoard launch denial of the witness app, after XCTest launch/handshake had already succeeded.
+- `pymobiledevice3 --mobdev2` did not run in this host state because no matching pymobiledevice3 pairing record was available for its discovered network candidates; this failed before RSD setup.
+- The high-level Rust `XCUITestService` does not yet expose an API that starts from IOSSim's retained on-device RSD connection.
+- No on-device Swift/FFI XCTest launcher has been implemented yet.
+- Gate 1 used an owned witness app only. It did not inspect or interact with third-party apps, private data, third-party storage, or third-party networks.
 
 ## Comparison Schema
 

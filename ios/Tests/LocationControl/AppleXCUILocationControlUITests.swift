@@ -4,9 +4,14 @@ import XCTest
 
 final class AppleXCUILocationControlUITests: XCTestCase {
     private let witnessBundleIdentifier = "com.iossim.location-witness"
+    private static let gate1RichLocationOnlyEnvironmentKey = "IOSSIM_GATE1_RICH_LOCATION_ONLY"
+    private static let gate1RichLocationTestName = "testGate1NoXcodebuildRichLocationWitnessProof"
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        if Self.isGate1RichLocationOnlyRun, !name.contains(Self.gate1RichLocationTestName) {
+            throw XCTSkip("Skipping non-Gate-1 test during no-xcodebuild rich-location runner proof.")
+        }
     }
 
     func testOpenAppleLocationControlsSmoke() throws {
@@ -245,6 +250,105 @@ final class AppleXCUILocationControlUITests: XCTestCase {
         """
         print(summary)
         attach(summary, name: "WITNESS-FOREGROUND-received-metadata.txt")
+    }
+
+    func testGate1NoXcodebuildRichLocationWitnessProof() throws {
+        guard Self.isGate1RichLocationOnlyRun else {
+            throw XCTSkip("Gate 1 proof runs only when \(Self.gate1RichLocationOnlyEnvironmentKey)=1 is set.")
+        }
+        try requireXCUILocationSupport()
+
+        let witness = launchWitnessApp()
+        resetAndStartWitnessRecorder(in: witness)
+
+        let baselineSequence = latestRawLocationSnapshot(in: witness, prefix: "LocationWitness")?.sequence ?? 0
+        let injectedLatitude = 37.334_900
+        let injectedLongitude = -122.009_020
+        let injectedCourse = 90.0
+        let injectedSpeed = 15.646
+        let injectedAltitude = 123.0
+        let injectedHorizontalAccuracy = 4.0
+        let injectedVerticalAccuracy = 3.0
+        let injectedTimestamp = Date()
+
+        XCUIDevice.shared.location = XCUILocation(location: richLocation(
+            latitude: injectedLatitude,
+            longitude: injectedLongitude,
+            altitude: injectedAltitude,
+            course: injectedCourse,
+            speed: injectedSpeed,
+            timestamp: injectedTimestamp
+        ))
+
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+
+        guard let received = waitForFreshRawLocation(
+            in: witness,
+            prefix: "LocationWitness",
+            afterSequence: baselineSequence,
+            latitude: injectedLatitude,
+            longitude: injectedLongitude,
+            timeout: 20
+        ) else {
+            let latestSummary = latestRawLocationSummary(in: witness, prefix: "LocationWitness") ?? "MISSING"
+            XCTFail("""
+            Gate 1 witness timed out waiting for no-xcodebuild rich-location CLLocation callback.
+            baseline_sequence=\(baselineSequence)
+            injected.latitude=\(String(format: "%.8f", injectedLatitude))
+            injected.longitude=\(String(format: "%.8f", injectedLongitude))
+            injected.speed=\(String(format: "%.6f", injectedSpeed))
+            injected.course=\(String(format: "%.6f", injectedCourse))
+            injected.altitude=\(String(format: "%.6f", injectedAltitude))
+            latest_witness_metadata=\(latestSummary)
+            authorization=\(authorizationSummary(in: witness))
+            """)
+            return
+        }
+
+        let speedDelta = abs((received.speed ?? -.greatestFiniteMagnitude) - injectedSpeed)
+        let courseDelta = received.course.map { Self.angularDifferenceDegrees($0, injectedCourse) }
+        XCTAssertEqual(try XCTUnwrap(received.latitude), injectedLatitude, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(received.longitude), injectedLongitude, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(received.speed), injectedSpeed, accuracy: 0.1)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(courseDelta), 1.0)
+        XCTAssertEqual(try XCTUnwrap(received.altitude), injectedAltitude, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(received.horizontalAccuracy), injectedHorizontalAccuracy, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(received.verticalAccuracy), injectedVerticalAccuracy, accuracy: 0.1)
+        XCTAssertEqual(received.isSimulatedBySoftware, "true")
+        XCTAssertEqual(received.isProducedByAccessory, "false")
+
+        let summary = """
+        RICH_LOCATION_RUNNER_EXECUTED
+        GATE1_NO_XCODEBUILD_RICH_LOCATION_WITNESS_METADATA:
+        injected.latitude=\(String(format: "%.8f", injectedLatitude))
+        injected.longitude=\(String(format: "%.8f", injectedLongitude))
+        injected.horizontalAccuracy=\(String(format: "%.6f", injectedHorizontalAccuracy))
+        injected.verticalAccuracy=\(String(format: "%.6f", injectedVerticalAccuracy))
+        injected.altitude=\(String(format: "%.6f", injectedAltitude))
+        injected.speed=\(String(format: "%.6f", injectedSpeed))
+        injected.course=\(String(format: "%.6f", injectedCourse))
+        injected.timestamp=\(Self.iso8601String(from: injectedTimestamp))
+        received.sequence=\(received.sequence.map(String.init) ?? "UNKNOWN")
+        received.latitude=\(Self.format(received.latitude))
+        received.longitude=\(Self.format(received.longitude))
+        received.speed=\(Self.format(received.speed))
+        received.course=\(Self.format(received.course))
+        received.speed_delta_mps=\(String(format: "%.6f", speedDelta))
+        received.course_delta_deg=\(Self.format(courseDelta))
+        received.horizontalAccuracy=\(Self.format(received.horizontalAccuracy))
+        received.verticalAccuracy=\(Self.format(received.verticalAccuracy))
+        received.altitude=\(Self.format(received.altitude))
+        received.locationTimestamp=\(received.locationTimestamp ?? "UNKNOWN")
+        received.wallClockTimestamp=\(received.wallClockTimestamp ?? "UNKNOWN")
+        received.isSimulatedBySoftware=\(received.isSimulatedBySoftware ?? "UNKNOWN")
+        received.isProducedByAccessory=\(received.isProducedByAccessory ?? "UNKNOWN")
+        witness_authorization=\(authorizationSummary(in: witness))
+        raw_metadata_summary=\(received.rawSummary)
+        """
+        print(summary)
+        attach(summary, name: "GATE1-NO-XCODEBUILD-rich-location-witness-metadata.txt")
+
+        RunLoop.current.run(until: Date().addingTimeInterval(5))
     }
 
     func testXCUILocationWitnessBackgroundSystemScopeExperiment() throws {
@@ -911,6 +1015,11 @@ final class AppleXCUILocationControlUITests: XCTestCase {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: string)
+    }
+
+    private static var isGate1RichLocationOnlyRun: Bool {
+        let value = ProcessInfo.processInfo.environment[gate1RichLocationOnlyEnvironmentKey]
+        return value == "1" || value?.lowercased() == "true"
     }
 }
 
