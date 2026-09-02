@@ -11,16 +11,52 @@ REQUIRED_SYMBOLS=(
   "location_simulation_new"
   "location_simulation_set"
   "location_simulation_clear"
+  "xctest_runner_new_from_rsd"
+  "xctest_runner_copy_metadata_from_rsd"
+  "xctest_runner_start"
+  "xctest_runner_stop"
+  "xctest_runner_get_status"
+  "xctest_runner_copy_error_message"
+  "xctest_runner_string_free"
+  "xctest_runner_metadata_free"
+  "xctest_runner_free"
 )
 
 [[ -f "${LIB_PATH}" ]] || { echo "Missing library: ${LIB_PATH}"; exit 2; }
 
+find_rust_llvm_nm() {
+  if command -v rustup >/dev/null && rustup which llvm-nm >/dev/null 2>&1; then
+    rustup which llvm-nm
+    return 0
+  fi
+
+  if command -v rustc >/dev/null; then
+    local sysroot host candidate
+    sysroot="$(rustc --print sysroot)"
+    host="$(rustc -vV | awk '/^host:/{print $2}')"
+    candidate="${sysroot}/lib/rustlib/${host}/bin/llvm-nm"
+    if [[ -x "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  fi
+
+  local rustup_home="${RUSTUP_HOME:-${HOME}/.rustup}"
+  local candidate
+  for candidate in "${rustup_home}"/toolchains/*/lib/rustlib/*/bin/llvm-nm; do
+    if [[ -x "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # Prefer Rust's matching llvm-nm. Apple llvm-nm may lag Rust's LLVM object
 # format and fail on current Rust archives with "Unknown attribute kind".
-if command -v rustup >/dev/null && rustup which llvm-nm >/dev/null 2>&1; then
-  NM=("$(rustup which llvm-nm)" -g)
-elif command -v rustc >/dev/null && [[ -x "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | awk '/^host:/{print $2}')/bin/llvm-nm" ]]; then
-  NM=("$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | awk '/^host:/{print $2}')/bin/llvm-nm" -g)
+if RUST_LLVM_NM="$(find_rust_llvm_nm)"; then
+  NM=("${RUST_LLVM_NM}" -g)
 elif command -v llvm-nm >/dev/null; then
   NM=(llvm-nm -g)
 else

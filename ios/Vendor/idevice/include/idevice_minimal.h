@@ -20,12 +20,51 @@ typedef struct LocationSimulationHandle LocationSimulationHandle;
 typedef struct RemoteServerHandle RemoteServerHandle;
 typedef struct RpPairingFileHandle RpPairingFileHandle;
 typedef struct RsdHandshakeHandle RsdHandshakeHandle;
+typedef struct XCTestRunnerHandle XCTestRunnerHandle;
 
 typedef struct IdeviceFfiError {
   int32_t code;
   int32_t sub_code;
   const char *message;
 } IdeviceFfiError;
+
+typedef enum XCTestRunnerStatus {
+  XCTEST_RUNNER_STATUS_UNKNOWN = 0,
+  XCTEST_RUNNER_STATUS_RSD_READY = 1,
+  XCTEST_RUNNER_STATUS_TESTMANAGER_CONTROL_READY = 2,
+  XCTEST_RUNNER_STATUS_TESTMANAGER_MAIN_READY = 3,
+  XCTEST_RUNNER_STATUS_DVT_READY = 4,
+  XCTEST_RUNNER_STATUS_RUNNER_LAUNCHED = 5,
+  XCTEST_RUNNER_STATUS_PID_AUTHORIZED = 6,
+  XCTEST_RUNNER_STATUS_XCTEST_HANDSHAKE_READY = 7,
+  XCTEST_RUNNER_STATUS_TEST_PLAN_STARTED = 8,
+  XCTEST_RUNNER_STATUS_FINISHED = 9,
+  XCTEST_RUNNER_STATUS_FAILED = 10
+} XCTestRunnerStatus;
+
+typedef struct XCTestRunnerConfig {
+  const char *runner_bundle_id;
+  const char *runner_app_path;
+  const char *runner_app_container;
+  const char *runner_bundle_executable;
+  const char *target_bundle_id;
+  const char *target_app_path;
+  const char *const *env_vars;
+  uintptr_t env_vars_count;
+  const char *const *arguments;
+  uintptr_t arguments_count;
+} XCTestRunnerConfig;
+
+typedef struct XCTestRunnerMetadata {
+  char *runner_bundle_id;
+  char *runner_app_path;
+  char *runner_app_container;
+  char *runner_bundle_executable;
+} XCTestRunnerMetadata;
+
+typedef void (*XCTestRunnerStatusCallback)(void *context,
+                                           XCTestRunnerStatus status,
+                                           const char *message);
 
 IdeviceFfiError *rp_pairing_file_read(const char *path, RpPairingFileHandle **out);
 void rp_pairing_file_free(RpPairingFileHandle *handle);
@@ -59,6 +98,28 @@ IdeviceFfiError *location_simulation_set(LocationSimulationHandle *handle,
                                          double longitude);
 IdeviceFfiError *location_simulation_clear(LocationSimulationHandle *handle);
 void location_simulation_free(LocationSimulationHandle *handle);
+
+IdeviceFfiError *xctest_runner_new_from_rsd(AdapterHandle *adapter,
+                                            RsdHandshakeHandle *handshake,
+                                            uint8_t ios_major_version,
+                                            XCTestRunnerStatusCallback callback,
+                                            void *callback_context,
+                                            XCTestRunnerHandle **out);
+IdeviceFfiError *xctest_runner_copy_metadata_from_rsd(AdapterHandle *adapter,
+                                                      RsdHandshakeHandle *handshake,
+                                                      const char *bundle_id,
+                                                      XCTestRunnerMetadata **out);
+IdeviceFfiError *xctest_runner_start(XCTestRunnerHandle *handle,
+                                     const XCTestRunnerConfig *config,
+                                     double timeout_seconds);
+IdeviceFfiError *xctest_runner_stop(XCTestRunnerHandle *handle);
+IdeviceFfiError *xctest_runner_get_status(XCTestRunnerHandle *handle,
+                                          XCTestRunnerStatus *status_out,
+                                          XCTestRunnerStatus *first_error_stage_out);
+char *xctest_runner_copy_error_message(XCTestRunnerHandle *handle);
+void xctest_runner_string_free(char *string);
+void xctest_runner_metadata_free(XCTestRunnerMetadata *metadata);
+void xctest_runner_free(XCTestRunnerHandle *handle);
 
 void rsd_handshake_free(RsdHandshakeHandle *handle);
 void adapter_free(AdapterHandle *handle);

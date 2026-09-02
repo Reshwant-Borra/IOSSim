@@ -11,6 +11,7 @@ final class LocationWitnessViewModel: ObservableObject {
     @Published private(set) var rawLocationCount = 0
     @Published private(set) var latestRawMetadataSummaryText = LocationWitnessViewModel.unknownObservationText
     @Published private(set) var persistedObservationsText = ""
+    @Published private(set) var metricsExportFileURL: URL?
 
     private let recorder = LocationWitnessRecorder()
 
@@ -49,6 +50,40 @@ final class LocationWitnessViewModel: ObservableObject {
         isRecording = recorder.isRecording
         latestRawMetadataSummaryText = observations.last?.wireText ?? Self.unknownObservationText
         persistedObservationsText = observations.map(\.wireText).joined(separator: "|")
+        metricsExportFileURL = Self.writeMetricsExport(
+            observations: observations,
+            callbackCount: recorder.callbackCount,
+            isRecording: recorder.isRecording
+        )
+    }
+
+    private static func writeMetricsExport(
+        observations: [LocationWitnessObservation],
+        callbackCount: Int,
+        isRecording: Bool
+    ) -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSSimLocationWitness-metrics.txt")
+        let simulatedCount = observations.filter { $0.isSimulatedBySoftware == true }.count
+        let validSpeedCount = observations.filter { $0.speed >= 0 }.count
+        let validCourseCount = observations.filter { $0.course >= 0 }.count
+        let body = [
+            "IOSSimLocationWitness metrics export",
+            "isRecording=\(isRecording)",
+            "rawCallbackCount=\(callbackCount)",
+            "rawLocationCount=\(observations.count)",
+            "simulatedBySoftwareCount=\(simulatedCount)",
+            "validSpeedCount=\(validSpeedCount)",
+            "validCourseCount=\(validCourseCount)",
+            "",
+            observations.map(\.wireText).joined(separator: "\n")
+        ].joined(separator: "\n")
+        do {
+            try body.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     private static var unknownObservationText: String {
@@ -103,6 +138,11 @@ struct LocationWitnessView: View {
                     }
                     .disabled(!model.isRecording)
                     .accessibilityIdentifier("LocationWitness.Stop")
+
+                    if let metricsExportFileURL = model.metricsExportFileURL {
+                        ShareLink("Export Metrics", item: metricsExportFileURL)
+                            .accessibilityIdentifier("LocationWitness.ExportMetrics")
+                    }
                 }
 
                 Text(model.statusText)

@@ -98,7 +98,7 @@ final class POCViewModel: ObservableObject {
             let result = await runner.runDiagnostics()
             await updateState()
             actionStatus = diagnosticsStatus(result)
-            append("localdevvpn_active=\(result.localDevVPNAppearsActive) tcp_connected=\(result.tcpResult.connected) latency_ms=\(format(result.tcpResult.latencyMs)) error=\(result.tcpResult.error ?? "none")")
+            append("localdevvpn_ready=\(result.localDevVPNFunctionalReady) interface_visible=\(result.localDevVPNInterfaceVisible) tcp_connected=\(result.tcpResult.connected) latency_ms=\(format(result.tcpResult.latencyMs)) error=\(result.tcpResult.error ?? "none")")
         }
     }
 
@@ -232,13 +232,13 @@ final class POCViewModel: ObservableObject {
         if stageRows.first(where: { $0.id == "pairing" })?.status == "FAIL" {
             return "FAIL: PAIRING_MISSING. Import a valid RPPairing file first."
         }
-        if !result.localDevVPNAppearsActive {
-            return "FAIL: LOCALDEVVPN_ROUTE_MISSING. Start LocalDevVPN and confirm iOS shows VPN active."
-        }
         if !result.tcpResult.connected {
-            return "FAIL: ENDPOINT_UNREACHABLE. LocalDevVPN route exists, but \(result.endpoint.host):\(result.endpoint.port) did not accept TCP: \(result.tcpResult.error ?? "unknown error")"
+            return "FAIL: ENDPOINT_UNREACHABLE. \(result.endpoint.host):\(result.endpoint.port) did not accept TCP: \(result.tcpResult.error ?? "unknown error")"
         }
-        return "PASS: LocalDevVPN route and developer endpoint are reachable. Next step: CONNECT."
+        if !result.localDevVPNInterfaceVisible {
+            return "PASS: Developer endpoint reachable. Expected LocalDevVPN interface address was not visible to IOSSim. Next step: CONNECT."
+        }
+        return "PASS: LocalDevVPN interface and developer endpoint are reachable. Next step: CONNECT."
     }
 
     private func display(_ error: Error) -> String {

@@ -130,24 +130,32 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
 
         await diagnostics.start(.localDevVPNRouteVisible)
         let result = await routeProbe.run(endpoint: endpoint)
-        if result.localDevVPNAppearsActive {
-            await diagnostics.succeed(.localDevVPNRouteVisible, message: "localdevvpn route appears active")
+        if result.localDevVPNFunctionalReady {
+            await diagnostics.succeed(.localDevVPNRouteVisible, message: localDevVPNFunctionalMessage(result))
             await recorder.record(
                 category: "ROUTE",
                 component: "LocalDevVPN",
                 previousState: nil,
-                newState: "present",
-                message: "LocalDevVPN route visible",
-                metadata: ["interfaces": routeInterfaceSummary(result.interfaces)]
+                newState: result.localDevVPNInterfaceVisible ? "functional_interface_visible" : "functional_interface_not_visible",
+                message: localDevVPNFunctionalMessage(result),
+                metadata: localDevVPNMetadata(result)
             )
         } else {
             let error = POCError(
-                .localDevVPNRouteMissing,
-                "No 10.7.0.0/24 interface address is visible to the app.",
+                .endpointUnreachable,
+                localDevVPNFunctionalFailureMessage(result),
                 stage: .localDevVPNRouteVisible
             )
             await diagnostics.fail(.localDevVPNRouteVisible, error: error)
-            await record(error: error, component: "LocalDevVPN", newState: "missing")
+            await recorder.record(
+                category: "ROUTE",
+                component: "LocalDevVPN",
+                previousState: nil,
+                newState: "not_functional",
+                errorCode: error.code.rawValue,
+                message: error.message,
+                metadata: localDevVPNMetadata(result)
+            )
         }
 
         if result.tcpResult.connected {
@@ -434,13 +442,12 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
         let interfaces = SystemInterfaceSnapshotProvider().snapshots()
         let present = DeveloperRouteProbe.localDevVPNAppearsActive(in: interfaces)
         await recorder.record(
-            category: "ROUTE",
-            component: "LocalDevVPN",
+            category: "ROUTE_DIAGNOSTIC",
+            component: "LocalDevVPNInterface",
             previousState: nil,
-            newState: present ? "present" : "missing",
-            errorCode: present ? nil : POCErrorCode.localDevVPNRouteMissing.rawValue,
-            message: present ? "LocalDevVPN route visible" : "LocalDevVPN route missing",
-            metadata: ["interfaces": routeInterfaceSummary(interfaces)]
+            newState: present ? "visible" : "not_visible",
+            message: present ? "Expected LocalDevVPN interface address visible" : "Expected LocalDevVPN interface address not visible to IOSSim",
+            metadata: ["interface_visible": String(present), "interfaces": routeInterfaceSummary(interfaces)]
         )
     }
 
@@ -450,10 +457,14 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
             category: "ROUTE",
             component: "LocalDevVPN",
             previousState: nil,
-            newState: result.localDevVPNAppearsActive ? "present" : "missing",
-            errorCode: result.localDevVPNAppearsActive ? nil : POCErrorCode.localDevVPNRouteMissing.rawValue,
-            message: result.localDevVPNAppearsActive ? "LocalDevVPN route visible" : "LocalDevVPN route missing",
-            metadata: ["interfaces": routeInterfaceSummary(result.interfaces)]
+            newState: result.localDevVPNFunctionalReady
+                ? (result.localDevVPNInterfaceVisible ? "functional_interface_visible" : "functional_interface_not_visible")
+                : "not_functional",
+            errorCode: result.localDevVPNFunctionalReady ? nil : POCErrorCode.endpointUnreachable.rawValue,
+            message: result.localDevVPNFunctionalReady
+                ? localDevVPNFunctionalMessage(result)
+                : localDevVPNFunctionalFailureMessage(result),
+            metadata: localDevVPNMetadata(result)
         )
         await recorder.record(
             category: "ENDPOINT",
@@ -471,6 +482,27 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
             .filter { $0.family == "IPv4" && $0.address.hasPrefix("10.7.0.") }
             .map { "\($0.name)=\($0.address)" }
         return matches.isEmpty ? "none" : matches.joined(separator: ",")
+    }
+
+    private func localDevVPNFunctionalMessage(_ result: DeveloperRouteDiagnostics) -> String {
+        if result.localDevVPNInterfaceVisible {
+            return "Developer endpoint reachable; expected LocalDevVPN interface address is visible."
+        }
+        return "Developer endpoint reachable; expected LocalDevVPN interface address was not visible to IOSSim."
+    }
+
+    private func localDevVPNFunctionalFailureMessage(_ result: DeveloperRouteDiagnostics) -> String {
+        let interfaceState = result.localDevVPNInterfaceVisible ? "visible" : "not visible"
+        return "Developer endpoint \(result.endpoint.host):\(result.endpoint.port) is not reachable; expected LocalDevVPN interface address is \(interfaceState)."
+    }
+
+    private func localDevVPNMetadata(_ result: DeveloperRouteDiagnostics) -> [String: String] {
+        [
+            "interface_visible": String(result.localDevVPNInterfaceVisible),
+            "interfaces": routeInterfaceSummary(result.interfaces),
+            "endpoint": "\(result.endpoint.host):\(result.endpoint.port)",
+            "endpoint_reachable": String(result.tcpResult.connected)
+        ]
     }
 
     private func endpointMetadata(_ result: TCPProbeResult) -> [String: String] {

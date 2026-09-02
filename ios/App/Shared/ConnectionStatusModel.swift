@@ -74,7 +74,7 @@ final class ConnectionStatusModel: ObservableObject {
         localDevVPNStep = stepState(for: [.localDevVPNRouteVisible], in: byStage)
         endpointStep = stepState(for: [.endpointReachable], in: byStage)
 
-        guard pairingStep.isPass, localDevVPNStep.isPass, endpointStep.isPass else {
+        guard snapshot.setupPrerequisitesReady else {
             sessionStep = .pending
             isReady = false
             return
@@ -136,7 +136,7 @@ enum HumanReadableError {
         case "PAIRING_FILE_INVALID", "PAIRING_CREDENTIAL_MISSING", "PAIRING_STORAGE_FAILED", "PAIRING_READ_FAILED":
             return "The imported pairing file couldn't be used. Re-import a valid RPPairing file."
         case "LOCALDEVVPN_ROUTE_MISSING":
-            return "LocalDevVPN is not active. Open LocalDevVPN, enable the VPN, then return to IOSSim."
+            return "IOSSim could not see the expected VPN interface address. Run setup again to check the developer endpoint."
         case "ENDPOINT_UNREACHABLE":
             return "IOSSim can't reach the developer connection over LocalDevVPN. Confirm LocalDevVPN shows Connected, then try again."
         case "IDEVICE_BRIDGE_UNAVAILABLE":

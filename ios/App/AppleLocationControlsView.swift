@@ -34,10 +34,14 @@ final class AppleLocationControlsViewModel: ObservableObject {
     @Published private(set) var simulatedBySoftwareText = "UNKNOWN"
     @Published private(set) var exportURLs: [URL] = []
     @Published private(set) var statusText = "Idle"
+    @Published private(set) var gate3Status = Gate3XCTestRunnerStatus()
+    @Published private(set) var gate3ActionStatus = "Idle"
 
     private let recorder: AppleLocationControlRecorder
+    private let tunnelClient = POCAppDependencies.tunnelClient
     private var startedAt: Date?
     private var timer: Timer?
+    private var gate3PollTask: Task<Void, Never>?
     private let requestedVelocityMps = 15.646
 
     init(recorder: AppleLocationControlRecorder = AppleLocationControlRecorder()) {
@@ -53,6 +57,7 @@ final class AppleLocationControlsViewModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        gate3PollTask?.cancel()
         recorder.stop()
     }
 
@@ -77,6 +82,32 @@ final class AppleLocationControlsViewModel: ObservableObject {
             statusText = "Stopped. Export files ready."
         } catch {
             statusText = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    func startGate3XCTest() {
+        gate3ActionStatus = "Starting"
+        Task {
+            do {
+                try await tunnelClient.startGate3OnDeviceXCTest(iosMajorVersion: currentIOSMajorVersion())
+                refreshGate3Status()
+                gate3ActionStatus = "Started"
+                startGate3Poll()
+            } catch {
+                refreshGate3Status()
+                gate3ActionStatus = "FAILED: \(display(error))"
+            }
+        }
+    }
+
+    func stopGate3XCTest() {
+        gate3ActionStatus = "Stopping"
+        Task {
+            await tunnelClient.stopGate3OnDeviceXCTest()
+            refreshGate3Status()
+            gate3PollTask?.cancel()
+            gate3PollTask = nil
+            gate3ActionStatus = "Stopped"
         }
     }
 
@@ -124,6 +155,23 @@ final class AppleLocationControlsViewModel: ObservableObject {
         simulatedBySoftwareText = latest.isSimulatedBySoftware.map(String.init(describing:)) ?? "UNKNOWN"
     }
 
+    func refreshGate3Status() {
+        gate3Status = tunnelClient.gate3XCTestStatus()
+    }
+
+    func startGate3Poll() {
+        gate3PollTask?.cancel()
+        gate3PollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.refreshGate3Status()
+                if self?.gate3Status.isRunning == false {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+    }
+
     func copyLatestJSONLToPasteboard() {
         guard let jsonlURL = exportURLs.first(where: { $0.pathExtension == "jsonl" }),
               let text = try? String(contentsOf: jsonlURL, encoding: .utf8) else {
@@ -141,7 +189,10 @@ final class AppleLocationControlsViewModel: ObservableObject {
     private func scheduleTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshMetrics() }
+            Task { @MainActor in
+                self?.refreshMetrics()
+                self?.refreshGate3Status()
+            }
         }
     }
 
@@ -266,6 +317,18 @@ final class AppleLocationControlsViewModel: ObservableObject {
     private func format(_ value: Double?, suffix: String) -> String {
         guard let value, value.isFinite else { return "UNKNOWN" }
         return String(format: "%.3f%@", value, suffix)
+    }
+
+    private func display(_ error: Error) -> String {
+        if let error = error as? POCError {
+            return "\(error.code.rawValue): \(error.message)"
+        }
+        return String(describing: error)
+    }
+
+    private func currentIOSMajorVersion() -> UInt8 {
+        let majorVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        return UInt8(clamping: majorVersion)
     }
 }
 
@@ -403,8 +466,65 @@ struct AppleLocationControlsView: View {
                     .textSelection(.enabled)
                     .accessibilityIdentifier("AppleLocationControls.Status")
             }
+
+            Section("Gate 3 On-Device XCTest") {
+                HStack {
+                    Button {
+                        model.startGate3XCTest()
+                    } label: {
+                        Label("Launch", systemImage: "play.circle")
+                    }
+                    .disabled(model.gate3Status.isRunning)
+                    .accessibilityIdentifier("AppleLocationControls.Gate3Launch")
+
+                    Button(role: .destructive) {
+                        model.stopGate3XCTest()
+                    } label: {
+                        Label("Stop", systemImage: "stop.circle")
+                    }
+                    .disabled(!model.gate3Status.isRunning)
+                    .accessibilityIdentifier("AppleLocationControls.Gate3Stop")
+                }
+
+                LabeledContent("Current", value: model.gate3Status.currentStage.rawValue)
+                LabeledContent("Action", value: model.gate3ActionStatus)
+
+                if let firstErrorStage = model.gate3Status.firstErrorStage {
+                    LabeledContent("First failure", value: firstErrorStage.rawValue)
+                }
+                if let firstErrorMessage = model.gate3Status.firstErrorMessage {
+                    Text(firstErrorMessage)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("AppleLocationControls.Gate3FirstError")
+                }
+                if let metadata = model.gate3Status.metadataSummary {
+                    Text(metadata)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("AppleLocationControls.Gate3Metadata")
+                }
+                ForEach(model.gate3Status.events) { event in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(event.stage.rawValue)
+                            .font(.caption.monospaced())
+                        if let message = event.message {
+                            Text(message)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("AppleLocationControls.Gate3Events")
+            }
         }
         .navigationTitle("Apple Location Controls")
+        .task {
+            model.refreshGate3Status()
+        }
         .sheet(isPresented: $showingExporter) {
             ShareSheet(activityItems: model.exportURLs)
         }

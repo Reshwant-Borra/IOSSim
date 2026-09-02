@@ -1,0 +1,1379 @@
+diff --git a/ffi/Cargo.toml b/ffi/Cargo.toml
+index c3270f8..a147ac1 100644
+--- a/ffi/Cargo.toml
++++ b/ffi/Cargo.toml
+@@ -80,6 +80,7 @@ tss = ["idevice/tss"]
+ tunneld = ["idevice/tunneld"]
+ usbmuxd = ["idevice/usbmuxd", "dep:futures"]
+ wda = ["idevice/wda", "dep:serde_json"]
++xctest = ["idevice/xctest", "dep:uuid"]
+ xpc = ["idevice/xpc"]
+ screenshotr = ["idevice/screenshotr"]
+ full = [
+@@ -129,6 +130,7 @@ full = [
+   "tunneld",
+   "usbmuxd",
+   "wda",
++  "xctest",
+   "xpc",
+ ]
+ default = ["full", "aws-lc"]
+diff --git a/ffi/src/lib.rs b/ffi/src/lib.rs
+index 813479b..05d5785 100644
+--- a/ffi/src/lib.rs
++++ b/ffi/src/lib.rs
+@@ -84,6 +84,8 @@ pub mod util;
+ pub mod wda;
+ #[cfg(feature = "wda")]
+ pub mod wda_bridge;
++#[cfg(feature = "xctest")]
++pub mod xctest;
+
+ pub use errors::*;
+ pub use pairing_file::*;
+diff --git a/ffi/src/xctest.rs b/ffi/src/xctest.rs
+new file mode 100644
+index 0000000..68a754c
+--- /dev/null
++++ b/ffi/src/xctest.rs
+@@ -0,0 +1,577 @@
++//! Minimal XCTest runner FFI.
++
++use std::{
++    ffi::{CStr, CString, c_char, c_void},
++    ptr::null_mut,
++    sync::{Arc, Mutex},
++    time::Duration,
++};
++
++use idevice::{
++    IdeviceError, RsdService as _,
++    installation_proxy::InstallationProxyClient,
++    services::dvt::xctest::{
++        TestConfig, XCUITestService, XCUITestStageListener, XCUITestStartupStage,
++        listener::XCUITestListener, validate_required_rsd_services,
++    },
++};
++use plist::{Dictionary, Value};
++use tokio::task::JoinHandle;
++
++use crate::{IdeviceFfiError, core_device_proxy::AdapterHandle, ffi_err, rsd::RsdHandshakeHandle};
++
++#[repr(C)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum XCTestRunnerStatus {
++    Unknown = 0,
++    RsdReady = 1,
++    TestmanagerControlReady = 2,
++    TestmanagerMainReady = 3,
++    DvtReady = 4,
++    RunnerLaunched = 5,
++    PidAuthorized = 6,
++    XctestHandshakeReady = 7,
++    TestPlanStarted = 8,
++    Finished = 9,
++    Failed = 10,
++}
++
++#[repr(C)]
++pub struct XCTestRunnerConfig {
++    pub runner_bundle_id: *const c_char,
++    pub runner_app_path: *const c_char,
++    pub runner_app_container: *const c_char,
++    pub runner_bundle_executable: *const c_char,
++    pub target_bundle_id: *const c_char,
++    pub target_app_path: *const c_char,
++    pub env_vars: *const *const c_char,
++    pub env_vars_count: usize,
++    pub arguments: *const *const c_char,
++    pub arguments_count: usize,
++}
++
++#[repr(C)]
++pub struct XCTestRunnerMetadata {
++    pub runner_bundle_id: *mut c_char,
++    pub runner_app_path: *mut c_char,
++    pub runner_app_container: *mut c_char,
++    pub runner_bundle_executable: *mut c_char,
++}
++
++pub type XCTestRunnerStatusCallback = Option<
++    unsafe extern "C" fn(context: *mut c_void, status: XCTestRunnerStatus, message: *const c_char),
++>;
++
++#[derive(Debug)]
++struct XCTestRunnerSharedState {
++    status: XCTestRunnerStatus,
++    first_error_stage: XCTestRunnerStatus,
++    error_message: Option<String>,
++}
++
++pub struct XCTestRunnerHandle {
++    source: idevice::services::dvt::xctest::XCUITestRsdConnection,
++    state: Arc<Mutex<XCTestRunnerSharedState>>,
++    task: Mutex<Option<JoinHandle<()>>>,
++    callback: XCTestRunnerStatusCallback,
++    callback_context: usize,
++}
++
++struct FfiXCTestListener;
++
++impl XCUITestListener for FfiXCTestListener {}
++
++struct FfiXCTestStageListener {
++    state: Arc<Mutex<XCTestRunnerSharedState>>,
++    callback: XCTestRunnerStatusCallback,
++    callback_context: usize,
++}
++
++impl FfiXCTestStageListener {
++    fn set_status(&self, status: XCTestRunnerStatus, message: Option<String>) {
++        {
++            let mut state = self.state.lock().expect("xctest runner state poisoned");
++            state.status = status;
++            if status == XCTestRunnerStatus::Failed
++                && state.first_error_stage == XCTestRunnerStatus::Unknown
++            {
++                state.first_error_stage = next_error_stage(state.status);
++            }
++            if let Some(message) = message.as_ref() {
++                state.error_message = Some(message.clone());
++            }
++        }
++        notify(
++            self.callback,
++            self.callback_context,
++            status,
++            message.as_deref(),
++        );
++    }
++}
++
++impl XCUITestStageListener for FfiXCTestStageListener {
++    async fn xctest_stage_changed(
++        &mut self,
++        stage: XCUITestStartupStage,
++    ) -> Result<(), IdeviceError> {
++        self.set_status(stage.into(), None);
++        Ok(())
++    }
++}
++
++impl From<XCUITestStartupStage> for XCTestRunnerStatus {
++    fn from(stage: XCUITestStartupStage) -> Self {
++        match stage {
++            XCUITestStartupStage::RsdReady => Self::RsdReady,
++            XCUITestStartupStage::TestmanagerControlReady => Self::TestmanagerControlReady,
++            XCUITestStartupStage::TestmanagerMainReady => Self::TestmanagerMainReady,
++            XCUITestStartupStage::DvtReady => Self::DvtReady,
++            XCUITestStartupStage::RunnerLaunched => Self::RunnerLaunched,
++            XCUITestStartupStage::PidAuthorized => Self::PidAuthorized,
++            XCUITestStartupStage::XctestHandshakeReady => Self::XctestHandshakeReady,
++            XCUITestStartupStage::TestPlanStarted => Self::TestPlanStarted,
++            XCUITestStartupStage::Finished => Self::Finished,
++        }
++    }
++}
++
++fn next_error_stage(status: XCTestRunnerStatus) -> XCTestRunnerStatus {
++    match status {
++        XCTestRunnerStatus::Unknown => XCTestRunnerStatus::RsdReady,
++        XCTestRunnerStatus::RsdReady => XCTestRunnerStatus::TestmanagerControlReady,
++        XCTestRunnerStatus::TestmanagerControlReady => XCTestRunnerStatus::TestmanagerMainReady,
++        XCTestRunnerStatus::TestmanagerMainReady => XCTestRunnerStatus::DvtReady,
++        XCTestRunnerStatus::DvtReady => XCTestRunnerStatus::RunnerLaunched,
++        XCTestRunnerStatus::RunnerLaunched => XCTestRunnerStatus::PidAuthorized,
++        XCTestRunnerStatus::PidAuthorized => XCTestRunnerStatus::XctestHandshakeReady,
++        XCTestRunnerStatus::XctestHandshakeReady => XCTestRunnerStatus::TestPlanStarted,
++        XCTestRunnerStatus::TestPlanStarted => XCTestRunnerStatus::Finished,
++        XCTestRunnerStatus::Finished | XCTestRunnerStatus::Failed => status,
++    }
++}
++
++fn set_failure(
++    state: &Arc<Mutex<XCTestRunnerSharedState>>,
++    callback: XCTestRunnerStatusCallback,
++    callback_context: usize,
++    error: IdeviceError,
++) {
++    let message = format!("{error:?}");
++    let error_stage = {
++        let mut state = state.lock().expect("xctest runner state poisoned");
++        let error_stage = next_error_stage(state.status);
++        state.status = XCTestRunnerStatus::Failed;
++        if state.first_error_stage == XCTestRunnerStatus::Unknown {
++            state.first_error_stage = error_stage;
++        }
++        state.error_message = Some(message.clone());
++        state.first_error_stage
++    };
++    notify(
++        callback,
++        callback_context,
++        XCTestRunnerStatus::Failed,
++        Some(&format!("{error_stage:?}: {message}")),
++    );
++}
++
++fn notify(
++    callback: XCTestRunnerStatusCallback,
++    callback_context: usize,
++    status: XCTestRunnerStatus,
++    message: Option<&str>,
++) {
++    if let Some(callback) = callback {
++        let message = CString::new(message.unwrap_or(""))
++            .unwrap_or_else(|_| CString::new("invalid status message").unwrap());
++        unsafe { callback(callback_context as *mut c_void, status, message.as_ptr()) };
++    }
++}
++
++fn metadata_from_config(cfg: TestConfig) -> Result<XCTestRunnerMetadata, IdeviceError> {
++    let runner_bundle_id =
++        CString::new(cfg.runner_bundle_id).map_err(|_| IdeviceError::FfiInvalidString)?;
++    let runner_app_path =
++        CString::new(cfg.runner_app_path).map_err(|_| IdeviceError::FfiInvalidString)?;
++    let runner_app_container =
++        CString::new(cfg.runner_app_container).map_err(|_| IdeviceError::FfiInvalidString)?;
++    let runner_bundle_executable =
++        CString::new(cfg.runner_bundle_executable).map_err(|_| IdeviceError::FfiInvalidString)?;
++
++    Ok(XCTestRunnerMetadata {
++        runner_bundle_id: runner_bundle_id.into_raw(),
++        runner_app_path: runner_app_path.into_raw(),
++        runner_app_container: runner_app_container.into_raw(),
++        runner_bundle_executable: runner_bundle_executable.into_raw(),
++    })
++}
++
++fn abort_and_join(task: JoinHandle<()>) {
++    task.abort();
++    crate::run_sync_local(async move {
++        let _ = task.await;
++    });
++}
++
++unsafe fn required_string(ptr: *const c_char) -> Result<String, IdeviceError> {
++    if ptr.is_null() {
++        return Err(IdeviceError::FfiInvalidArg);
++    }
++    unsafe { CStr::from_ptr(ptr) }
++        .to_str()
++        .map(ToOwned::to_owned)
++        .map_err(|_| IdeviceError::FfiInvalidString)
++}
++
++/// Looks up XCTest runner metadata via InstallationProxy over an existing RSD connection.
++///
++/// # Safety
++/// Pointers must be valid handles allocated by this library. `bundle_id` must be
++/// a valid null-terminated UTF-8 string. `out` must be writable storage.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_copy_metadata_from_rsd(
++    adapter: *mut AdapterHandle,
++    handshake: *mut RsdHandshakeHandle,
++    bundle_id: *const c_char,
++    out: *mut *mut XCTestRunnerMetadata,
++) -> *mut IdeviceFfiError {
++    if adapter.is_null() || handshake.is_null() || bundle_id.is_null() || out.is_null() {
++        return ffi_err!(IdeviceError::FfiInvalidArg);
++    }
++
++    let bundle_id = match unsafe { required_string(bundle_id) } {
++        Ok(bundle_id) => bundle_id,
++        Err(error) => return ffi_err!(error),
++    };
++    let mut adapter = unsafe { &*adapter }.0.clone();
++    let mut handshake = unsafe { &*handshake }.0.clone();
++
++    let result: Result<TestConfig, IdeviceError> = crate::run_sync_local(async move {
++        let mut install_proxy =
++            InstallationProxyClient::connect_rsd(&mut adapter, &mut handshake).await?;
++        TestConfig::from_installation_proxy(&mut install_proxy, &bundle_id, None).await
++    });
++
++    match result.and_then(metadata_from_config) {
++        Ok(metadata) => {
++            unsafe { *out = Box::into_raw(Box::new(metadata)) };
++            null_mut()
++        }
++        Err(error) => ffi_err!(error),
++    }
++}
++
++unsafe fn optional_string(ptr: *const c_char) -> Result<Option<String>, IdeviceError> {
++    if ptr.is_null() {
++        return Ok(None);
++    }
++    unsafe { CStr::from_ptr(ptr) }
++        .to_str()
++        .map(|value| Some(value.to_owned()))
++        .map_err(|_| IdeviceError::FfiInvalidString)
++}
++
++unsafe fn string_array(
++    strings: *const *const c_char,
++    count: usize,
++) -> Result<Vec<String>, IdeviceError> {
++    if count == 0 {
++        return Ok(Vec::new());
++    }
++    if strings.is_null() {
++        return Err(IdeviceError::FfiInvalidArg);
++    }
++    let raw = unsafe { std::slice::from_raw_parts(strings, count) };
++    raw.iter()
++        .map(|ptr| unsafe { required_string(*ptr) })
++        .collect()
++}
++
++unsafe fn config_from_ffi(config: *const XCTestRunnerConfig) -> Result<TestConfig, IdeviceError> {
++    if config.is_null() {
++        return Err(IdeviceError::FfiInvalidArg);
++    }
++    let config = unsafe { &*config };
++
++    let mut runner_env = Dictionary::new();
++    for entry in unsafe { string_array(config.env_vars, config.env_vars_count) }? {
++        let Some((key, value)) = entry.split_once('=') else {
++            return Err(IdeviceError::FfiInvalidArg);
++        };
++        runner_env.insert(key.to_owned(), Value::String(value.to_owned()));
++    }
++
++    let runner_args = unsafe { string_array(config.arguments, config.arguments_count) }?;
++
++    Ok(TestConfig {
++        runner_bundle_id: unsafe { required_string(config.runner_bundle_id) }?,
++        runner_app_path: unsafe { required_string(config.runner_app_path) }?,
++        runner_app_container: unsafe { required_string(config.runner_app_container) }?,
++        runner_bundle_executable: unsafe { required_string(config.runner_bundle_executable) }?,
++        target_bundle_id: unsafe { optional_string(config.target_bundle_id) }?,
++        target_app_path: unsafe { optional_string(config.target_app_path) }?,
++        target_app_env: None,
++        target_app_args: None,
++        tests_to_run: None,
++        tests_to_skip: None,
++        runner_env: (!runner_env.is_empty()).then_some(runner_env),
++        runner_args: (!runner_args.is_empty()).then_some(runner_args),
++    })
++}
++
++/// Creates an XCTest runner handle from an existing RSD adapter/handshake.
++///
++/// The adapter and handshake are cloned; the caller remains responsible for the
++/// original handles and must keep the underlying tunnel alive.
++///
++/// # Safety
++/// Pointers must be valid handles allocated by this library. `out` must be a
++/// valid pointer to writable storage.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_new_from_rsd(
++    adapter: *mut AdapterHandle,
++    handshake: *mut RsdHandshakeHandle,
++    ios_major_version: u8,
++    callback: XCTestRunnerStatusCallback,
++    callback_context: *mut c_void,
++    out: *mut *mut XCTestRunnerHandle,
++) -> *mut IdeviceFfiError {
++    if adapter.is_null() || handshake.is_null() || out.is_null() {
++        return ffi_err!(IdeviceError::FfiInvalidArg);
++    }
++    let adapter = unsafe { &*adapter };
++    let handshake = unsafe { &*handshake };
++
++    if let Err(error) = validate_required_rsd_services(&handshake.0) {
++        return ffi_err!(error);
++    }
++
++    let handle = XCTestRunnerHandle {
++        source: idevice::services::dvt::xctest::XCUITestRsdConnection::new(
++            adapter.0.clone(),
++            handshake.0.clone(),
++            ios_major_version,
++        ),
++        state: Arc::new(Mutex::new(XCTestRunnerSharedState {
++            status: XCTestRunnerStatus::RsdReady,
++            first_error_stage: XCTestRunnerStatus::Unknown,
++            error_message: None,
++        })),
++        task: Mutex::new(None),
++        callback,
++        callback_context: callback_context as usize,
++    };
++
++    unsafe { *out = Box::into_raw(Box::new(handle)) };
++    null_mut()
++}
++
++/// Starts the configured preinstalled XCTest runner in the background.
++///
++/// # Safety
++/// `handle` and `config` must be valid pointers.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_start(
++    handle: *mut XCTestRunnerHandle,
++    config: *const XCTestRunnerConfig,
++    timeout_seconds: f64,
++) -> *mut IdeviceFfiError {
++    if handle.is_null() || config.is_null() {
++        return ffi_err!(IdeviceError::FfiInvalidArg);
++    }
++    let handle_ref = unsafe { &*handle };
++    let cfg = match unsafe { config_from_ffi(config) } {
++        Ok(cfg) => cfg,
++        Err(error) => return ffi_err!(error),
++    };
++
++    let mut task = handle_ref.task.lock().expect("xctest runner task poisoned");
++    if task.as_ref().is_some_and(|task| !task.is_finished()) {
++        return ffi_err!(IdeviceError::UnknownErrorType(
++            "xctest runner is already running".into(),
++        ));
++    }
++
++    let source = handle_ref.source.clone();
++    let state = handle_ref.state.clone();
++    let callback = handle_ref.callback;
++    let callback_context = handle_ref.callback_context;
++    let timeout = (timeout_seconds > 0.0).then(|| Duration::from_secs_f64(timeout_seconds));
++
++    *task = Some(crate::GLOBAL_RUNTIME.handle().spawn(async move {
++        let service = XCUITestService::from_rsd(
++            source.adapter(),
++            source.handshake(),
++            source.ios_major_version(),
++        );
++        let mut listener = FfiXCTestListener;
++        let mut stage_listener = FfiXCTestStageListener {
++            state: state.clone(),
++            callback,
++            callback_context,
++        };
++        if let Err(error) = service
++            .run_with_stage_listener(cfg, &mut listener, timeout, &mut stage_listener)
++            .await
++        {
++            set_failure(&state, callback, callback_context, error);
++        }
++    }));
++
++    null_mut()
++}
++
++/// Stops the background XCTest session task and drops its DTX connections.
++///
++/// # Safety
++/// `handle` must be a valid pointer or NULL.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_stop(
++    handle: *mut XCTestRunnerHandle,
++) -> *mut IdeviceFfiError {
++    if handle.is_null() {
++        return ffi_err!(IdeviceError::FfiInvalidArg);
++    }
++    let handle_ref = unsafe { &*handle };
++    if let Some(task) = handle_ref
++        .task
++        .lock()
++        .expect("xctest runner task poisoned")
++        .take()
++    {
++        abort_and_join(task);
++    }
++    {
++        let mut state = handle_ref
++            .state
++            .lock()
++            .expect("xctest runner state poisoned");
++        state.status = XCTestRunnerStatus::Finished;
++    }
++    notify(
++        handle_ref.callback,
++        handle_ref.callback_context,
++        XCTestRunnerStatus::Finished,
++        Some("stopped"),
++    );
++    null_mut()
++}
++
++/// Gets the current runner status and first failing stage, if any.
++///
++/// # Safety
++/// Pointers must be valid and non-null.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_get_status(
++    handle: *mut XCTestRunnerHandle,
++    status_out: *mut XCTestRunnerStatus,
++    first_error_stage_out: *mut XCTestRunnerStatus,
++) -> *mut IdeviceFfiError {
++    if handle.is_null() || status_out.is_null() || first_error_stage_out.is_null() {
++        return ffi_err!(IdeviceError::FfiInvalidArg);
++    }
++    let handle_ref = unsafe { &*handle };
++    let state = handle_ref
++        .state
++        .lock()
++        .expect("xctest runner state poisoned");
++    unsafe {
++        *status_out = state.status;
++        *first_error_stage_out = state.first_error_stage;
++    }
++    null_mut()
++}
++
++/// Copies the current error message. Caller frees the returned string with
++/// `xctest_runner_string_free`.
++///
++/// # Safety
++/// `handle` must be valid. Returns NULL when no error has been recorded.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_copy_error_message(
++    handle: *mut XCTestRunnerHandle,
++) -> *mut c_char {
++    if handle.is_null() {
++        return null_mut();
++    }
++    let handle_ref = unsafe { &*handle };
++    let state = handle_ref
++        .state
++        .lock()
++        .expect("xctest runner state poisoned");
++    let Some(message) = state.error_message.as_ref() else {
++        return null_mut();
++    };
++    CString::new(message.as_str())
++        .unwrap_or_else(|_| CString::new("invalid error message").unwrap())
++        .into_raw()
++}
++
++/// Frees a string returned by XCTest FFI.
++///
++/// # Safety
++/// `string` must be NULL or a string allocated by this library.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_string_free(string: *mut c_char) {
++    if !string.is_null() {
++        let _ = unsafe { CString::from_raw(string) };
++    }
++}
++
++/// Frees metadata returned by `xctest_runner_copy_metadata_from_rsd`.
++///
++/// # Safety
++/// `metadata` must be NULL or a metadata pointer allocated by this library.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_metadata_free(metadata: *mut XCTestRunnerMetadata) {
++    if !metadata.is_null() {
++        let metadata = unsafe { Box::from_raw(metadata) };
++        unsafe {
++            xctest_runner_string_free(metadata.runner_bundle_id);
++            xctest_runner_string_free(metadata.runner_app_path);
++            xctest_runner_string_free(metadata.runner_app_container);
++            xctest_runner_string_free(metadata.runner_bundle_executable);
++        }
++    }
++}
++
++/// Frees an XCTest runner handle.
++///
++/// # Safety
++/// `handle` must be NULL or a handle allocated by this library.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn xctest_runner_free(handle: *mut XCTestRunnerHandle) {
++    if !handle.is_null() {
++        if let Some(task) = unsafe { &*handle }
++            .task
++            .lock()
++            .expect("xctest runner task poisoned")
++            .take()
++        {
++            abort_and_join(task);
++        }
++        let _ = unsafe { Box::from_raw(handle) };
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{XCTestRunnerStatus, next_error_stage};
++
++    #[test]
++    fn status_failures_point_to_next_startup_stage() {
++        assert_eq!(
++            next_error_stage(XCTestRunnerStatus::RsdReady),
++            XCTestRunnerStatus::TestmanagerControlReady
++        );
++        assert_eq!(
++            next_error_stage(XCTestRunnerStatus::TestmanagerMainReady),
++            XCTestRunnerStatus::DvtReady
++        );
++        assert_eq!(
++            next_error_stage(XCTestRunnerStatus::PidAuthorized),
++            XCTestRunnerStatus::XctestHandshakeReady
++        );
++    }
++}
+diff --git a/idevice/src/services/dvt/xctest/mod.rs b/idevice/src/services/dvt/xctest/mod.rs
+index 3705645..250824f 100644
+--- a/idevice/src/services/dvt/xctest/mod.rs
++++ b/idevice/src/services/dvt/xctest/mod.rs
+@@ -262,12 +262,7 @@ impl TestConfig {
+             "/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework".to_owned()
+         };
+
+-        // productModuleName: config_name when a target app is set, else default WDA name
+-        let product_module_name = if self.target_bundle_id.is_some() {
+-            config_name.to_owned()
+-        } else {
+-            "WebDriverAgentRunner".to_owned()
+-        };
++        let product_module_name = config_name.to_owned();
+
+         // When a target app is specified, targetApplicationEnvironment must be at
+         // least an empty dict (not null) — mirrors Python's `self.target_app_env or {}`
+@@ -434,6 +429,91 @@ pub(super) struct TestManagerConnections {
+     rsd_handles: Vec<crate::tcp::handle::AdapterHandle>,
+ }
+
++/// Startup milestones reached while an XCTest runner is being orchestrated.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum XCUITestStartupStage {
++    RsdReady,
++    TestmanagerControlReady,
++    TestmanagerMainReady,
++    DvtReady,
++    RunnerLaunched,
++    PidAuthorized,
++    XctestHandshakeReady,
++    TestPlanStarted,
++    Finished,
++}
++
++/// Callback interface for coarse XCTest startup state.
++#[allow(async_fn_in_trait)]
++pub trait XCUITestStageListener: Send {
++    async fn xctest_stage_changed(
++        &mut self,
++        _stage: XCUITestStartupStage,
++    ) -> Result<(), IdeviceError> {
++        Ok(())
++    }
++}
++
++struct NoopXCUITestStageListener;
++
++impl XCUITestStageListener for NoopXCUITestStageListener {}
++
++/// Caller-supplied RSD access for XCTest orchestration.
++#[derive(Debug, Clone)]
++pub struct XCUITestRsdConnection {
++    adapter: crate::tcp::handle::AdapterHandle,
++    handshake: RsdHandshake,
++    ios_major_version: u8,
++}
++
++impl XCUITestRsdConnection {
++    /// Creates a supplied-RSD XCTest connection source.
++    pub fn new(
++        adapter: crate::tcp::handle::AdapterHandle,
++        handshake: RsdHandshake,
++        ios_major_version: u8,
++    ) -> Self {
++        Self {
++            adapter,
++            handshake,
++            ios_major_version,
++        }
++    }
++
++    pub fn ios_major_version(&self) -> u8 {
++        self.ios_major_version
++    }
++
++    pub fn adapter(&self) -> crate::tcp::handle::AdapterHandle {
++        self.adapter.clone()
++    }
++
++    pub fn handshake(&self) -> RsdHandshake {
++        self.handshake.clone()
++    }
++}
++
++#[derive(Clone)]
++enum XCUITestConnectionSource {
++    Provider(Arc<dyn IdeviceProvider>),
++    Rsd(XCUITestRsdConnection),
++}
++
++/// Verifies that a supplied RSD handshake advertises the XCTest services needed
++/// for iOS 17+ orchestration.
++pub fn validate_required_rsd_services(handshake: &RsdHandshake) -> Result<(), IdeviceError> {
++    for service_name in [
++        TESTMANAGERD_RSD_SERVICE,
++        "com.apple.instruments.dtservicehub",
++    ] {
++        if !handshake.services.contains_key(service_name) {
++            warn!("RSD service not found: {}", service_name);
++            return Err(IdeviceError::ServiceNotFound);
++        }
++    }
++    Ok(())
++}
++
+ /// Connects to a lockdown-based DTX service, trying each name in order.
+ ///
+ /// Returns the first successful `RemoteServerClient`.
+@@ -655,6 +735,62 @@ async fn connect_testmanagerd_rsd(
+     )))
+ }
+
++/// Establishes the three DTX connections required for XCTest using an already
++/// established RSD adapter and handshake.
++async fn connect_testmanagerd_supplied_rsd<S: XCUITestStageListener>(
++    mut handle: crate::tcp::handle::AdapterHandle,
++    handshake: RsdHandshake,
++    stage_listener: &mut S,
++) -> Result<TestManagerConnections, IdeviceError> {
++    validate_required_rsd_services(&handshake)?;
++    stage_listener
++        .xctest_stage_changed(XCUITestStartupStage::RsdReady)
++        .await?;
++
++    let ctrl = rsd_connect(
++        &mut handle,
++        &handshake,
++        TESTMANAGERD_RSD_SERVICE,
++        "testmanagerd-ctrl",
++        false,
++    )
++    .await?;
++    stage_listener
++        .xctest_stage_changed(XCUITestStartupStage::TestmanagerControlReady)
++        .await?;
++
++    let main = rsd_connect(
++        &mut handle,
++        &handshake,
++        TESTMANAGERD_RSD_SERVICE,
++        "testmanagerd-main",
++        false,
++    )
++    .await?;
++    stage_listener
++        .xctest_stage_changed(XCUITestStartupStage::TestmanagerMainReady)
++        .await?;
++
++    let dvt = rsd_connect(
++        &mut handle,
++        &handshake,
++        "com.apple.instruments.dtservicehub",
++        "dtservicehub",
++        true,
++    )
++    .await?;
++    stage_listener
++        .xctest_stage_changed(XCUITestStartupStage::DvtReady)
++        .await?;
++
++    Ok(TestManagerConnections {
++        ctrl,
++        main,
++        dvt,
++        rsd_handles: vec![handle],
++    })
++}
++
+ /// Establishes the three DTX connections required for an XCTest run.
+ ///
+ /// For iOS 17+ tries `CoreDeviceProxy` + RSD first. Falls back to lockdown
+@@ -1031,38 +1167,6 @@ async fn initialize_testmanager_daemon_sessions(
+     Ok(())
+ }
+
+-async fn launch_and_authorize_test_runner(
+-    ctrl_proxy: &mut TestManagerProxy<Box<dyn ReadWrite>>,
+-    process_control: &mut XCTestProcessControlChannel<'_, Box<dyn ReadWrite>>,
+-    ios_major_version: u8,
+-    runner_bundle_id: &str,
+-    launch_args: Vec<String>,
+-    launch_env: Dictionary,
+-    launch_options: Dictionary,
+-) -> Result<u64, IdeviceError> {
+-    let pid = process_control
+-        .launch_suspended_process(runner_bundle_id, launch_args, launch_env, launch_options)
+-        .await?;
+-    debug!("Launched test runner pid={}", pid);
+-
+-    if ios_major_version < 17 {
+-        crate::time::sleep(std::time::Duration::from_secs(1)).await;
+-    }
+-
+-    ctrl_proxy.authorize_test(ios_major_version, pid).await?;
+-    Ok(pid)
+-}
+-
+-async fn start_test_plan_session(
+-    main_client: &mut RemoteServerClient<Box<dyn ReadWrite>>,
+-    _main_proxy: &mut TestManagerProxy<Box<dyn ReadWrite>>,
+-) -> Result<OwnedChannel<Box<dyn ReadWrite>>, IdeviceError> {
+-    let mut driver_proxy = DriverProxy::wait(main_client, 30.0).await?;
+-    driver_proxy.start_executing_test_plan().await?;
+-    driver_proxy.channel.clear_incoming_handler().await;
+-    Ok(driver_proxy.channel)
+-}
+-
+ pub(super) async fn wait_for_driver_channel(
+     main_client: &mut RemoteServerClient<Box<dyn ReadWrite>>,
+     timeout_secs: f64,
+@@ -1821,7 +1925,7 @@ async fn run_dispatch_loop_until_done_or_disconnect<L: XCUITestListener>(
+ /// # }
+ /// ```
+ pub struct XCUITestService {
+-    provider: Arc<dyn IdeviceProvider>,
++    source: XCUITestConnectionSource,
+ }
+
+ #[cfg(feature = "wda")]
+@@ -1953,8 +2057,12 @@ fn wda_port_from_runner_environment(
+
+ impl std::fmt::Debug for XCUITestService {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let source = match &self.source {
++            XCUITestConnectionSource::Provider(_) => "IdeviceProvider",
++            XCUITestConnectionSource::Rsd(_) => "RSD",
++        };
+         f.debug_struct("XCUITestService")
+-            .field("provider", &"<IdeviceProvider>")
++            .field("source", &source)
+             .finish()
+     }
+ }
+@@ -1962,7 +2070,34 @@ impl std::fmt::Debug for XCUITestService {
+ impl XCUITestService {
+     /// Creates a new `XCUITestService` backed by the given provider.
+     pub fn new(provider: Arc<dyn IdeviceProvider>) -> Self {
+-        Self { provider }
++        Self {
++            source: XCUITestConnectionSource::Provider(provider),
++        }
++    }
++
++    /// Creates a new `XCUITestService` backed by an existing RSD adapter and
++    /// handshake. This path does not own pairing material and does not create a
++    /// second CoreDeviceProxy/software tunnel.
++    pub fn from_rsd(
++        adapter: crate::tcp::handle::AdapterHandle,
++        handshake: RsdHandshake,
++        ios_major_version: u8,
++    ) -> Self {
++        Self {
++            source: XCUITestConnectionSource::Rsd(XCUITestRsdConnection::new(
++                adapter,
++                handshake,
++                ios_major_version,
++            )),
++        }
++    }
++
++    #[cfg(feature = "wda")]
++    fn provider(&self) -> Option<&Arc<dyn IdeviceProvider>> {
++        match &self.source {
++            XCUITestConnectionSource::Provider(provider) => Some(provider),
++            XCUITestConnectionSource::Rsd(_) => None,
++        }
+     }
+
+     /// Runs the XCTest bundle described by `cfg` to completion.
+@@ -1981,6 +2116,20 @@ impl XCUITestService {
+         cfg: TestConfig,
+         listener: &mut L,
+         timeout: Option<std::time::Duration>,
++    ) -> Result<(), IdeviceError> {
++        let mut stage_listener = NoopXCUITestStageListener;
++        self.run_with_stage_listener(cfg, listener, timeout, &mut stage_listener)
++            .await
++    }
++
++    /// Runs the XCTest bundle described by `cfg`, reporting coarse startup
++    /// milestones through `stage_listener`.
++    pub async fn run_with_stage_listener<L: XCUITestListener, S: XCUITestStageListener>(
++        &self,
++        cfg: TestConfig,
++        listener: &mut L,
++        timeout: Option<std::time::Duration>,
++        stage_listener: &mut S,
+     ) -> Result<(), IdeviceError> {
+         // 1. Session UUID + config path
+         let session_id = uuid::Uuid::new_v4();
+@@ -1990,23 +2139,53 @@ impl XCUITestService {
+         );
+
+         // 2. iOS major version (needed for service selection and launch env)
+-        let ios_major_version: u8 = {
+-            let mut lockdown = LockdownClient::connect(&*self.provider).await?;
+-            lockdown
+-                .start_session(&self.provider.get_pairing_file().await?)
+-                .await?;
+-            let ver = lockdown.get_value(Some("ProductVersion"), None).await?;
+-            ver.as_string()
+-                .and_then(|s| s.split('.').next())
+-                .and_then(|s| s.parse().ok())
+-                .unwrap_or(16u8)
++        let ios_major_version: u8 = match &self.source {
++            XCUITestConnectionSource::Provider(provider) => {
++                let mut lockdown = LockdownClient::connect(&**provider).await?;
++                lockdown
++                    .start_session(&provider.get_pairing_file().await?)
++                    .await?;
++                let ver = lockdown.get_value(Some("ProductVersion"), None).await?;
++                ver.as_string()
++                    .and_then(|s| s.split('.').next())
++                    .and_then(|s| s.parse().ok())
++                    .unwrap_or(16u8)
++            }
++            XCUITestConnectionSource::Rsd(rsd) => rsd.ios_major_version(),
+         };
+
+         // 3. Build XCTestConfiguration
+         let xctest_config = cfg.build_xctest_configuration(session_id, ios_major_version)?;
+
+         // 4. Connect to testmanagerd (ctrl + main) and DVT
+-        let mut conns = connect_testmanagerd(&*self.provider, ios_major_version).await?;
++        let mut conns = match &self.source {
++            XCUITestConnectionSource::Provider(provider) => {
++                let conns = connect_testmanagerd(&**provider, ios_major_version).await?;
++                stage_listener
++                    .xctest_stage_changed(XCUITestStartupStage::TestmanagerControlReady)
++                    .await?;
++                stage_listener
++                    .xctest_stage_changed(XCUITestStartupStage::TestmanagerMainReady)
++                    .await?;
++                stage_listener
++                    .xctest_stage_changed(XCUITestStartupStage::DvtReady)
++                    .await?;
++                conns
++            }
++            XCUITestConnectionSource::Rsd(rsd) => {
++                if ios_major_version < 17 {
++                    return Err(IdeviceError::UnknownErrorType(
++                        "caller-supplied RSD XCTest requires iOS 17 or newer".into(),
++                    ));
++                }
++                connect_testmanagerd_supplied_rsd(
++                    rsd.adapter.clone(),
++                    rsd.handshake.clone(),
++                    stage_listener,
++                )
++                .await?
++            }
++        };
+         let mut ctrl_proxy = TestManagerProxy::open(&mut conns.ctrl, ios_major_version).await?;
+         let mut main_proxy = TestManagerProxy::open(&mut conns.main, ios_major_version).await?;
+         let mut process_control = XCTestProcessControlChannel::open(&mut conns.dvt).await?;
+@@ -2035,19 +2214,39 @@ impl XCUITestService {
+             cfg.runner_args.as_deref(),
+         );
+
+-        let _pid = launch_and_authorize_test_runner(
+-            &mut ctrl_proxy,
+-            &mut process_control,
+-            ios_major_version,
+-            &cfg.runner_bundle_id,
+-            launch_args,
+-            launch_env,
+-            launch_options,
+-        )
+-        .await?;
++        let pid = process_control
++            .launch_suspended_process(
++                &cfg.runner_bundle_id,
++                launch_args,
++                launch_env,
++                launch_options,
++            )
++            .await?;
++        debug!("Launched test runner pid={}", pid);
++        stage_listener
++            .xctest_stage_changed(XCUITestStartupStage::RunnerLaunched)
++            .await?;
++
++        if ios_major_version < 17 {
++            crate::time::sleep(std::time::Duration::from_secs(1)).await;
++        }
++
++        ctrl_proxy.authorize_test(ios_major_version, pid).await?;
++        stage_listener
++            .xctest_stage_changed(XCUITestStartupStage::PidAuthorized)
++            .await?;
+
+         // 6-7. Wait for driver channel and start the test plan.
+-        let driver_channel = start_test_plan_session(&mut conns.main, &mut main_proxy).await?;
++        let mut driver_proxy = DriverProxy::wait(&mut conns.main, 30.0).await?;
++        stage_listener
++            .xctest_stage_changed(XCUITestStartupStage::XctestHandshakeReady)
++            .await?;
++        driver_proxy.start_executing_test_plan().await?;
++        stage_listener
++            .xctest_stage_changed(XCUITestStartupStage::TestPlanStarted)
++            .await?;
++        driver_proxy.channel.clear_incoming_handler().await;
++        let driver_channel = driver_proxy.channel;
+
+         // 8. Dispatch loop, raced against the runner connection dropping.
+         run_dispatch_loop_until_done_or_disconnect(
+@@ -2058,6 +2257,9 @@ impl XCUITestService {
+             timeout,
+         )
+         .await?;
++        stage_listener
++            .xctest_stage_changed(XCUITestStartupStage::Finished)
++            .await?;
+
+         Ok(())
+     }
+@@ -2079,8 +2281,12 @@ impl XCUITestService {
+         cfg: TestConfig,
+         readiness_timeout: std::time::Duration,
+     ) -> Result<WdaRunHandle, IdeviceError> {
++        let Some(provider) = self.provider().cloned() else {
++            return Err(IdeviceError::UnknownErrorType(
++                "WDA readiness requires an IdeviceProvider-backed XCTest service".into(),
++            ));
++        };
+         let port_overrides = wda_port_overrides_from_runner_environment(cfg.runner_env.as_ref())?;
+-        let provider = self.provider.clone();
+         let runner_cfg = cfg;
+         let task = tokio::spawn(async move {
+             let service = XCUITestService::new(provider);
+@@ -2088,9 +2294,14 @@ impl XCUITestService {
+             service.run(runner_cfg, &mut listener, None).await
+         });
+
++        let Some(provider) = self.provider() else {
++            return Err(IdeviceError::UnknownErrorType(
++                "WDA readiness requires an IdeviceProvider-backed XCTest service".into(),
++            ));
++        };
+         let wda = match port_overrides {
+-            Some(ports) => WdaClient::new(&*self.provider).with_ports(ports),
+-            None => WdaClient::new(&*self.provider),
++            Some(ports) => WdaClient::new(&**provider).with_ports(ports),
++            None => WdaClient::new(&**provider),
+         };
+         let deadline = std::time::Instant::now() + readiness_timeout;
+         let poll_interval = std::time::Duration::from_millis(250);
+@@ -2138,12 +2349,69 @@ impl XCUITestService {
+         cfg: TestConfig,
+         readiness_timeout: std::time::Duration,
+     ) -> Result<WdaBridgedRunHandle, IdeviceError> {
++        let Some(provider) = self.provider().cloned() else {
++            return Err(IdeviceError::UnknownErrorType(
++                "WDA bridge requires an IdeviceProvider-backed XCTest service".into(),
++            ));
++        };
+         let runner = self.run_until_wda_ready(cfg, readiness_timeout).await?;
+-        let bridge = WdaBridge::start_with_ports(self.provider.clone(), runner.ports()).await?;
++        let bridge = WdaBridge::start_with_ports(provider, runner.ports()).await?;
+         Ok(WdaBridgedRunHandle { runner, bridge })
+     }
+ }
+
++#[cfg(test)]
++mod supplied_rsd_tests {
++    use std::collections::HashMap;
++
++    use super::{TESTMANAGERD_RSD_SERVICE, validate_required_rsd_services};
++    use crate::services::rsd::{RsdHandshake, RsdService};
++
++    fn service(port: u16) -> RsdService {
++        RsdService {
++            entitlement: "com.apple.private.dt.remote-service".into(),
++            port,
++            uses_remote_xpc: false,
++            features: None,
++            service_version: None,
++        }
++    }
++
++    fn handshake(services: HashMap<String, RsdService>) -> RsdHandshake {
++        RsdHandshake {
++            services,
++            protocol_version: 2,
++            properties: HashMap::new(),
++            uuid: "00000000-0000-0000-0000-000000000000".into(),
++        }
++    }
++
++    #[test]
++    fn supplied_rsd_validation_accepts_required_services() {
++        let mut services = HashMap::new();
++        services.insert(TESTMANAGERD_RSD_SERVICE.into(), service(62000));
++        services.insert("com.apple.instruments.dtservicehub".into(), service(62001));
++
++        assert!(validate_required_rsd_services(&handshake(services)).is_ok());
++    }
++
++    #[test]
++    fn supplied_rsd_validation_rejects_missing_testmanagerd() {
++        let mut services = HashMap::new();
++        services.insert("com.apple.instruments.dtservicehub".into(), service(62001));
++
++        assert!(validate_required_rsd_services(&handshake(services)).is_err());
++    }
++
++    #[test]
++    fn supplied_rsd_validation_rejects_missing_dtservicehub() {
++        let mut services = HashMap::new();
++        services.insert(TESTMANAGERD_RSD_SERVICE.into(), service(62000));
++
++        assert!(validate_required_rsd_services(&handshake(services)).is_err());
++    }
++}
++
+ #[cfg(all(test, feature = "wda"))]
+ mod tests {
+     use super::wda_port_overrides_from_runner_environment;
+diff --git a/tools/Cargo.toml b/tools/Cargo.toml
+index 82dd8f5..8ce85c1 100644
+--- a/tools/Cargo.toml
++++ b/tools/Cargo.toml
+@@ -34,6 +34,10 @@ path = "src/idevice_id.rs"
+ name = "iproxy"
+ path = "src/iproxy.rs"
+
++[[bin]]
++name = "xctest_supplied_rsd"
++path = "src/xctest_supplied_rsd.rs"
++
+ [dependencies]
+ idevice = { path = "../idevice", features = [
+   "full",
+diff --git a/tools/src/xctest_supplied_rsd.rs b/tools/src/xctest_supplied_rsd.rs
+new file mode 100644
+index 0000000..f66cb8b
+--- /dev/null
++++ b/tools/src/xctest_supplied_rsd.rs
+@@ -0,0 +1,222 @@
++use std::{collections::HashMap, net::SocketAddr, time::Duration};
++
++use idevice::{
++    IdeviceError,
++    remote_pairing::{
++        RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
++    },
++    rsd::RsdHandshake,
++    services::dvt::xctest::{
++        TestConfig, XCUITestService, XCUITestStageListener, XCUITestStartupStage,
++        listener::XCUITestListener,
++    },
++};
++use plist::{Dictionary, Value};
++
++#[derive(Debug)]
++struct Args {
++    host: String,
++    port: u16,
++    pairing: String,
++    hostname: String,
++    ios_major: u8,
++    runner_bundle_id: String,
++    runner_app_path: String,
++    runner_app_container: String,
++    runner_bundle_executable: String,
++    timeout_seconds: Option<f64>,
++    env: Vec<String>,
++}
++
++struct PrintListener;
++
++impl XCUITestListener for PrintListener {
++    async fn did_begin_executing_test_plan(&mut self) -> Result<(), IdeviceError> {
++        println!("XCTest event: did begin test plan");
++        Ok(())
++    }
++
++    async fn did_finish_executing_test_plan(&mut self) -> Result<(), IdeviceError> {
++        println!("XCTest event: did finish test plan");
++        Ok(())
++    }
++
++    async fn test_runner_ready_with_capabilities(&mut self) -> Result<(), IdeviceError> {
++        println!("XCTest event: runner ready with capabilities");
++        Ok(())
++    }
++
++    async fn log_message(&mut self, message: &str) -> Result<(), IdeviceError> {
++        println!("XCTest log: {message}");
++        Ok(())
++    }
++}
++
++struct PrintStages;
++
++impl XCUITestStageListener for PrintStages {
++    async fn xctest_stage_changed(
++        &mut self,
++        stage: XCUITestStartupStage,
++    ) -> Result<(), IdeviceError> {
++        println!("XCTest stage: {stage:?}");
++        Ok(())
++    }
++}
++
++#[tokio::main]
++async fn main() -> Result<(), Box<dyn std::error::Error>> {
++    let args = parse_args()?;
++    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
++
++    println!("Gate 2 harness: creating caller-owned RPPairing tunnel/RSD");
++    let mut pairing = RpPairingFile::read_from_file(&args.pairing).await?;
++    let (adapter, handshake) = create_rppairing_tunnel(&mut pairing, addr, &args.hostname).await?;
++    println!(
++        "Gate 2 harness: RSD ready with {} advertised services",
++        handshake.services.len()
++    );
++
++    let mut runner_env = Dictionary::new();
++    for entry in &args.env {
++        let Some((key, value)) = entry.split_once('=') else {
++            return Err(format!("expected --env KEY=VALUE, got {entry:?}").into());
++        };
++        runner_env.insert(key.to_owned(), Value::String(value.to_owned()));
++    }
++
++    let cfg = TestConfig {
++        runner_bundle_id: args.runner_bundle_id,
++        runner_app_path: args.runner_app_path,
++        runner_app_container: args.runner_app_container,
++        runner_bundle_executable: args.runner_bundle_executable,
++        target_bundle_id: None,
++        target_app_path: None,
++        target_app_env: None,
++        target_app_args: None,
++        tests_to_run: None,
++        tests_to_skip: None,
++        runner_env: (!runner_env.is_empty()).then_some(runner_env),
++        runner_args: None,
++    };
++
++    println!("Gate 2 harness: starting XCTest through supplied RSD");
++    let service = XCUITestService::from_rsd(adapter, handshake, args.ios_major);
++    let mut listener = PrintListener;
++    let mut stages = PrintStages;
++    let timeout = args.timeout_seconds.map(Duration::from_secs_f64);
++    service
++        .run_with_stage_listener(cfg, &mut listener, timeout, &mut stages)
++        .await?;
++
++    println!("Gate 2 harness: XCTest run completed");
++    Ok(())
++}
++
++async fn create_rppairing_tunnel(
++    pairing: &mut RpPairingFile,
++    addr: SocketAddr,
++    hostname: &str,
++) -> Result<(idevice::tcp::handle::AdapterHandle, RsdHandshake), IdeviceError> {
++    let stream = tokio::net::TcpStream::connect(addr).await?;
++    let conn = RpPairingSocket::new(stream);
++    let mut rpc = RemotePairingClient::new(conn, hostname);
++    rpc.connect(pairing, || async { "000000".to_owned() })
++        .await?;
++
++    let tunnel_port = rpc.create_tcp_listener().await?;
++    let mut tunnel_addr = addr;
++    tunnel_addr.set_port(tunnel_port);
++    let tunnel_stream = tokio::net::TcpStream::connect(tunnel_addr).await?;
++    let tunnel = connect_tls_psk_tunnel_native(tunnel_stream, rpc.encryption_key()).await?;
++
++    let client_ip = tunnel
++        .info
++        .client_address
++        .parse()
++        .map_err(|e| IdeviceError::InternalError(format!("{e}")))?;
++    let server_ip = tunnel
++        .info
++        .server_address
++        .parse()
++        .map_err(|e| IdeviceError::InternalError(format!("{e}")))?;
++    let mtu = tunnel.info.mtu as usize;
++    let rsd_port = tunnel.info.server_rsd_port;
++
++    let raw = tunnel.into_inner();
++    let mut adapter = idevice::tcp::adapter::Adapter::new(Box::new(raw), client_ip, server_ip);
++    adapter.set_mss(mtu.saturating_sub(60));
++    let mut adapter = adapter.to_async_handle();
++
++    let rsd_stream = adapter
++        .connect(rsd_port)
++        .await
++        .map_err(|e| IdeviceError::InternalError(format!("{e}")))?;
++    let handshake = RsdHandshake::new(rsd_stream).await?;
++    Ok((adapter, handshake))
++}
++
++fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
++    let mut values: HashMap<String, Vec<String>> = HashMap::new();
++    let mut iter = std::env::args().skip(1);
++    while let Some(arg) = iter.next() {
++        if arg == "--help" || arg == "-h" {
++            print_usage();
++            std::process::exit(0);
++        }
++        if !arg.starts_with("--") {
++            return Err(format!("unexpected argument {arg:?}").into());
++        }
++        let key = arg.trim_start_matches("--").to_owned();
++        let value = iter
++            .next()
++            .ok_or_else(|| format!("missing value for --{key}"))?;
++        values.entry(key).or_default().push(value);
++    }
++
++    Ok(Args {
++        host: take_required(&mut values, "host")?,
++        port: take_optional(&mut values, "port")?.unwrap_or(58783),
++        pairing: take_required(&mut values, "pairing")?,
++        hostname: take_optional(&mut values, "hostname")?.unwrap_or_else(|| "IOSSimGate2".into()),
++        ios_major: take_optional(&mut values, "ios-major")?.unwrap_or(17),
++        runner_bundle_id: take_required(&mut values, "runner-bundle-id")?,
++        runner_app_path: take_required(&mut values, "runner-app-path")?,
++        runner_app_container: take_required(&mut values, "runner-app-container")?,
++        runner_bundle_executable: take_required(&mut values, "runner-bundle-executable")?,
++        timeout_seconds: take_optional(&mut values, "timeout-seconds")?,
++        env: values.remove("env").unwrap_or_default(),
++    })
++}
++
++fn take_required(
++    values: &mut HashMap<String, Vec<String>>,
++    key: &str,
++) -> Result<String, Box<dyn std::error::Error>> {
++    take_optional(values, key)?.ok_or_else(|| format!("missing --{key}").into())
++}
++
++fn take_optional<T: std::str::FromStr>(
++    values: &mut HashMap<String, Vec<String>>,
++    key: &str,
++) -> Result<Option<T>, Box<dyn std::error::Error>>
++where
++    T::Err: std::error::Error + 'static,
++{
++    let Some(mut raw) = values.remove(key) else {
++        return Ok(None);
++    };
++    if raw.len() != 1 {
++        return Err(format!("--{key} may only be provided once").into());
++    }
++    Ok(Some(raw.remove(0).parse()?))
++}
++
++fn print_usage() {
++    println!(
++        "Usage: xctest_supplied_rsd --host IP --pairing RPPairing.plist \\
++         --runner-bundle-id ID --runner-app-path PATH --runner-app-container PATH \\
++         --runner-bundle-executable NAME [--port 58783] [--ios-major 17] \\
++         [--hostname IOSSimGate2] [--timeout-seconds 60] [--env KEY=VALUE]"
++    );
++}

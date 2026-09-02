@@ -46,6 +46,14 @@ public struct DeveloperRouteDiagnostics: Codable, Equatable, Sendable {
     public let interfaces: [NetworkInterfaceSnapshot]
     public let localDevVPNAppearsActive: Bool
     public let tcpResult: TCPProbeResult
+
+    public var localDevVPNInterfaceVisible: Bool {
+        localDevVPNAppearsActive
+    }
+
+    public var localDevVPNFunctionalReady: Bool {
+        tcpResult.connected
+    }
 }
 
 public protocol InterfaceSnapshotProvider: Sendable {

@@ -29,6 +29,8 @@
 		000000000000000000000120 /* BackgroundManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000228 /* BackgroundManager.swift */; };
 		000000000000000000000126 /* DriveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000229 /* DriveView.swift */; };
 		000000000000000000000128 /* DriveTraceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000232 /* DriveTraceModels.swift */; };
+		000000000000000000000129 /* RichDriveLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000233 /* RichDriveLocation.swift */; };
+		000000000000000000000130 /* DriveLocationTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000234 /* DriveLocationTransport.swift */; };
 		B10000000000000000000101 /* AppleLocationControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000201 /* AppleLocationControlsView.swift */; };
 		B10000000000000000000102 /* AppleLocationControlModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* AppleLocationControlModels.swift */; };
 		B10000000000000000000103 /* AppleXCUILocationControlUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000202 /* AppleXCUILocationControlUITests.swift */; };
@@ -109,6 +111,8 @@
 		000000000000000000000219 /* LocationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationCoordinator.swift; sourceTree = "<group>"; };
 		000000000000000000000220 /* DriveDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveDiagnostics.swift; sourceTree = "<group>"; };
 		000000000000000000000232 /* DriveTraceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveTraceModels.swift; sourceTree = "<group>"; };
+		000000000000000000000233 /* RichDriveLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichDriveLocation.swift; sourceTree = "<group>"; };
+		000000000000000000000234 /* DriveLocationTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveLocationTransport.swift; sourceTree = "<group>"; };
 		000000000000000000000226 /* DriveScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveScheduler.swift; sourceTree = "<group>"; };
 		000000000000000000000227 /* MapKitRouteProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapKitRouteProvider.swift; sourceTree = "<group>"; };
 		000000000000000000000228 /* BackgroundManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundManager.swift; sourceTree = "<group>"; };
@@ -271,6 +275,7 @@
 				000000000000000000000205 /* DeveloperRouteProbe.swift */,
 				000000000000000000000206 /* DiagnosticModels.swift */,
 				000000000000000000000220 /* DriveDiagnostics.swift */,
+				000000000000000000000234 /* DriveLocationTransport.swift */,
 				000000000000000000000226 /* DriveScheduler.swift */,
 				000000000000000000000218 /* DriveSessionController.swift */,
 				000000000000000000000217 /* DriveTiming.swift */,
@@ -281,6 +286,7 @@
 				000000000000000000000227 /* MapKitRouteProvider.swift */,
 				000000000000000000000209 /* PairingStore.swift */,
 				000000000000000000000210 /* RPPairingValidator.swift */,
+				000000000000000000000233 /* RichDriveLocation.swift */,
 				000000000000000000000216 /* RouteResampler.swift */,
 				000000000000000000000213 /* SessionDiagnosticRecorder.swift */,
 			);
@@ -566,6 +572,8 @@
 				000000000000000000000120 /* BackgroundManager.swift in Sources */,
 				000000000000000000000126 /* DriveView.swift in Sources */,
 				000000000000000000000128 /* DriveTraceModels.swift in Sources */,
+				000000000000000000000129 /* RichDriveLocation.swift in Sources */,
+				000000000000000000000130 /* DriveLocationTransport.swift in Sources */,
 				B10000000000000000000102 /* AppleLocationControlModels.swift in Sources */,
 				B10000000000000000000101 /* AppleLocationControlsView.swift in Sources */,
 			);

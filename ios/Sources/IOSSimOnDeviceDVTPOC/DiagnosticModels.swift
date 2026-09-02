@@ -39,6 +39,7 @@ public enum POCErrorCode: String, Codable, Equatable, Sendable {
     case locationServiceFailed = "LOCATION_SERVICE_FAILED"
     case setCommandFailed = "SET_COMMAND_FAILED"
     case clearCommandFailed = "CLEAR_COMMAND_FAILED"
+    case xctestRunnerFailed = "XCTEST_RUNNER_FAILED"
     case coreLocationVerificationFailed = "CORELOCATION_VERIFICATION_FAILED"
     case disconnected = "DISCONNECTED"
     case invalidRoute = "INVALID_ROUTE"
@@ -110,6 +111,30 @@ public struct DiagnosticSnapshot: Codable, Equatable, Sendable {
     public let events: [POCEvent]
     public let bridgeState: TunnelState
     public let lastError: POCError?
+
+    public var pairingReady: Bool {
+        stagesSucceeded([.pairingImported, .pairingValidated])
+    }
+
+    public var localDevVPNReady: Bool {
+        stageSucceeded(.localDevVPNRouteVisible)
+    }
+
+    public var developerEndpointReady: Bool {
+        stageSucceeded(.endpointReachable)
+    }
+
+    public var setupPrerequisitesReady: Bool {
+        pairingReady && localDevVPNReady && developerEndpointReady
+    }
+
+    private func stagesSucceeded(_ requiredStages: [POCStage]) -> Bool {
+        requiredStages.allSatisfy(stageSucceeded)
+    }
+
+    private func stageSucceeded(_ stage: POCStage) -> Bool {
+        stages.first(where: { $0.stage == stage })?.status == .success
+    }
 }
 
 public actor DiagnosticState {
