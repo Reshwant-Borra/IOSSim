@@ -16,13 +16,55 @@ public enum DriveLocationOutputMode: String, CaseIterable, Codable, Equatable, S
   public var displayName: String {
     switch self {
     case .dvtBaseline:
-      return "DVT Baseline"
+      return "DVT Compatibility"
     case .richXCUILocationExperimental:
-      return "Rich XCUILocation Experimental"
+      return "Rich Drive"
     }
   }
 
-  public static let defaultMode: DriveLocationOutputMode = .dvtBaseline
+  public var developerDetail: String {
+    switch self {
+    case .dvtBaseline:
+      return "DVT LocationSimulation"
+    case .richXCUILocationExperimental:
+      return "Rich XCUILocation"
+    }
+  }
+
+  public static let defaultMode: DriveLocationOutputMode = .richXCUILocationExperimental
+}
+
+public struct DriveOutputSelectionStore {
+  public static let defaultSelectionKey = "DriveLocationOutputMode.selection.v1"
+  public static let migrationVersionKey = "DriveLocationOutputMode.migrationVersion.v1"
+  public static let richDefaultMigrationVersion = 1
+
+  private let defaults: UserDefaults
+
+  public init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  public func loadMigratingIfNeeded() -> DriveLocationOutputMode {
+    let migrationVersion = defaults.integer(forKey: Self.migrationVersionKey)
+    guard migrationVersion >= Self.richDefaultMigrationVersion else {
+      save(.defaultMode)
+      defaults.set(Self.richDefaultMigrationVersion, forKey: Self.migrationVersionKey)
+      return .defaultMode
+    }
+
+    guard let stored = defaults.string(forKey: Self.defaultSelectionKey),
+      let mode = DriveLocationOutputMode(rawValue: stored)
+    else {
+      save(.defaultMode)
+      return .defaultMode
+    }
+    return mode
+  }
+
+  public func save(_ mode: DriveLocationOutputMode) {
+    defaults.set(mode.rawValue, forKey: Self.defaultSelectionKey)
+  }
 }
 
 public struct DriveLocationTransportStartContext: Sendable {
@@ -78,7 +120,7 @@ public protocol DriveLocationTransport: Sendable {
 }
 
 public final class DVTDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
-  public let transportName = "DVT Baseline"
+  public let transportName = DriveLocationOutputMode.dvtBaseline.displayName
 
   private let coordinator: LocationCoordinator
 
@@ -139,13 +181,14 @@ public final class DVTDriveLocationTransport: DriveLocationTransport, @unchecked
 }
 
 public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
-  public let transportName = "Rich XCUILocation Experimental"
+  public let transportName = DriveLocationOutputMode.richXCUILocationExperimental.displayName
 
   private let coordinator: LocationCoordinator
   private let runnerClient: IdeviceOnDeviceTunnelClient
   private let tcpClient: RichDriveTCPClient
   private let port: UInt16
   private let runnerTimeoutSeconds: Double
+  private let restoreStore = RichDriveRestoreSampleStore()
   private var sessionID: String?
 
   public init(
@@ -216,6 +259,14 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
       try await runnerClient.startRichDriveOnDeviceXCTest(
         port: port, timeoutSeconds: runnerTimeoutSeconds)
       try await tcpClient.connect(timeoutSeconds: 8)
+      _ = try await tcpClient.send(
+        RichDriveIPCMessage(type: .startSession, sequence: 0, sessionID: sessionID),
+        ackTimeoutSeconds: 1
+      )
+      if let sample = await currentRestoreSample() {
+        _ = try await tcpClient.setLocation(
+          sample: sample, sessionID: sessionID, ackTimeoutSeconds: 0.5)
+      }
     } catch {
       // The next scheduler send records the concrete failure.
     }
@@ -229,10 +280,26 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
     writerID: String,
     provider: (@Sendable () async -> RichDriveSample?)?
   ) async {
+    await restoreStore.set(provider)
     await coordinator.setReconnectRestoreProvider(writerID: writerID) {
-      guard let sample = await provider?() else { return nil }
-      return SimulatedCoordinate(latitude: sample.latitude, longitude: sample.longitude)
+      nil
     }
+  }
+
+  private func currentRestoreSample() async -> RichDriveSample? {
+    await restoreStore.currentSample()
+  }
+}
+
+private actor RichDriveRestoreSampleStore {
+  private var provider: (@Sendable () async -> RichDriveSample?)?
+
+  func set(_ provider: (@Sendable () async -> RichDriveSample?)?) {
+    self.provider = provider
+  }
+
+  func currentSample() async -> RichDriveSample? {
+    await provider?()
   }
 }
 

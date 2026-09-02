@@ -18,7 +18,7 @@ iPhone
   -> system Core Location
 ```
 
-Key verdict: GO WITH RISKS for a narrow Mac-once, Wi-Fi cold-start POC. Static simulation is physically demonstrated, and the experimental on-device Drive POC has completed its first instrumented physical characterization run. Drive route progression, repeated DVT updates, foreground/background operation, and absence of severe snap-back were observed; smoothing, native speed/course availability, long-duration locked-screen execution, and cellular scenarios remain under investigation.
+Key verdict: GO WITH RISKS for a narrow Mac-once, Wi-Fi cold-start POC. Static simulation is physically demonstrated, DVT Drive remains available as a compatibility fallback, and Rich XCUILocation Drive is now the default Drive transport after owned physical validation of native speed/course propagation and Gate 1/Gate 2/Gate 3. Manual Rich Drive observations covered 15 MPH, 35 MPH, and 60 MPH; long-duration hardening, background reliability, locked-screen reliability, reboot/developer image implications, and third-party behavior guarantees remain unresolved.
 
 Documents:
 
@@ -50,7 +50,7 @@ Documents:
 - [24_IDEVICE_IOS_BUILD_NOTES.md](24_IDEVICE_IOS_BUILD_NOTES.md)
 - [25_SESSION_PERSISTENCE_FINDINGS.md](25_SESSION_PERSISTENCE_FINDINGS.md)
 - [26_DIAGNOSTIC_RECORDER.md](26_DIAGNOSTIC_RECORDER.md)
-- [DRIVE_MODE_IMPLEMENTATION.md](DRIVE_MODE_IMPLEMENTATION.md) - experimental on-device Drive Mode implementation, diagnostics, and physical test procedure
+- [DRIVE_MODE_IMPLEMENTATION.md](DRIVE_MODE_IMPLEMENTATION.md) - on-device Drive Mode implementation, Rich default transition, DVT compatibility fallback, Witness metrics export, diagnostics, and physical test procedure
 - [DRIVE_CHARACTERIZATION_2026-08-28.md](DRIVE_CHARACTERIZATION_2026-08-28.md) - first instrumented physical Drive characterization run
 
 Do not place real pairing records in this folder. The folder-local `.gitignore` blocks the known file names and extensions observed in Locus, Mirage, and RPPairing tools, but future POC code must add ignores at its own artifact paths before generating secrets.

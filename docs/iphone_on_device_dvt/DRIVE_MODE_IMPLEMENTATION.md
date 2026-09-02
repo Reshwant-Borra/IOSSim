@@ -1,6 +1,6 @@
 # Experimental Drive Mode Implementation
 
-Status date: 2026-08-28
+Status date: 2026-09-01
 
 This document describes the testing-only Drive Mode added to the existing IOSSim iPhone app. It does not replace the proven static on-device DVT location simulation flow.
 
@@ -12,6 +12,7 @@ Current status:
 BASIC DRIVE POC PHYSICALLY DEMONSTRATED
 WITH FIRST INSTRUMENTED PHYSICAL CHARACTERIZATION COMPLETE
 ABSOLUTE-DEADLINE 1 HZ / 2 HZ CADENCE EXPERIMENT SOFTWARE-VALIDATED
+RICH XCUILOCATION DRIVE IS THE DEFAULT TRANSPORT
 ```
 
 Implemented:
@@ -32,6 +33,9 @@ Implemented:
 - First instrumented physical Drive characterization session `DRIVE-20260828-100624`.
 - Configurable Drive playback cadence: baseline 1 Hz and smooth-test 2 Hz.
 - Absolute-deadline scheduler timing based on `ContinuousClock`.
+- Rich XCUILocation Drive transport as the default Drive output.
+- DVT LocationSimulation retained as the explicit compatibility fallback.
+- IOSSimLocationWitness JSON Export Metrics control for owned validation recordings.
 
 Proven physical results:
 
@@ -41,6 +45,10 @@ Proven physical results:
 - The scheduler maintained monotonic route progress.
 - Repeated DVT `LocationSimulation` updates were accepted successfully.
 - The previous severe reset-to-origin behavior was absent in the first instrumented characterization run.
+- Rich native speed/course propagation was physically proven in owned controls.
+- Gate 1, Gate 2, and Gate 3 were physically proven for the Rich XCUILocation architecture.
+- Rich Drive was manually observed working at 15 MPH, 35 MPH, and 60 MPH.
+- A downstream Drive/car indicator and speed display were manually observed during Rich Drive. This is not a product guarantee for any third-party app.
 
 Observed issues:
 
@@ -64,6 +72,10 @@ Not yet proven:
 - Equivalent foreground and background performance.
 - Perfect smoothness.
 - Accurate speed reporting to third-party apps.
+- Full long-duration Rich Drive hardening.
+- Background Rich Drive reliability.
+- Locked-screen Rich Drive reliability.
+- Reboot and developer image implications for the Rich runner path.
 
 ## Architecture
 
@@ -86,6 +98,39 @@ DriveView
   -> Core Location
 ```
 
+Rich Drive is now the normal Drive output. It uses the same `DriveSessionController`
+and `DriveScheduler`, but writes rich samples through a long-lived preinstalled
+XCTest runner and localhost JSON-lines IPC after the runner is ready:
+
+```text
+DriveView
+  -> DriveViewModel
+  -> DriveSessionController
+  -> DriveScheduler
+  -> XCTestRichDriveLocationTransport
+  -> retained RSD / developer services
+  -> preinstalled signed XCTest runner
+  -> localhost TCP JSON-lines IPC
+  -> XCUIDevice.shared.location / XCUILocation
+  -> Core Location
+```
+
+DVT Compatibility remains available from the Drive Output picker. It preserves
+the original DVT `LocationSimulation` path for fallback, diagnostics, and
+emergency compatibility.
+
+Fresh installs and unmigrated existing installs select Rich Drive by default.
+The migration writes `richXCUILocationExperimental` into
+`DriveLocationOutputMode.selection.v1` and records migration version `1`.
+After that migration, a user can manually choose DVT Compatibility and that
+manual choice is preserved.
+
+Rich Drive still depends on Developer Mode, LocalDevVPN, saved RPPairing, a
+preinstalled signed XCTest runner, and developer-service availability. Startup
+failure is surfaced in the UI and diagnostics. IOSSim does not silently auto
+fallback to DVT because unsafe automatic fallback can reintroduce duplicate
+writers; fallback is a manual Drive Output selection.
+
 `IdeviceOnDeviceTunnelClient` remains the only low-level native client. It still owns the FFI handles and still calls:
 
 - `location_simulation_new`
@@ -102,6 +147,7 @@ DriveView
 - `ios/Sources/IOSSimOnDeviceDVTPOC/MapKitRouteProvider.swift`
 - `ios/Sources/IOSSimOnDeviceDVTPOC/DriveDiagnostics.swift`
 - `ios/Sources/IOSSimOnDeviceDVTPOC/BackgroundManager.swift`
+- `ios/Sources/IOSSimOnDeviceDVTPOC/LocationWitnessMetrics.swift`
 - `ios/App/DriveView.swift`
 
 ## Files Modified
@@ -522,3 +568,61 @@ To disable the feature without affecting static simulation:
 3. Rebuild the iPhone app.
 
 To fully revert this branch, return to the previous branch or revert the files listed above. Do not delete pairing data or provisioning state as part of rollback.
+
+## Rich XCUILocation Default Checkpoint - 2026-09-01
+
+Status:
+
+```text
+RICH DRIVE DEFAULT IMPLEMENTED
+DVT FALLBACK PRESERVED
+WITNESS EXPORT METRICS IMPLEMENTED
+```
+
+### PHYSICALLY PROVEN
+
+From the preserved checkpoint at commit `728c745929d585a529854fb1944c2e449c453d0a`:
+
+- DVT Drive route playback moves smoothly enough to remain a working fallback.
+- Approximately 2 Hz DVT route updates work, but native DVT `CLLocation.speed` and `CLLocation.course` are invalid.
+- `XCUILocation` preserves rich `CLLocation` metadata in owned-app physical tests.
+- A 20-point `XCUILocation` route preserved speed/course on 20/20 points.
+- The separate owned `IOSSimLocationWitness` app received rich metadata.
+- Gate 1 ran without `xcodebuild test`.
+- Gate 2 physically passed a caller-supplied RSD path.
+- Gate 3 launched XCTest Mac-free using retained RSD.
+- A witness point was physically observed with `speed=15.646 m/s` and `course=90 degrees`.
+- The Rich continuous Drive path is implemented using a long-lived XCTest runner, localhost TCP IPC, `RichDriveSample`, route-derived course, selected-speed propagation, and the existing absolute-deadline `DriveScheduler`.
+- User manual Rich Drive observations:
+  - 15 MPH worked.
+  - 35 MPH worked.
+  - 60 MPH worked.
+  - downstream Drive/car indicator appeared.
+  - downstream speed display matched/updated appropriately during Rich Drive.
+
+### IMPLEMENTED IN THIS PASS
+
+- Rich Drive is now `DriveLocationOutputMode.defaultMode`.
+- The normal picker label is `Rich Drive`.
+- DVT remains selectable as `DVT Compatibility`.
+- Stored selection migration prefers Rich Drive for unmigrated active-development installs.
+- Manual DVT selection after migration is preserved.
+- Rich startup failure cleanup stops any partially-started transport and clears coordinator ownership.
+- Rich reconnect restores current route position through Rich IPC and avoids a DVT restore set.
+- IOSSimLocationWitness has a visible `Export Metrics` ShareLink backed by a JSON file.
+- Witness exports include metadata, summary, simulated_summary, optional speed_plateaus, and raw observations.
+
+### UNRESOLVED RISKS
+
+- Full long-duration hardening.
+- Background reliability.
+- Locked-screen reliability.
+- Reboot/developer image implications.
+- Third-party behavior is manually observed only and is not guaranteed.
+- No new owned-Witness long-duration matrix was collected in this implementation pass.
+
+### VALIDATION
+
+- `swift run POCUnitChecks`
+- Generic physical-iOS IOSSim build with `CODE_SIGNING_ALLOWED=NO`
+- `AppleXCUILocationControl` build-for-testing with `CODE_SIGNING_ALLOWED=NO`

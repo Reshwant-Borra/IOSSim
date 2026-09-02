@@ -32,7 +32,11 @@ struct POCUnitChecks {
     try richDriveIPCSerialization()
     try richDriveACKSequencing()
     try richDriveLatestSampleWins()
-    try driveOutputModeDefaultsToDVT()
+    try driveOutputModeDefaultsToRich()
+    try driveOutputSelectionMigratesStoredDVTToRichDefault()
+    try driveOutputSelectionPreservesManualDVTAfterMigration()
+    try await switchingDriveWritersLeavesOnlyOneActiveWriter()
+    try await richStopBeforeDVTFallbackLeavesNoRichWriter()
     try pauseDoesNotAdvanceRouteProgress()
     try resumeUsesActiveElapsedTime()
     try pauseResumeDeadlineCalculations()
@@ -48,6 +52,13 @@ struct POCUnitChecks {
     try await driveDiagnosticsSerialize()
     try driveTraceMetricCalculations()
     try appleLocationControlMetricCalculations()
+    try locationWitnessMetricsCalculations()
+    try locationWitnessMetricsSimulatedOnlyFiltering()
+    try locationWitnessMetricsEmptyRecordingExport()
+    try locationWitnessMetricsRawObservationCompleteness()
+    try locationWitnessMetricsFileNameGeneration()
+    try locationWitnessMetricsContainsNoSecretFields()
+    try locationWitnessMetricsMultiSpeedRawExportViability()
     try passiveAppleLocationRecorderPreservesRawCallbacks()
     try appleLocationControlComparisonReportGeneration()
     try coreLocationVerifierRawCallbacksAreNotPublicationFiltered()
@@ -580,12 +591,100 @@ struct POCUnitChecks {
     try require(buffer.completeInFlight() == nil, "pending sample consumed once")
   }
 
-  static func driveOutputModeDefaultsToDVT() throws {
+  static func driveOutputModeDefaultsToRich() throws {
     try require(
-      DriveLocationOutputMode.defaultMode == .dvtBaseline, "Drive output default remains DVT")
+      DriveLocationOutputMode.defaultMode == .richXCUILocationExperimental,
+      "Drive output default is Rich Drive")
     try require(
-      DriveLocationOutputMode.allCases.contains(.richXCUILocationExperimental),
-      "rich output is opt-in")
+      DriveLocationOutputMode.allCases.contains(.dvtBaseline), "DVT output remains selectable")
+    try require(
+      DriveLocationOutputMode.richXCUILocationExperimental.displayName == "Rich Drive",
+      "normal rich label does not say experimental")
+    try require(
+      DriveLocationOutputMode.dvtBaseline.displayName == "DVT Compatibility",
+      "DVT label is compatibility fallback")
+  }
+
+  static func driveOutputSelectionMigratesStoredDVTToRichDefault() throws {
+    let defaults = try isolatedDefaults()
+    defaults.set(
+      DriveLocationOutputMode.dvtBaseline.rawValue,
+      forKey: DriveOutputSelectionStore.defaultSelectionKey)
+    let store = DriveOutputSelectionStore(defaults: defaults)
+    let loaded = store.loadMigratingIfNeeded()
+    try require(loaded == .richXCUILocationExperimental, "stored DVT migrates to rich default")
+    try require(
+      defaults.string(forKey: DriveOutputSelectionStore.defaultSelectionKey)
+        == DriveLocationOutputMode.richXCUILocationExperimental.rawValue,
+      "migration persists rich default")
+    try require(
+      defaults.integer(forKey: DriveOutputSelectionStore.migrationVersionKey)
+        == DriveOutputSelectionStore.richDefaultMigrationVersion,
+      "migration marker persisted")
+  }
+
+  static func driveOutputSelectionPreservesManualDVTAfterMigration() throws {
+    let defaults = try isolatedDefaults()
+    let store = DriveOutputSelectionStore(defaults: defaults)
+    try require(store.loadMigratingIfNeeded() == .richXCUILocationExperimental, "fresh state rich")
+    store.save(.dvtBaseline)
+    try require(
+      store.loadMigratingIfNeeded() == .dvtBaseline,
+      "manual DVT choice persists after rich-default migration")
+  }
+
+  static func switchingDriveWritersLeavesOnlyOneActiveWriter() async throws {
+    let tunnel = MockTunnelClient()
+    let coordinator = LocationCoordinator(
+      pairingStore: InMemoryRPPairingStore(data: try makePairingPlist()),
+      tunnelClient: tunnel,
+      recorder: testRecorder()
+    )
+    let oldWriter = "drive:rich-old"
+    let newWriter = "drive:dvt-new"
+    try await coordinator.startSimulation(
+      writerID: oldWriter, mode: .drive(sessionID: UUID(), current: nil))
+    try await coordinator.startSimulation(
+      writerID: newWriter, mode: .drive(sessionID: UUID(), current: nil))
+
+    let snapshot = await coordinator.snapshot()
+    try require(snapshot.activeWriterID == newWriter, "new transport owns the single writer slot")
+    do {
+      try await coordinator.updateLocation(latitude: 1, longitude: 1, writerID: oldWriter)
+      throw CheckError("expected stale old writer")
+    } catch let error as POCError {
+      try require(error.code == .staleWriter, "old transport cannot write after switch")
+    }
+    try await coordinator.updateLocation(latitude: 2, longitude: 2, writerID: newWriter)
+    let setCount = await tunnel.setCount()
+    try require(setCount == 1, "only current writer reaches native set")
+  }
+
+  static func richStopBeforeDVTFallbackLeavesNoRichWriter() async throws {
+    let tunnel = MockTunnelClient()
+    let coordinator = LocationCoordinator(
+      pairingStore: InMemoryRPPairingStore(data: try makePairingPlist()),
+      tunnelClient: tunnel,
+      recorder: testRecorder()
+    )
+    let richWriter = "drive:rich"
+    let dvtWriter = "drive:dvt"
+    try await coordinator.startSimulation(
+      writerID: richWriter, mode: .drive(sessionID: UUID(), current: nil))
+    try await coordinator.stopSimulation(writerID: richWriter, clearLocation: true)
+    try await coordinator.startSimulation(
+      writerID: dvtWriter, mode: .drive(sessionID: UUID(), current: nil))
+
+    let snapshot = await coordinator.snapshot()
+    try require(snapshot.activeWriterID == dvtWriter, "DVT fallback owns writer after rich stop")
+    let clearCount = await tunnel.totalClearCount()
+    try require(clearCount == 1, "rich stop cleared exactly once before fallback")
+    do {
+      try await coordinator.updateLocation(latitude: 3, longitude: 3, writerID: richWriter)
+      throw CheckError("expected stale rich writer")
+    } catch let error as POCError {
+      try require(error.code == .staleWriter, "rich writer cannot write after DVT fallback starts")
+    }
   }
 
   static func pauseDoesNotAdvanceRouteProgress() throws {
@@ -991,6 +1090,151 @@ struct POCUnitChecks {
     try require(
       summaryText.contains("mean_geometric_speed_callback_mps"),
       "geometric speed terminology in summary")
+  }
+
+  static func locationWitnessMetricsCalculations() throws {
+    let observations = witnessObservations(speeds: [6.7056, 6.7056, 15.6464, -1], simulated: [
+      false, true, true, true,
+    ])
+    let document = LocationWitnessMetricsExporter.document(
+      observations: observations,
+      rawCallbackCount: 4,
+      isRecording: false,
+      recordingStartTimestamp: observations.first?.wallClockTimestamp,
+      recordingStopTimestamp: observations.last?.wallClockTimestamp,
+      generatedAt: Date(timeIntervalSince1970: 1_800_000_100)
+    )
+
+    try require(document.summary.totalObservationCount == 4, "summary counts all observations")
+    try require(document.summary.simulatedObservationCount == 3, "summary counts simulated")
+    try require(document.summary.realDeviceObservationCount == 1, "summary counts real device")
+    try require(document.summary.speedValidCount == 3, "valid speeds counted overall")
+    try require(document.summary.speedValidPercent == 75, "overall speed valid percent")
+    try require(document.summary.courseValidCount == 4, "valid courses counted")
+    try require(document.summary.courseValidPercent == 100, "course valid percent")
+    try require(
+      abs((document.summary.speedMedianMps ?? 0) - 6.7056) < 0.0001, "speed median")
+    try require(
+      abs((document.summary.speedMeanMps ?? 0) - 9.6858666) < 0.0001, "speed mean")
+    try require(document.summary.callbackIntervalCount == 3, "callback intervals counted")
+    try require(document.summary.callbackIntervalMedianS == 1, "callback median interval")
+    try require(
+      abs((document.summary.callbackIntervalP95S ?? 0) - 1) < 0.0001, "callback p95 interval")
+    try require(document.summary.effectiveCallbackHz == 1, "effective callback Hz")
+    try require(document.summary.firstSimulatedCoordinate?.latitude == observations[1].latitude, "first simulated coordinate")
+    try require(document.summary.lastSimulatedCoordinate?.latitude == observations[3].latitude, "last simulated coordinate")
+  }
+
+  static func locationWitnessMetricsSimulatedOnlyFiltering() throws {
+    let observations = witnessObservations(speeds: [-1, 15.6464, 15.6464], simulated: [
+      false, true, true,
+    ])
+    let document = LocationWitnessMetricsExporter.document(
+      observations: observations,
+      rawCallbackCount: 3,
+      isRecording: false,
+      recordingStartTimestamp: observations.first?.wallClockTimestamp,
+      recordingStopTimestamp: observations.last?.wallClockTimestamp
+    )
+    try require(document.summary.speedValidPercent == 66.66666666666666, "overall includes real invalid speed")
+    try require(document.summary.simulatedSpeedValidPercent == 100, "simulated speed validity isolated")
+    try require(document.summary.simulatedCourseValidPercent == 100, "simulated course validity isolated")
+    try require(document.simulatedSummary.totalObservationCount == 2, "simulated summary is filtered")
+    try require(document.simulatedSummary.realDeviceObservationCount == 0, "simulated summary has no real rows")
+    try require(document.summary.simulatedEffectiveCallbackHz == 1, "simulated-only callback Hz")
+  }
+
+  static func locationWitnessMetricsEmptyRecordingExport() throws {
+    let document = LocationWitnessMetricsExporter.document(
+      observations: [],
+      rawCallbackCount: 0,
+      isRecording: false,
+      recordingStartTimestamp: nil,
+      recordingStopTimestamp: nil
+    )
+    try require(document.observations.isEmpty, "empty export has no raw observations")
+    try require(document.summary.totalObservationCount == 0, "empty export count is zero")
+    try require(document.summary.speedValidPercent == 0, "empty speed percent is zero")
+    try require(document.summary.callbackIntervalCount == 0, "empty interval count is zero")
+    try require(document.summary.effectiveCallbackHz == nil, "empty callback Hz is nil")
+  }
+
+  static func locationWitnessMetricsRawObservationCompleteness() throws {
+    let observations = witnessObservations(speeds: [15.6464], simulated: [true])
+    let document = LocationWitnessMetricsExporter.document(
+      observations: observations,
+      rawCallbackCount: 1,
+      isRecording: false,
+      recordingStartTimestamp: observations.first?.wallClockTimestamp,
+      recordingStopTimestamp: observations.last?.wallClockTimestamp
+    )
+    let data = try LocationWitnessMetricsExporter.jsonData(for: document)
+    let text = try requireValue(String(data: data, encoding: .utf8), "json text")
+    for field in [
+      "sequence",
+      "latitude",
+      "longitude",
+      "speed",
+      "course",
+      "horizontalAccuracy",
+      "verticalAccuracy",
+      "altitude",
+      "locationTimestamp",
+      "wallClockTimestamp",
+      "isSimulatedBySoftware",
+      "isProducedByAccessory",
+      "sourceSegment",
+    ] {
+      try require(text.contains("\"\(field)\""), "raw field \(field) exported")
+    }
+    try require(text.contains("\"simulated_summary\""), "simulated summary exported")
+    try require(text.contains("\"speed_plateaus\""), "speed plateau section exported")
+  }
+
+  static func locationWitnessMetricsFileNameGeneration() throws {
+    let name = LocationWitnessMetricsExporter.fileName(
+      generatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+    try require(
+      name == "IOSSim-Witness-Metrics-20270115-080000.json",
+      "filename is deterministic UTC JSON")
+  }
+
+  static func locationWitnessMetricsContainsNoSecretFields() throws {
+    let observations = witnessObservations(speeds: [15.6464], simulated: [true])
+    let document = LocationWitnessMetricsExporter.document(
+      observations: observations,
+      rawCallbackCount: 1,
+      isRecording: false,
+      recordingStartTimestamp: observations.first?.wallClockTimestamp,
+      recordingStopTimestamp: observations.last?.wallClockTimestamp
+    )
+    let text = try requireValue(
+      String(data: try LocationWitnessMetricsExporter.jsonData(for: document), encoding: .utf8),
+      "json text")
+    for forbidden in [
+      "private_key", "public_key", "alt_irk", "psk", "auth", "token", "password", "RPPairing",
+    ] {
+      try require(!text.localizedCaseInsensitiveContains(forbidden), "no \(forbidden) in export")
+    }
+  }
+
+  static func locationWitnessMetricsMultiSpeedRawExportViability() throws {
+    let observations = witnessObservations(
+      speeds: [6.7056, 6.7056, 15.6464, 15.6464, 26.8224, 26.8224],
+      simulated: [true, true, true, true, true, true]
+    )
+    let document = LocationWitnessMetricsExporter.document(
+      observations: observations,
+      rawCallbackCount: observations.count,
+      isRecording: false,
+      recordingStartTimestamp: observations.first?.wallClockTimestamp,
+      recordingStopTimestamp: observations.last?.wallClockTimestamp
+    )
+    let exportedSpeeds = document.observations.map(\.speed)
+    try require(exportedSpeeds.contains { abs($0 - 6.7056) < 0.0001 }, "15 mph mps raw speed exported")
+    try require(exportedSpeeds.contains { abs($0 - 15.6464) < 0.0001 }, "35 mph mps raw speed exported")
+    try require(exportedSpeeds.contains { abs($0 - 26.8224) < 0.0001 }, "60 mph mps raw speed exported")
+    try require(document.speedPlateaus.count == 3, "stable speed plateaus detected")
   }
 
   static func passiveAppleLocationRecorderPreservesRawCallbacks() throws {
@@ -1641,6 +1885,35 @@ struct POCUnitChecks {
       baseDirectory: FileManager.default.temporaryDirectory
         .appendingPathComponent("iossim-drive-unit-\(UUID().uuidString)", isDirectory: true)
     )
+  }
+
+  static func isolatedDefaults() throws -> UserDefaults {
+    let suiteName = "iossim-poc-unit-\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+      throw CheckError("could not create isolated defaults")
+    }
+    defaults.removePersistentDomain(forName: suiteName)
+    return defaults
+  }
+
+  static func witnessObservations(speeds: [Double], simulated: [Bool?]) -> [LocationWitnessObservation] {
+    let base = Date(timeIntervalSince1970: 1_800_000_000)
+    return speeds.enumerated().map { index, speed in
+      LocationWitnessObservation(
+        sequence: index + 1,
+        latitude: 37.3349 + (Double(index) * 0.00001),
+        longitude: -122.00902 + (Double(index) * 0.00001),
+        speed: speed,
+        course: 90,
+        horizontalAccuracy: 4,
+        verticalAccuracy: 2,
+        altitude: 123,
+        locationTimestamp: base.addingTimeInterval(Double(index)),
+        wallClockTimestamp: base.addingTimeInterval(Double(index)),
+        isSimulatedBySoftware: simulated[index],
+        isProducedByAccessory: false
+      )
+    }
   }
 
   static func testCLLocation(latitude: Double, longitude: Double, timestamp: Date) -> CLLocation {

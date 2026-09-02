@@ -50,7 +50,7 @@ final class DriveViewModel: ObservableObject {
   @Published var destinationQuery = ""
   @Published var startCoordinateText = "UNKNOWN"
   @Published var destinationCoordinateText = "UNKNOWN"
-  @Published var status = "Ready. Experimental testing feature."
+  @Published var status = "Ready."
   /// Exact technical detail (error domain/code/operation) for the most
   /// recent failure, kept separate from `status` so Drive Diagnostics can
   /// show the raw underlying error while the normal Drive screen only ever
@@ -58,7 +58,11 @@ final class DriveViewModel: ObservableObject {
   @Published var lastTechnicalError: String?
   @Published var speedMPH = 35.0
   @Published var updateCadence = DriveUpdateCadence.baseline1Hz
-  @Published var outputMode = DriveLocationOutputMode.defaultMode
+  @Published var outputMode: DriveLocationOutputMode {
+    didSet {
+      outputSelectionStore.save(outputMode)
+    }
+  }
   @Published var state = DriveSessionState.idle
   @Published var connectionState = LocationCoordinatorConnectionState.disconnected
   @Published var connectionGeneration = 0
@@ -78,6 +82,7 @@ final class DriveViewModel: ObservableObject {
   private let background = DriveBackgroundManager(recorder: POCAppDependencies.recorder)
   private let verifier = CoreLocationVerifier()
   private let clock = ContinuousDriveClock()
+  private let outputSelectionStore: DriveOutputSelectionStore
   private var controller: DriveSessionController?
   private var scheduler: DriveScheduler?
   private var activeTransport: DriveLocationTransport?
@@ -86,7 +91,9 @@ final class DriveViewModel: ObservableObject {
   private var destinationCoordinate: CLLocationCoordinate2D?
   private var refreshLoopStarted = false
 
-  init() {
+  init(outputSelectionStore: DriveOutputSelectionStore = DriveOutputSelectionStore()) {
+    self.outputSelectionStore = outputSelectionStore
+    self.outputMode = outputSelectionStore.loadMigratingIfNeeded()
     verifier.setRawCallbackHandler { [weak self] callback in
       Task { @MainActor [weak self] in
         guard let self else { return }
@@ -203,7 +210,7 @@ final class DriveViewModel: ObservableObject {
     expectedTravelTimeText = "UNKNOWN"
     expectedProgressText = "UNKNOWN"
     breadcrumbs = []
-    status = "Ready. Experimental testing feature."
+    status = "Ready."
   }
 
   /// Sets the destination directly from an already-resolved place (e.g. a
@@ -264,13 +271,23 @@ final class DriveViewModel: ObservableObject {
 
   func startDrive() {
     Task {
+      var startedController: DriveSessionController?
+      var startedTransport: DriveLocationTransport?
       do {
+        guard activeTransport == nil, scheduler == nil,
+          state != .driving, state != .paused, state != .completedHolding
+        else {
+          throw POCError(
+            .invalidDriveState,
+            "Stop the current Drive session before starting another transport.")
+        }
         guard let result = routeResult else {
           throw POCError(.invalidRoute, "Generate a route before starting Drive Mode.")
         }
         let activeController = DriveSessionController()
         activeController.prepareRoute(result.driveRoute, speedMPH: speedMPH)
         try activeController.startDrive(now: clock.nowSeconds())
+        startedController = activeController
         controller = activeController
         diagnostics = DriveDiagnostics(recorder: POCAppDependencies.recorder)
         await diagnostics.start(
@@ -289,6 +306,7 @@ final class DriveViewModel: ObservableObject {
         )
         verifier.start(backgroundCapable: true)
         let transport = makeTransport(for: outputMode)
+        startedTransport = transport
         try await transport.start(
           DriveLocationTransportStartContext(
             sessionID: activeController.sessionID,
@@ -307,13 +325,65 @@ final class DriveViewModel: ObservableObject {
           backgroundActiveProvider: { [background] in background.isBackgroundSessionActive() }
         )
         scheduler?.start()
-        status = "Drive Mode started. Destination will hold until Stop/Clear."
+        status = "Drive started with \(outputMode.displayName). Destination will hold until Stop."
         await diagnostics.recordState("driving", message: "drive started")
         await refresh()
       } catch {
+        scheduler?.stop()
+        await scheduler?.waitUntilStopped()
+        scheduler = nil
+        if let startedController {
+          let writerID = startedController.writerID
+          startedController.stop(clearSimulation: true)
+          if let startedTransport {
+            try? await startedTransport.stop(writerID: writerID, clearLocation: true)
+          } else {
+            try? await coordinator.stopSimulation(writerID: writerID, clearLocation: true)
+          }
+        }
+        if let result = routeResult {
+          let previewController = DriveSessionController()
+          previewController.prepareRoute(result.driveRoute, speedMPH: speedMPH)
+          controller = previewController
+          state = .routeReady
+          currentCoordinateText = Self.coordinate(result.driveRoute.origin)
+          expectedProgressText = meters(0)
+        } else {
+          controller = nil
+          state = .idle
+        }
+        activeTransport = nil
+        background.end(reason: "drive start failed")
+        background.setDiagnostics(nil)
+        verifier.stop()
         fail(error, operation: "startDrive")
+        await diagnostics.recordState(
+          "start_failed",
+          message: "drive start failed",
+          metadata: [
+            "output_mode": outputMode.rawValue,
+            "transport": outputMode.developerDetail,
+            "error": String(describing: error),
+          ])
+        await refresh()
       }
     }
+  }
+
+  func selectOutputMode(_ mode: DriveLocationOutputMode) {
+    guard activeTransport == nil, scheduler == nil,
+      state != .driving, state != .paused, state != .completedHolding
+    else {
+      fail(
+        POCError(
+          .invalidDriveState,
+          "Stop the current Drive session before changing Drive output."),
+        operation: "selectOutputMode"
+      )
+      return
+    }
+    outputMode = mode
+    status = "Drive output set to \(mode.displayName)."
   }
 
   func pause() {
@@ -603,12 +673,32 @@ struct DriveView: View {
         Text("Drive Output")
           .font(.caption)
           .foregroundStyle(.secondary)
-        Picker("Drive Output", selection: $model.outputMode) {
+        Picker(
+          "Drive Output",
+          selection: Binding(
+            get: { model.outputMode },
+            set: { model.selectOutputMode($0) }
+          )
+        ) {
           ForEach(DriveLocationOutputMode.allCases) { mode in
             Text(mode.displayName).tag(mode)
           }
         }
         .pickerStyle(.menu)
+        if model.outputMode == .richXCUILocationExperimental {
+          Text("Requires Developer Mode, LocalDevVPN, saved RPPairing, a preinstalled signed XCTest runner, and developer services.")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        Text("Developer detail: \(model.outputMode.developerDetail)")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+
+      if model.status.hasPrefix("FAIL") {
+        Label(model.status, systemImage: "exclamationmark.triangle.fill")
+          .font(.footnote)
+          .foregroundStyle(.red)
       }
 
       HStack(spacing: 10) {
@@ -646,6 +736,9 @@ struct DriveView: View {
           .foregroundStyle(.secondary)
       }
       Text("\(model.expectedProgressText) of \(model.routeDistanceText)")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+      Text("Output: \(model.outputMode.displayName)")
         .font(.footnote)
         .foregroundStyle(.secondary)
 
@@ -724,8 +817,14 @@ struct DriveDiagnosticsView: View {
         LabeledContent("Progress", value: model.expectedProgressText)
         LabeledContent("Coordinate", value: model.currentCoordinateText)
         LabeledContent("Drive Output", value: model.outputMode.displayName)
+        LabeledContent("Transport Detail", value: model.outputMode.developerDetail)
         LabeledContent("Playback Cadence", value: model.updateCadence.displayName)
         LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
+      }
+
+      Section("Rich Drive Requirements") {
+        Text("Developer Mode, LocalDevVPN, saved RPPairing, a preinstalled signed XCTest runner, and developer-service availability are required for Rich Drive.")
+          .font(.caption)
       }
 
       Section("Debug Metrics") {

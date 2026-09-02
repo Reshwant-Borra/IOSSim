@@ -12,6 +12,7 @@ final class LocationWitnessViewModel: ObservableObject {
     @Published private(set) var latestRawMetadataSummaryText = LocationWitnessViewModel.unknownObservationText
     @Published private(set) var persistedObservationsText = ""
     @Published private(set) var metricsExportFileURL: URL?
+    @Published private(set) var exportAvailabilityText = "No recording data to export."
 
     private let recorder = LocationWitnessRecorder()
 
@@ -53,33 +54,43 @@ final class LocationWitnessViewModel: ObservableObject {
         metricsExportFileURL = Self.writeMetricsExport(
             observations: observations,
             callbackCount: recorder.callbackCount,
-            isRecording: recorder.isRecording
+            isRecording: recorder.isRecording,
+            recordingStartTimestamp: recorder.recordingStartTimestamp,
+            recordingStopTimestamp: recorder.recordingStopTimestamp
         )
+        if observations.isEmpty {
+            exportAvailabilityText = "No recording data to export."
+        } else if recorder.isRecording {
+            exportAvailabilityText = "Stop recording to export metrics."
+        } else if metricsExportFileURL == nil {
+            exportAvailabilityText = "Metrics export could not be prepared."
+        } else {
+            exportAvailabilityText = "Metrics export ready."
+        }
     }
 
     private static func writeMetricsExport(
         observations: [LocationWitnessObservation],
         callbackCount: Int,
-        isRecording: Bool
+        isRecording: Bool,
+        recordingStartTimestamp: Date?,
+        recordingStopTimestamp: Date?
     ) -> URL? {
+        guard !observations.isEmpty, !isRecording else { return nil }
+        let generatedAt = Date()
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("IOSSimLocationWitness-metrics.txt")
-        let simulatedCount = observations.filter { $0.isSimulatedBySoftware == true }.count
-        let validSpeedCount = observations.filter { $0.speed >= 0 }.count
-        let validCourseCount = observations.filter { $0.course >= 0 }.count
-        let body = [
-            "IOSSimLocationWitness metrics export",
-            "isRecording=\(isRecording)",
-            "rawCallbackCount=\(callbackCount)",
-            "rawLocationCount=\(observations.count)",
-            "simulatedBySoftwareCount=\(simulatedCount)",
-            "validSpeedCount=\(validSpeedCount)",
-            "validCourseCount=\(validCourseCount)",
-            "",
-            observations.map(\.wireText).joined(separator: "\n")
-        ].joined(separator: "\n")
+            .appendingPathComponent(LocationWitnessMetricsExporter.fileName(generatedAt: generatedAt))
+        let document = LocationWitnessMetricsExporter.document(
+            observations: observations,
+            rawCallbackCount: callbackCount,
+            isRecording: isRecording,
+            recordingStartTimestamp: recordingStartTimestamp,
+            recordingStopTimestamp: recordingStopTimestamp,
+            generatedAt: generatedAt
+        )
         do {
-            try body.write(to: url, atomically: true, encoding: .utf8)
+            let data = try LocationWitnessMetricsExporter.jsonData(for: document)
+            try data.write(to: url, options: [.atomic])
             return url
         } catch {
             return nil
@@ -142,12 +153,20 @@ struct LocationWitnessView: View {
                     if let metricsExportFileURL = model.metricsExportFileURL {
                         ShareLink("Export Metrics", item: metricsExportFileURL)
                             .accessibilityIdentifier("LocationWitness.ExportMetrics")
+                    } else {
+                        Button("Export Metrics") {}
+                            .disabled(true)
+                            .accessibilityIdentifier("LocationWitness.ExportMetrics")
                     }
                 }
 
                 Text(model.statusText)
                     .font(.caption.monospaced())
                     .accessibilityIdentifier("LocationWitness.Status")
+                Text(model.exportAvailabilityText)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("LocationWitness.ExportAvailability")
             }
 
             Section("Metrics") {
@@ -182,10 +201,14 @@ final class LocationWitnessRecorder: NSObject, CLLocationManagerDelegate {
     private(set) var observations: [LocationWitnessObservation] = []
     private(set) var callbackCount = 0
     private(set) var isRecording = false
+    private(set) var recordingStartTimestamp: Date?
+    private(set) var recordingStopTimestamp: Date?
 
     private let manager = CLLocationManager()
     private let storeKey = "LocationWitness.persistedObservations.v1"
     private let callbackCountKey = "LocationWitness.callbackCount.v1"
+    private let recordingStartKey = "LocationWitness.recordingStartTimestamp.v1"
+    private let recordingStopKey = "LocationWitness.recordingStopTimestamp.v1"
 
     override init() {
         super.init()
@@ -205,11 +228,17 @@ final class LocationWitnessRecorder: NSObject, CLLocationManagerDelegate {
     func reset() {
         observations.removeAll()
         callbackCount = 0
+        recordingStartTimestamp = nil
+        recordingStopTimestamp = nil
         persist()
         onChange?()
     }
 
     func start() {
+        if recordingStartTimestamp == nil {
+            recordingStartTimestamp = Date()
+        }
+        recordingStopTimestamp = nil
         isRecording = true
         if manager.authorizationStatus == .notDetermined {
             manager.requestAlwaysAuthorization()
@@ -221,6 +250,8 @@ final class LocationWitnessRecorder: NSObject, CLLocationManagerDelegate {
     func stop() {
         manager.stopUpdatingLocation()
         isRecording = false
+        recordingStopTimestamp = Date()
+        persist()
         onChange?()
     }
 
@@ -252,6 +283,8 @@ final class LocationWitnessRecorder: NSObject, CLLocationManagerDelegate {
 
     private func load() {
         callbackCount = UserDefaults.standard.integer(forKey: callbackCountKey)
+        recordingStartTimestamp = UserDefaults.standard.object(forKey: recordingStartKey) as? Date
+        recordingStopTimestamp = UserDefaults.standard.object(forKey: recordingStopKey) as? Date
         guard let data = UserDefaults.standard.data(forKey: storeKey),
               let decoded = try? JSONDecoder().decode([LocationWitnessObservation].self, from: data) else {
             observations = []
@@ -267,41 +300,33 @@ final class LocationWitnessRecorder: NSObject, CLLocationManagerDelegate {
             UserDefaults.standard.set(data, forKey: storeKey)
         }
         UserDefaults.standard.set(callbackCount, forKey: callbackCountKey)
+        UserDefaults.standard.set(recordingStartTimestamp, forKey: recordingStartKey)
+        UserDefaults.standard.set(recordingStopTimestamp, forKey: recordingStopKey)
     }
 }
 
-struct LocationWitnessObservation: Codable, Equatable {
-    let sequence: Int
-    let latitude: Double
-    let longitude: Double
-    let speed: Double
-    let course: Double
-    let horizontalAccuracy: Double
-    let verticalAccuracy: Double
-    let altitude: Double
-    let locationTimestamp: Date
-    let wallClockTimestamp: Date
-    let isSimulatedBySoftware: Bool?
-    let isProducedByAccessory: Bool?
-
+extension LocationWitnessObservation {
     init(sequence: Int, location: CLLocation, wallClockTimestamp: Date) {
-        self.sequence = sequence
-        self.latitude = location.coordinate.latitude
-        self.longitude = location.coordinate.longitude
-        self.speed = location.speed
-        self.course = location.course
-        self.horizontalAccuracy = location.horizontalAccuracy
-        self.verticalAccuracy = location.verticalAccuracy
-        self.altitude = location.altitude
-        self.locationTimestamp = location.timestamp
-        self.wallClockTimestamp = wallClockTimestamp
+        var simulatedBySoftware: Bool?
+        var producedByAccessory: Bool?
         if #available(iOS 15.0, *) {
-            self.isSimulatedBySoftware = location.sourceInformation?.isSimulatedBySoftware
-            self.isProducedByAccessory = location.sourceInformation?.isProducedByAccessory
-        } else {
-            self.isSimulatedBySoftware = nil
-            self.isProducedByAccessory = nil
+            simulatedBySoftware = location.sourceInformation?.isSimulatedBySoftware
+            producedByAccessory = location.sourceInformation?.isProducedByAccessory
         }
+        self.init(
+            sequence: sequence,
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude,
+            speed: location.speed,
+            course: location.course,
+            horizontalAccuracy: location.horizontalAccuracy,
+            verticalAccuracy: location.verticalAccuracy,
+            altitude: location.altitude,
+            locationTimestamp: location.timestamp,
+            wallClockTimestamp: wallClockTimestamp,
+            isSimulatedBySoftware: simulatedBySoftware,
+            isProducedByAccessory: producedByAccessory
+        )
     }
 
     var wireText: String {
