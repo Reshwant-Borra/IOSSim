@@ -11,14 +11,32 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         XCTAssertEqual(Set([first.main, first.witness, first.unitTests, first.uiTests, first.runner]).count, 5)
     }
 
+    func testDerivedBundleIdentifiersDifferForDifferentTeams() throws {
+        let first = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "ABCD123456")
+        let second = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "WXYZ987654")
+
+        XCTAssertNotEqual(first.uiTests, second.uiTests)
+        XCTAssertNotEqual(first.runner, second.runner)
+    }
+
     func testDerivedBundleIdentifiersDoNotMutateSourceIdentifiers() throws {
         let source = ProtectedSourceBundleIdentifiers.default
         let derived = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "ABCD123456")
 
         XCTAssertEqual(source.main, "com.iossim.on-device-dvt-poc")
+        XCTAssertEqual(source.uiTests, "com.iossim.location-control-uitests")
         XCTAssertEqual(source.runner, "com.iossim.location-control-uitests.xctrunner")
-        XCTAssertNotEqual(source.main, derived.main)
+        XCTAssertEqual(source.main, derived.main)
+        XCTAssertNotEqual(source.uiTests, derived.uiTests)
         XCTAssertNotEqual(source.runner, derived.runner)
+    }
+
+    func testRunnerIdentifierRelationshipIsCoherent() throws {
+        let derived = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "5337SALD55")
+
+        XCTAssertTrue(derived.runner.hasSuffix(".xctrunner"))
+        XCTAssertEqual(derived.runner, "\(derived.uiTests).xctrunner")
+        XCTAssertNotEqual(derived.runner, derived.main)
     }
 
     func testDerivedBundleIdentifiersAreValidAppleIdentifiers() throws {
@@ -151,6 +169,35 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         XCTAssertEqual(decoded, manifest)
     }
 
+    func testManifestRecordsUITestAndRunnerInstalledIdentifiers() throws {
+        let manifest = makeManifest(
+            teamIdentifier: "5337SALD55",
+            deviceIdentifierHash: "device-hash",
+            mainExpiration: nil,
+            runnerExpiration: nil
+        )
+        let derived = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "5337SALD55")
+
+        XCTAssertEqual(manifest.sourceUITestBundleID, ProtectedSourceBundleIdentifiers.default.uiTests)
+        XCTAssertEqual(manifest.installedUITestBundleID, derived.uiTests)
+        XCTAssertEqual(manifest.sourceRunnerBundleID, ProtectedSourceBundleIdentifiers.default.runner)
+        XCTAssertEqual(manifest.installedRunnerBundleID, derived.runner)
+    }
+
+    func testWitnessIsExcludedFromConsumerPersonalTeamManifest() {
+        let manifest = makeManifest(
+            teamIdentifier: "TEAM1",
+            deviceIdentifierHash: "device-hash",
+            mainExpiration: nil,
+            runnerExpiration: nil
+        )
+
+        XCTAssertEqual(manifest.sourceWitnessBundleID, ProtectedSourceBundleIdentifiers.default.witness)
+        XCTAssertNil(manifest.installedWitnessBundleID)
+        XCTAssertNil(manifest.witnessExpiration)
+        XCTAssertFalse(manifest.artifacts.contains { $0.role == "locationWitness" })
+    }
+
     func testNoSourceBundleIdentifierMutationGuard() throws {
         let manifest = makeManifest(
             teamIdentifier: "TEAM1",
@@ -167,6 +214,8 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
             deviceIdentifierHash: manifest.deviceIdentifierHash,
             sourceMainBundleID: "com.example.changed",
             installedMainBundleID: manifest.installedMainBundleID,
+            sourceUITestBundleID: manifest.sourceUITestBundleID,
+            installedUITestBundleID: manifest.installedUITestBundleID,
             sourceRunnerBundleID: manifest.sourceRunnerBundleID,
             installedRunnerBundleID: manifest.installedRunnerBundleID,
             sourceWitnessBundleID: manifest.sourceWitnessBundleID,
@@ -189,6 +238,24 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
                 .signingTeamChanged(expected: "TEAM1", actual: "TEAM2")
             )
         }
+    }
+
+    func testRefreshUsesSameDerivedRunnerIdentifier() {
+        let original = makeManifest(
+            teamIdentifier: "5337SALD55",
+            deviceIdentifierHash: "device-hash",
+            mainExpiration: Date(timeIntervalSince1970: 1_000),
+            runnerExpiration: Date(timeIntervalSince1970: 1_000)
+        )
+        let refreshed = makeManifest(
+            teamIdentifier: "5337SALD55",
+            deviceIdentifierHash: "device-hash",
+            mainExpiration: Date(timeIntervalSince1970: 2_000),
+            runnerExpiration: Date(timeIntervalSince1970: 2_000)
+        )
+
+        XCTAssertEqual(original.installedUITestBundleID, refreshed.installedUITestBundleID)
+        XCTAssertEqual(original.installedRunnerBundleID, refreshed.installedRunnerBundleID)
     }
 
     func testAppleDevelopmentIdentityParserExtractsTeamIDsOnly() {
@@ -236,10 +303,12 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
             deviceIdentifierHash: deviceIdentifierHash,
             sourceMainBundleID: source.main,
             installedMainBundleID: installed.main,
+            sourceUITestBundleID: source.uiTests,
+            installedUITestBundleID: installed.uiTests,
             sourceRunnerBundleID: source.runner,
             installedRunnerBundleID: installed.runner,
             sourceWitnessBundleID: source.witness,
-            installedWitnessBundleID: installed.witness,
+            installedWitnessBundleID: nil,
             mainExpiration: mainExpiration,
             runnerExpiration: runnerExpiration,
             witnessExpiration: nil,

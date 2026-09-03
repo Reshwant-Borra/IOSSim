@@ -398,13 +398,15 @@ private func personalTeamPOCReport(arguments: [String], context: RuntimeProvisio
             deviceIdentifierHash: deviceHash,
             sourceMainBundleID: source.main,
             installedMainBundleID: derived.main,
+            sourceUITestBundleID: source.uiTests,
+            installedUITestBundleID: derived.uiTests,
             sourceRunnerBundleID: source.runner,
             installedRunnerBundleID: derived.runner,
             sourceWitnessBundleID: source.witness,
-            installedWitnessBundleID: derived.witness,
+            installedWitnessBundleID: nil,
             mainExpiration: profiles.first(where: { $0.bundleIdentifier == source.main })?.expirationDate,
             runnerExpiration: profiles.first(where: { $0.bundleIdentifier == source.runner })?.expirationDate,
-            witnessExpiration: profiles.first(where: { $0.bundleIdentifier == source.witness })?.expirationDate
+            witnessExpiration: nil
         )
         refreshPlan = PersonalTeamProvisioningPOC.refreshPlan(
             manifest: pocManifest,

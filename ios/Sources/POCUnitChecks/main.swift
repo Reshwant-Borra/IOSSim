@@ -63,6 +63,9 @@ struct POCUnitChecks {
     try await driveDiagnosticsSerialize()
     try driveTraceMetricCalculations()
     try appleLocationControlMetricCalculations()
+    try gate3RunnerBundleIdentifierResolverDefaultsToSourceID()
+    try gate3RunnerBundleIdentifierResolverUsesConfiguredInstalledID()
+    try gate3RunnerBundleIdentifierResolverRejectsMalformedConfig()
     try locationWitnessMetricsCalculations()
     try locationWitnessMetricsSimulatedOnlyFiltering()
     try locationWitnessMetricsEmptyRecordingExport()
@@ -1422,6 +1425,65 @@ struct POCUnitChecks {
     try require(
       summaryText.contains("mean_geometric_speed_callback_mps"),
       "geometric speed terminology in summary")
+  }
+
+  static func gate3RunnerBundleIdentifierResolverDefaultsToSourceID() throws {
+    let resolver = Gate3XCTestRunnerBundleIdentifierResolver()
+
+    let resolved = resolver.resolvedInstalledRunnerBundleID(
+      environment: [:],
+      infoDictionary: [:],
+      userDefaults: UserDefaults(suiteName: "POCUnitChecks.empty")!
+    )
+
+    try require(
+      resolved == Gate3XCTestRunnerBundleIdentifierResolver.defaultInstalledRunnerBundleID,
+      "missing Gate 3 runner config should default to source runner ID")
+    try require(
+      resolved == "com.iossim.location-control-uitests.xctrunner",
+      "default Gate 3 runner ID should remain canonical")
+  }
+
+  static func gate3RunnerBundleIdentifierResolverUsesConfiguredInstalledID() throws {
+    let resolver = Gate3XCTestRunnerBundleIdentifierResolver()
+    let configured =
+      "com.personalteam.iossim.t0123456789ab.location-control-uitests.xctrunner"
+
+    let environmentResolved = resolver.resolvedInstalledRunnerBundleID(
+      environment: [Gate3XCTestRunnerBundleIdentifierResolver.environmentKey: configured],
+      infoDictionary: [:],
+      userDefaults: UserDefaults(suiteName: "POCUnitChecks.environment")!
+    )
+    let infoResolved = resolver.resolvedInstalledRunnerBundleID(
+      environment: [:],
+      infoDictionary: [Gate3XCTestRunnerBundleIdentifierResolver.infoDictionaryKey: configured],
+      userDefaults: UserDefaults(suiteName: "POCUnitChecks.info")!
+    )
+
+    try require(environmentResolved == configured, "environment Gate 3 runner config should win")
+    try require(infoResolved == configured, "Info.plist Gate 3 runner config should be accepted")
+  }
+
+  static func gate3RunnerBundleIdentifierResolverRejectsMalformedConfig() throws {
+    let resolver = Gate3XCTestRunnerBundleIdentifierResolver()
+    let defaults = UserDefaults(suiteName: "POCUnitChecks.malformed")!
+    defaults.removeObject(forKey: Gate3XCTestRunnerBundleIdentifierResolver.userDefaultsKey)
+
+    for malformed in [
+      "",
+      "com.example.runner",
+      "com.example.$(BAD).xctrunner",
+      "bad id.xctrunner",
+    ] {
+      let resolved = resolver.resolvedInstalledRunnerBundleID(
+        environment: [Gate3XCTestRunnerBundleIdentifierResolver.environmentKey: malformed],
+        infoDictionary: [:],
+        userDefaults: defaults
+      )
+      try require(
+        resolved == Gate3XCTestRunnerBundleIdentifierResolver.defaultInstalledRunnerBundleID,
+        "malformed Gate 3 runner config should fall back to source runner ID")
+    }
   }
 
   static func locationWitnessMetricsCalculations() throws {

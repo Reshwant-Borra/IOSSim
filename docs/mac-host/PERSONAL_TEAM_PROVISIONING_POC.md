@@ -10,7 +10,8 @@ This POC answers whether the existing IOSSim device artifacts can be provisioned
 - IOSSimLocationControlUITests runner app
 - Embedded `IOSSimLocationControlUITests.xctest`
 - Nested XCTest frameworks and support dylib
-- Witness only as validation infrastructure
+
+Witness remains validation infrastructure and repository source, but it is not part of the consumer Personal Team install set for this POC.
 
 The normal install backend remains `devicectl`. Replacing `devicectl` or solving no-Xcode provisioning is out of scope.
 
@@ -35,6 +36,8 @@ For a selected team, generated Personal Team identifiers use:
 The runner keeps the XCTest relationship:
 
 `<derived-ui-test-bundle-id>.xctrunner`
+
+The main app initially keeps `com.iossim.on-device-dvt-poc` so existing IOSSim app data can be preserved if iOS accepts the team transition. Do not derive a main-app ID unless Apple requires it.
 
 The hash is deterministic from the Team ID and does not use Apple credentials, email, device IDs, pairing material, or passwords. The same team receives the same derived IDs on refresh.
 

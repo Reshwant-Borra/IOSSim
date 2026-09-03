@@ -126,6 +126,59 @@ private final class Gate3XCTestCallbackContext: @unchecked Sendable {
   }
 }
 
+public struct Gate3XCTestRunnerBundleIdentifierResolver: Sendable {
+  public static let defaultInstalledRunnerBundleID =
+    "com.iossim.location-control-uitests.xctrunner"
+  public static let environmentKey = "IOSSIM_GATE3_RUNNER_BUNDLE_ID"
+  public static let infoDictionaryKey = "IOSSimGate3RunnerBundleIdentifier"
+  public static let userDefaultsKey = "IOSSimGate3RunnerBundleIdentifier"
+
+  public init() {}
+
+  public func resolvedInstalledRunnerBundleID(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    infoDictionary: [String: Any]? = Bundle.main.infoDictionary,
+    userDefaults: UserDefaults = .standard
+  ) -> String {
+    if let configured = Self.validConfiguredRunnerBundleID(environment[Self.environmentKey]) {
+      return configured
+    }
+    if let configured = Self.validConfiguredRunnerBundleID(
+      infoDictionary?[Self.infoDictionaryKey] as? String
+    ) {
+      return configured
+    }
+    if let configured = Self.validConfiguredRunnerBundleID(
+      userDefaults.string(forKey: Self.userDefaultsKey)
+    ) {
+      return configured
+    }
+    return Self.defaultInstalledRunnerBundleID
+  }
+
+  public static func validConfiguredRunnerBundleID(_ rawValue: String?) -> String? {
+    guard let rawValue else { return nil }
+    let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard value.hasSuffix(".xctrunner"),
+      isValidAppleBundleIdentifier(value),
+      !value.contains("$(")
+    else {
+      return nil
+    }
+    return value
+  }
+
+  public static func isValidAppleBundleIdentifier(_ value: String) -> Bool {
+    guard value.count <= 255, value.contains(".") else { return false }
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
+    guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }
+    return value.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { component in
+      guard let first = component.first else { return false }
+      return first.isLetter || first.isNumber
+    }
+  }
+}
+
 public protocol OnDeviceTunnelClient: Sendable {
   func connect(pairingData: Data, endpoint: DeveloperEndpoint) async throws
   func set(latitude: Double, longitude: Double) async throws
@@ -137,6 +190,7 @@ public protocol OnDeviceTunnelClient: Sendable {
 public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked Sendable {
   private let hostname: String
   private let recorder: SessionDiagnosticRecorder?
+  private let gate3RunnerBundleID: String
   private let lock = NSLock()
   private var state: TunnelState = .disconnected
   private var endpoint = DeveloperEndpoint()
@@ -154,10 +208,15 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
   private var gate3XCTestSnapshot = Gate3XCTestRunnerStatus()
 
   public init(
-    hostname: String = "IOSSimOnDeviceDVTPOC", recorder: SessionDiagnosticRecorder? = .shared
+    hostname: String = "IOSSimOnDeviceDVTPOC",
+    recorder: SessionDiagnosticRecorder? = .shared,
+    gate3RunnerBundleID: String? = nil
   ) {
     self.hostname = hostname
     self.recorder = recorder
+    self.gate3RunnerBundleID =
+      Gate3XCTestRunnerBundleIdentifierResolver.validConfiguredRunnerBundleID(gate3RunnerBundleID)
+      ?? Gate3XCTestRunnerBundleIdentifierResolver().resolvedInstalledRunnerBundleID()
     Task {
       await recorder?.record(
         category: "OBJECT_LIFETIME",
@@ -527,8 +586,6 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
   }
 
   #if IOS_SIM_IDEVICE_FFI || canImport(idevice)
-    private let gate3RunnerBundleID = "com.iossim.location-control-uitests.xctrunner"
-
     private func connectWithIdevice(pairingData: Data, endpoint: DeveloperEndpoint) async throws {
       let temporaryURL = try writeTemporaryPairingFile(pairingData)
       defer {

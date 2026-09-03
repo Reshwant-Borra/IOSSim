@@ -48,6 +48,9 @@ public enum PersonalTeamProvisioningPOC {
         guard manifest.sourceRunnerBundleID == expected.runner else {
             throw PersonalTeamProvisioningError.sourceBundleIdentifierMutated(role: "locationControlRunner")
         }
+        guard manifest.sourceUITestBundleID == expected.uiTests else {
+            throw PersonalTeamProvisioningError.sourceBundleIdentifierMutated(role: "locationControlUITests")
+        }
         guard manifest.sourceWitnessBundleID == expected.witness else {
             throw PersonalTeamProvisioningError.sourceBundleIdentifierMutated(role: "locationWitness")
         }
@@ -88,7 +91,7 @@ public struct PersonalTeamBundleIdentifierSet: Codable, Equatable, Sendable {
     public init(teamIdentifier: String) throws {
         let token = Self.stableTeamToken(teamIdentifier)
         let prefix = "\(PersonalTeamProvisioningPOC.bundleIdentifierPrefix).\(token)"
-        main = "\(prefix).on-device-dvt-poc"
+        main = ProtectedSourceBundleIdentifiers.default.main
         witness = "\(prefix).location-witness"
         unitTests = "\(prefix).location-control-tests"
         uiTests = "\(prefix).location-control-uitests"
@@ -430,6 +433,8 @@ public struct PersonalTeamProvisioningManifest: Codable, Equatable, Sendable {
     public let deviceIdentifierHash: String
     public let sourceMainBundleID: String
     public let installedMainBundleID: String
+    public let sourceUITestBundleID: String
+    public let installedUITestBundleID: String
     public let sourceRunnerBundleID: String
     public let installedRunnerBundleID: String
     public let sourceWitnessBundleID: String
@@ -446,6 +451,8 @@ public struct PersonalTeamProvisioningManifest: Codable, Equatable, Sendable {
         deviceIdentifierHash: String,
         sourceMainBundleID: String,
         installedMainBundleID: String,
+        sourceUITestBundleID: String,
+        installedUITestBundleID: String,
         sourceRunnerBundleID: String,
         installedRunnerBundleID: String,
         sourceWitnessBundleID: String,
@@ -461,6 +468,8 @@ public struct PersonalTeamProvisioningManifest: Codable, Equatable, Sendable {
         self.deviceIdentifierHash = deviceIdentifierHash
         self.sourceMainBundleID = sourceMainBundleID
         self.installedMainBundleID = installedMainBundleID
+        self.sourceUITestBundleID = sourceUITestBundleID
+        self.installedUITestBundleID = installedUITestBundleID
         self.sourceRunnerBundleID = sourceRunnerBundleID
         self.installedRunnerBundleID = installedRunnerBundleID
         self.sourceWitnessBundleID = sourceWitnessBundleID
