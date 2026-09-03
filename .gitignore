@@ -14,6 +14,9 @@ backend/data/drive_testing/
 ios/DiagnosticRun/
 .iossim.local.env
 .local/iossim/
+.iossim-personal-team/
+PersonalTeamProvisioningPOC/
+personal-team-provisioning/
 *.log
 *.pid
 
@@ -50,6 +53,12 @@ ios/.swiftpm/
 # Xcode user-local state
 **/xcuserdata/
 *.xcuserstate
+DerivedData/
+*.xcarchive
+*.xcresult
+*.mobileprovision
+*.provisionprofile
+*.p12
 
 # OS/editor
 .DS_Store

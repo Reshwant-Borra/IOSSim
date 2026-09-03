@@ -12,33 +12,45 @@ public enum ArtifactInstallEligibilityStatus: String, Codable, Equatable, Sendab
 public struct ProvisioningProfileSummary: Codable, Equatable, Sendable {
     public let status: ArtifactInstallEligibilityStatus
     public let profileType: String
+    public let personalTeam: Bool?
     public let teamIdentifier: String?
+    public let creationDate: Date?
     public let expirationDate: Date?
+    public let remainingValiditySeconds: TimeInterval?
     public let provisionedDeviceCount: Int
     public let selectedDeviceEligible: Bool?
     public let applicationIdentifier: String?
     public let bundleIdentifier: String
+    public let refreshRecommended: Bool
     public let detail: String
 
     public init(
         status: ArtifactInstallEligibilityStatus,
         profileType: String,
+        personalTeam: Bool? = nil,
         teamIdentifier: String?,
+        creationDate: Date? = nil,
         expirationDate: Date?,
+        remainingValiditySeconds: TimeInterval? = nil,
         provisionedDeviceCount: Int,
         selectedDeviceEligible: Bool?,
         applicationIdentifier: String?,
         bundleIdentifier: String,
+        refreshRecommended: Bool = false,
         detail: String
     ) {
         self.status = status
         self.profileType = profileType
+        self.personalTeam = personalTeam
         self.teamIdentifier = teamIdentifier
+        self.creationDate = creationDate
         self.expirationDate = expirationDate
+        self.remainingValiditySeconds = remainingValiditySeconds
         self.provisionedDeviceCount = provisionedDeviceCount
         self.selectedDeviceEligible = selectedDeviceEligible
         self.applicationIdentifier = applicationIdentifier
         self.bundleIdentifier = bundleIdentifier
+        self.refreshRecommended = refreshRecommended
         self.detail = detail
     }
 }
@@ -81,6 +93,7 @@ public enum ProvisioningProfileInspector {
 
         let provisionedDevices = plist["ProvisionedDevices"] as? [String]
         let provisionsAllDevices = plist["ProvisionsAllDevices"] as? Bool ?? false
+        let creation = plist["CreationDate"] as? Date
         let expiration = plist["ExpirationDate"] as? Date
         let entitlements = plist["Entitlements"] as? [String: Any]
         let applicationIdentifier = entitlements?["application-identifier"] as? String
@@ -106,12 +119,19 @@ public enum ProvisioningProfileInspector {
         return ProvisioningProfileSummary(
             status: status,
             profileType: profileType,
+            personalTeam: inferPersonalTeam(plist: plist, profileType: profileType, creationDate: creation, expirationDate: expiration),
             teamIdentifier: teamIdentifier,
+            creationDate: creation,
             expirationDate: expiration,
+            remainingValiditySeconds: expiration.map { $0.timeIntervalSince(Date()) },
             provisionedDeviceCount: provisionedDevices?.count ?? 0,
             selectedDeviceEligible: selectedEligible,
             applicationIdentifier: applicationIdentifier,
             bundleIdentifier: bundleIdentifier,
+            refreshRecommended: ProvisioningExpiration(
+                creationDate: creation,
+                expirationDate: expiration
+            ).refreshRecommended(),
             detail: detail
         )
     }
@@ -154,6 +174,28 @@ public enum ProvisioningProfileInspector {
             return "app-store"
         }
         return "unknown"
+    }
+
+    private static func inferPersonalTeam(
+        plist: [String: Any],
+        profileType: String,
+        creationDate: Date?,
+        expirationDate: Date?
+    ) -> Bool? {
+        let profileName = plist["Name"] as? String
+        let teamName = plist["TeamName"] as? String
+        let joined = [profileName, teamName].compactMap { $0 }.joined(separator: " ").lowercased()
+        if joined.contains("personal team") {
+            return true
+        }
+        guard profileType == "development", let creationDate, let expirationDate else {
+            return nil
+        }
+        let lifetime = expirationDate.timeIntervalSince(creationDate)
+        if lifetime > 0 && lifetime <= 8.25 * 24 * 60 * 60 {
+            return true
+        }
+        return nil
     }
 }
 

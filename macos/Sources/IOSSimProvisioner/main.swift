@@ -95,6 +95,10 @@ struct ProvisionerTool {
                     }
                 }
                 return 0
+            case "personal-team-poc":
+                let report = await personalTeamPOCReport(arguments: Array(args.dropFirst()), context: context)
+                try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: report))
+                return 0
             default:
                 printUsage()
                 return 2
@@ -352,7 +356,90 @@ struct ProvisionerTool {
           verify [--device <id>]
           verify-artifacts --json
           info --json
+          personal-team-poc --json [--team <team-id>] [--team-kind personal|paid|unknown] [--device <id>]
         """)
+    }
+}
+
+private func personalTeamPOCReport(arguments: [String], context: RuntimeProvisioningContext) async -> PersonalTeamPOCInspectionReport {
+    let identities = await AppleSigningIdentityInspector.availableAppleDevelopmentIdentities(runner: context.runner)
+    let explicitTeam = optionValue("--team", in: arguments)
+    let selectedTeam = explicitTeam ?? singleDetectedTeamIdentifier(from: identities)
+    let selectedKind = teamKind(from: optionValue("--team-kind", in: arguments))
+    let selectedDevice = optionValue("--device", in: arguments)
+    let source = ProtectedSourceBundleIdentifiers.default
+    let derived = selectedTeam.flatMap { try? PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: $0) }
+    let manifest = try? context.loadManifest()
+    let profiles: [ProvisioningProfileSummary]
+    let signingGraph: [SigningGraphNode]
+    if let manifest {
+        profiles = await ArtifactEligibilityEvaluator.summaries(
+            resourcesURL: context.resourcesURL,
+            manifest: manifest,
+            selectedDeviceIdentifier: selectedDevice,
+            runner: context.runner
+        )
+        signingGraph = await SigningGraphInspector.graph(
+            resourcesURL: context.resourcesURL,
+            manifest: manifest,
+            profiles: profiles,
+            runner: context.runner
+        )
+    } else {
+        profiles = []
+        signingGraph = []
+    }
+    let deviceHash = selectedDevice.map { PersonalTeamProvisioningPOC.deviceIdentifierHash($0) }
+    let refreshPlan: RefreshPlan?
+    if let selectedTeam, let deviceHash, let derived {
+        let pocManifest = PersonalTeamProvisioningManifest(
+            teamIdentifier: selectedTeam,
+            teamKind: selectedKind,
+            deviceIdentifierHash: deviceHash,
+            sourceMainBundleID: source.main,
+            installedMainBundleID: derived.main,
+            sourceRunnerBundleID: source.runner,
+            installedRunnerBundleID: derived.runner,
+            sourceWitnessBundleID: source.witness,
+            installedWitnessBundleID: derived.witness,
+            mainExpiration: profiles.first(where: { $0.bundleIdentifier == source.main })?.expirationDate,
+            runnerExpiration: profiles.first(where: { $0.bundleIdentifier == source.runner })?.expirationDate,
+            witnessExpiration: profiles.first(where: { $0.bundleIdentifier == source.witness })?.expirationDate
+        )
+        refreshPlan = PersonalTeamProvisioningPOC.refreshPlan(
+            manifest: pocManifest,
+            currentTeamIdentifier: selectedTeam,
+            currentDeviceIdentifierHash: deviceHash
+        )
+    } else {
+        refreshPlan = nil
+    }
+    return PersonalTeamPOCInspectionReport(
+        sourceBundleIdentifiers: source,
+        derivedBundleIdentifiers: derived,
+        selectedTeamIdentifier: selectedTeam,
+        selectedTeamKind: selectedKind,
+        appleDevelopmentIdentities: identities,
+        selectedDeviceIdentifierHash: deviceHash,
+        currentArtifactProfiles: profiles,
+        currentSigningGraph: signingGraph,
+        refreshPlan: refreshPlan
+    )
+}
+
+private func singleDetectedTeamIdentifier(from identities: [AppleCodeSigningIdentity]) -> String? {
+    let teams = Set(identities.compactMap(\.teamIdentifier))
+    return teams.count == 1 ? teams.first : nil
+}
+
+private func teamKind(from rawValue: String?) -> ProvisioningTeamKind {
+    switch rawValue?.lowercased() {
+    case "personal", "personal-team", "free":
+        return .personalTeam
+    case "paid", "developer", "paid-development":
+        return .paidDevelopment
+    default:
+        return .unknown
     }
 }
 
@@ -421,6 +508,7 @@ private func defaultResourcesURL() -> URL {
 
 private func printJSON<T: Encodable>(_ value: T) throws {
     let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(value)
     FileHandle.standardOutput.write(data)
