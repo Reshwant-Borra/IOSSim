@@ -1,4 +1,21 @@
-﻿# iOS Location Sim
+﻿# IOSSim
+
+Current `main` is the iPhone/on-device IOSSim implementation. Start here:
+
+```bash
+./iossim setup
+./iossim doctor
+./iossim build
+./iossim test
+./iossim device
+```
+
+See [docs/SETUP.md](docs/SETUP.md) for the canonical developer setup flow.
+
+The frozen historical desktop frontend/backend implementation is preserved on
+the `desktop-legacy` branch.
+
+# iOS Location Sim
 
 Free, open-source iOS location testing tool. Windows-first with macOS support, USB connection, no paid Apple Developer account required.
 

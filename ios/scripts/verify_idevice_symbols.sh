@@ -25,8 +25,19 @@ REQUIRED_SYMBOLS=(
 [[ -f "${LIB_PATH}" ]] || { echo "Missing library: ${LIB_PATH}"; exit 2; }
 
 find_rust_llvm_nm() {
-  if command -v rustup >/dev/null && rustup which llvm-nm >/dev/null 2>&1; then
-    rustup which llvm-nm
+  local rustup_bin
+  rustup_bin="$(command -v rustup || true)"
+  if [[ -z "${rustup_bin}" ]]; then
+    for candidate in /opt/homebrew/bin/rustup /usr/local/bin/rustup; do
+      if [[ -x "${candidate}" ]]; then
+        rustup_bin="${candidate}"
+        break
+      fi
+    done
+  fi
+
+  if [[ -n "${rustup_bin}" ]] && "${rustup_bin}" which llvm-nm >/dev/null 2>&1; then
+    "${rustup_bin}" which llvm-nm
     return 0
   fi
 

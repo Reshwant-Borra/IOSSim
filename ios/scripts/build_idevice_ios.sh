@@ -34,6 +34,11 @@ git --version >/dev/null || { echo "git is unavailable. Open Xcode and accept th
 RUSTUP_BIN="$(command -v rustup || true)"
 CARGO_BIN="$(find_rust_tool cargo || true)"
 [[ -n "${CARGO_BIN}" ]] || { echo "cargo is required. Install Rust first."; exit 2; }
+RUST_TOOLCHAIN_BIN="$(dirname "${CARGO_BIN}")"
+case ":${PATH}:" in
+  *":${RUST_TOOLCHAIN_BIN}:"*) ;;
+  *) export PATH="${RUST_TOOLCHAIN_BIN}:${PATH}" ;;
+esac
 
 mkdir -p "${ROOT_DIR}/.build" "${OUT_DIR}"
 
