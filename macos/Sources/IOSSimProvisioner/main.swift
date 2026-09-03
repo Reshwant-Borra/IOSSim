@@ -110,8 +110,27 @@ struct ProvisionerTool {
             let selector = optionValue("--device", in: arguments)
             let manifest = try context.loadManifest()
             try ArtifactManifestLoader.assertArtifactsVerified(resourcesURL: context.resourcesURL, manifest: manifest)
+            guard let selector, !selector.isEmpty else {
+                fputs("DEVICE_SELECTION_REQUIRED: choose one connected iPhone before provisioning.\n", stderr)
+                return 2
+            }
+            if ProvisioningBackendKind.selected() == .devicectl && RuntimeProvisioning.devicectlForbidden() {
+                fputs("DEVICETCTL_FORBIDDEN: devicectl backend is disabled for this run.\n", stderr)
+                return 78
+            }
             guard let rawDeviceIdentifier = await AppleDeviceTool.rawDeviceIdentifier(matching: selector, context: context) else {
-                fputs("iPhone setup required: connect one trusted iPhone with Developer Mode enabled.\n", stderr)
+                fputs("IPHONE_DISCONNECTED: reconnect the selected iPhone or choose another device.\n", stderr)
+                return 2
+            }
+            let eligibility = await ArtifactEligibilityEvaluator.summaries(
+                resourcesURL: context.resourcesURL,
+                manifest: manifest,
+                selectedDeviceIdentifier: rawDeviceIdentifier,
+                runner: context.runner
+            )
+            let aggregateEligibility = ArtifactEligibilityEvaluator.aggregateStatus(eligibility)
+            guard aggregateEligibility == .installable else {
+                fputs("ARTIFACT_ELIGIBILITY_\(aggregateEligibility.rawValue): \(uniqueDetails(from: eligibility))\n", stderr)
                 return 2
             }
             var installed: [InstallComponentOutput] = []
@@ -154,6 +173,7 @@ struct ProvisionerTool {
 
     private func doctor(context: RuntimeProvisioningContext) async -> DoctorStatus {
         var checks: [DoctorCheck] = []
+        var manifestForEligibility: ArtifactManifest?
         let os = ProcessInfo.processInfo.operatingSystemVersion
         let osText = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
         let macSupported = ProcessInfo.processInfo.isOperatingSystemAtLeast(RuntimeProvisioning.minimumMacOS)
@@ -165,16 +185,21 @@ struct ProvisionerTool {
             action: macSupported ? nil : "Upgrade macOS.",
             requiredFor: "mac"
         ))
+        let backendKind = ProvisioningBackendKind.selected()
+        let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil || RuntimeProvisioning.devicectlForbidden()
         checks.append(DoctorCheck(
-            state: RuntimeProvisioning.xcrunURL() == nil ? .action : .pass,
+            state: backendKind == .devicectl && devicectlUnavailable ? .action : .pass,
             component: "Apple Tooling",
-            name: "xcrun",
-            detail: RuntimeProvisioning.xcrunURL()?.path ?? "missing",
-            action: RuntimeProvisioning.xcrunURL() == nil ? "Install Apple developer command line support." : nil,
+            name: backendKind == .devicectl ? "xcrun devicectl" : "idevice backend",
+            detail: backendKind == .devicectl
+                ? (RuntimeProvisioning.devicectlForbidden() ? "forbidden by test mode" : (RuntimeProvisioning.xcrunURL()?.path ?? "missing"))
+                : "selected",
+            action: backendKind == .devicectl && devicectlUnavailable ? "Install/select Apple developer tools or choose a non-devicectl backend." : nil,
             requiredFor: "mac"
         ))
         do {
             let manifest = try context.loadManifest()
+            manifestForEligibility = manifest
             let results = ArtifactManifestLoader.verify(resourcesURL: context.resourcesURL, manifest: manifest)
             for result in results {
                 checks.append(DoctorCheck(
@@ -209,7 +234,31 @@ struct ProvisionerTool {
                 requiredFor: "mac"
             ))
         }
-        let devices = await AppleDeviceTool.discoverDevices(context: context)
+        var devices = await AppleDeviceTool.discoverDevices(context: context)
+        if let manifestForEligibility {
+            var enrichedDevices: [DetectedDevice] = []
+            for device in devices {
+                let eligibility = await ArtifactEligibilityEvaluator.summaries(
+                    resourcesURL: context.resourcesURL,
+                    manifest: manifestForEligibility,
+                    selectedDeviceIdentifier: device.selectionIdentifier,
+                    runner: context.runner
+                )
+                let aggregate = ArtifactEligibilityEvaluator.aggregateStatus(eligibility)
+                let installedBundleIdentifiers = await installedProjectBundleIdentifiers(
+                    for: device.selectionIdentifier,
+                    manifest: manifestForEligibility,
+                    context: context
+                )
+                enrichedDevices.append(device.withProvisioningState(
+                    status: aggregate,
+                    detail: uniqueDetails(from: eligibility),
+                    installedProjectBundleIdentifiers: installedBundleIdentifiers,
+                    expectedProjectBundleCount: manifestForEligibility.components.count
+                ))
+            }
+            devices = enrichedDevices
+        }
         if devices.isEmpty {
             checks.append(DoctorCheck(
                 state: .action,
@@ -254,6 +303,16 @@ struct ProvisionerTool {
                     detail: device.tunnelState ?? "unknown",
                     requiredFor: "device"
                 ))
+                if let eligibilityStatus = device.provisioningEligibilityStatus, eligibilityStatus != .installable {
+                    checks.append(DoctorCheck(
+                        state: .action,
+                        component: "Signing",
+                        name: eligibilityStatus.rawValue,
+                        detail: RuntimeProvisioning.shortIdentifier(device.selectionIdentifier),
+                        action: "This iPhone is not yet authorized for this IOSSim build.",
+                        requiredFor: "device"
+                    ))
+                }
             }
         }
         checks.append(DoctorCheck(
@@ -295,6 +354,36 @@ struct ProvisionerTool {
           info --json
         """)
     }
+}
+
+private func uniqueDetails(from summaries: [ProvisioningProfileSummary]) -> String {
+    var seen: Set<String> = []
+    return summaries.compactMap { summary in
+        guard !seen.contains(summary.detail) else { return nil }
+        seen.insert(summary.detail)
+        return summary.detail
+    }.joined(separator: " ")
+}
+
+private func installedProjectBundleIdentifiers(
+    for rawDeviceIdentifier: String,
+    manifest: ArtifactManifest,
+    context: RuntimeProvisioningContext
+) async -> [String]? {
+    var installed: [String] = []
+    for component in manifest.components {
+        guard let isInstalled = await AppleDeviceTool.isAppInstalled(
+            bundleIdentifier: component.bundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        ) else {
+            return nil
+        }
+        if isInstalled {
+            installed.append(component.bundleIdentifier)
+        }
+    }
+    return installed
 }
 
 private func optionValue(_ option: String, in arguments: [String]) -> String? {

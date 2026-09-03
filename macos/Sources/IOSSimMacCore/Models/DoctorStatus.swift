@@ -55,31 +55,177 @@ public struct DeviceSummary: Codable, Equatable, Sendable {
 }
 
 public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
-    public var id: String { identifier }
+    public var id: String { selectionIdentifier }
     public let name: String
     public let identifier: String
+    public let selectionIdentifier: String
     public let udidRedacted: String?
     public let osVersion: String?
     public let developerModeStatus: String?
     public let pairingState: String?
     public let tunnelState: String?
+    public let provisioningEligibilityStatus: ArtifactInstallEligibilityStatus?
+    public let provisioningEligibilityDetail: String?
+    public let installedProjectBundleIdentifiers: [String]?
+    public let expectedProjectBundleCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case identifier
+        case selectionIdentifier
+        case udidRedacted
+        case osVersion
+        case developerModeStatus
+        case pairingState
+        case tunnelState
+        case provisioningEligibilityStatus
+        case provisioningEligibilityDetail
+        case installedProjectBundleIdentifiers
+        case expectedProjectBundleCount
+    }
 
     public init(
         name: String,
         identifier: String,
+        selectionIdentifier: String? = nil,
         udidRedacted: String? = nil,
         osVersion: String? = nil,
         developerModeStatus: String? = nil,
         pairingState: String? = nil,
-        tunnelState: String? = nil
+        tunnelState: String? = nil,
+        provisioningEligibilityStatus: ArtifactInstallEligibilityStatus? = nil,
+        provisioningEligibilityDetail: String? = nil,
+        installedProjectBundleIdentifiers: [String]? = nil,
+        expectedProjectBundleCount: Int? = nil
     ) {
         self.name = name
         self.identifier = identifier
+        self.selectionIdentifier = selectionIdentifier ?? identifier
         self.udidRedacted = udidRedacted
         self.osVersion = osVersion
         self.developerModeStatus = developerModeStatus
         self.pairingState = pairingState
         self.tunnelState = tunnelState
+        self.provisioningEligibilityStatus = provisioningEligibilityStatus
+        self.provisioningEligibilityDetail = provisioningEligibilityDetail
+        self.installedProjectBundleIdentifiers = installedProjectBundleIdentifiers
+        self.expectedProjectBundleCount = expectedProjectBundleCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        identifier = try container.decode(String.self, forKey: .identifier)
+        selectionIdentifier = try container.decodeIfPresent(String.self, forKey: .selectionIdentifier) ?? identifier
+        udidRedacted = try container.decodeIfPresent(String.self, forKey: .udidRedacted)
+        osVersion = try container.decodeIfPresent(String.self, forKey: .osVersion)
+        developerModeStatus = try container.decodeIfPresent(String.self, forKey: .developerModeStatus)
+        pairingState = try container.decodeIfPresent(String.self, forKey: .pairingState)
+        tunnelState = try container.decodeIfPresent(String.self, forKey: .tunnelState)
+        provisioningEligibilityStatus = try container.decodeIfPresent(ArtifactInstallEligibilityStatus.self, forKey: .provisioningEligibilityStatus)
+        provisioningEligibilityDetail = try container.decodeIfPresent(String.self, forKey: .provisioningEligibilityDetail)
+        installedProjectBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .installedProjectBundleIdentifiers)
+        expectedProjectBundleCount = try container.decodeIfPresent(Int.self, forKey: .expectedProjectBundleCount)
+    }
+
+    public var allProjectAppsInstalled: Bool {
+        guard let installedProjectBundleIdentifiers, let expectedProjectBundleCount else {
+            return false
+        }
+        return expectedProjectBundleCount > 0 && installedProjectBundleIdentifiers.count >= expectedProjectBundleCount
+    }
+
+    public func withProvisioningState(
+        status: ArtifactInstallEligibilityStatus,
+        detail: String,
+        installedProjectBundleIdentifiers: [String]?,
+        expectedProjectBundleCount: Int?
+    ) -> DetectedDevice {
+        DetectedDevice(
+            name: name,
+            identifier: identifier,
+            selectionIdentifier: selectionIdentifier,
+            udidRedacted: udidRedacted,
+            osVersion: osVersion,
+            developerModeStatus: developerModeStatus,
+            pairingState: pairingState,
+            tunnelState: tunnelState,
+            provisioningEligibilityStatus: status,
+            provisioningEligibilityDetail: detail,
+            installedProjectBundleIdentifiers: installedProjectBundleIdentifiers,
+            expectedProjectBundleCount: expectedProjectBundleCount
+        )
+    }
+}
+
+public enum RequiredActionKind: String, Codable, Equatable, Sendable, CaseIterable {
+    case connectUnlockDevice
+    case trustComputer
+    case enableDeveloperMode
+    case enableLocalDevVPN
+    case importRPPairing
+    case signingRequired
+    case installAppleTooling
+    case reinstallIOSSim
+    case verifyRuntime
+    case other
+
+    public var sortOrder: Int {
+        switch self {
+        case .connectUnlockDevice: return 10
+        case .trustComputer: return 20
+        case .enableDeveloperMode: return 30
+        case .signingRequired: return 40
+        case .enableLocalDevVPN: return 50
+        case .importRPPairing: return 60
+        case .verifyRuntime: return 70
+        case .installAppleTooling: return 80
+        case .reinstallIOSSim: return 90
+        case .other: return 100
+        }
+    }
+
+    public static func infer(from check: DoctorCheck) -> RequiredActionKind {
+        let text = "\(check.component) \(check.name) \(check.action ?? "")".lowercased()
+        if text.contains("connected iphone") || text.contains("connect and unlock") || text.contains("locked") {
+            return .connectUnlockDevice
+        }
+        if text.contains("trust") || text.contains("paired") || text.contains("pairingstate") {
+            return .trustComputer
+        }
+        if text.contains("developer mode") {
+            return .enableDeveloperMode
+        }
+        if text.contains("localdevvpn") || text.contains("vpn") {
+            return .enableLocalDevVPN
+        }
+        if text.contains("pairing material") || text.contains("rppairing") || text.contains("pairing import") || text.contains("device pairing") {
+            return .importRPPairing
+        }
+        if text.contains("signing") || text.contains("provision") || text.contains("development team") {
+            return .signingRequired
+        }
+        if text.contains("xcrun") || text.contains("devicectl") || text.contains("apple tooling") || text.contains("xcode") {
+            return .installAppleTooling
+        }
+        if text.contains("bundled artifact") || text.contains("manifest") || text.contains("reinstall iossim") {
+            return .reinstallIOSSim
+        }
+        if text.contains("runtime") || text.contains("verify") {
+            return .verifyRuntime
+        }
+        return .other
+    }
+}
+
+public struct RequiredAction: Equatable, Sendable, Identifiable {
+    public var id: RequiredActionKind { kind }
+    public let kind: RequiredActionKind
+    public let check: DoctorCheck
+
+    public init(kind: RequiredActionKind, check: DoctorCheck) {
+        self.kind = kind
+        self.check = check
     }
 }
 
@@ -100,8 +246,9 @@ public struct DoctorStatus: Codable, Equatable, Sendable {
         self.ready = ready
         self.mac = mac
         self.device = device
-        self.actionsRequired = actionsRequired
         self.checks = checks
+        let canonical = Self.requiredActionTexts(from: checks)
+        self.actionsRequired = canonical.isEmpty ? actionsRequired : canonical
     }
 
     public static func decode(from data: Data) throws -> DoctorStatus {
@@ -113,11 +260,19 @@ public struct DoctorStatus: Codable, Equatable, Sendable {
     }
 
     public var deviceActionChecks: [DoctorCheck] {
-        checks.filter { $0.requiredFor == "device" && ($0.state == .fail || $0.state == .action) }
+        canonicalRequiredActions
+            .map(\.check)
+            .filter { $0.requiredFor == "device" && $0.component.caseInsensitiveCompare("Runtime") != .orderedSame }
     }
 
     public var runtimeActionChecks: [DoctorCheck] {
-        checks.filter { $0.component.caseInsensitiveCompare("Runtime") == .orderedSame && $0.state == .action }
+        canonicalRequiredActions
+            .map(\.check)
+            .filter { $0.component.caseInsensitiveCompare("Runtime") == .orderedSame }
+    }
+
+    public var canonicalRequiredActions: [RequiredAction] {
+        Self.canonicalRequiredActions(from: checks)
     }
 
     public var provisioningReady: Bool {
@@ -130,6 +285,30 @@ public struct DoctorStatus: Codable, Equatable, Sendable {
 
     public var primaryDevice: DetectedDevice? {
         device.devices.first
+    }
+
+    public static func canonicalRequiredActions(from checks: [DoctorCheck]) -> [RequiredAction] {
+        var byKind: [RequiredActionKind: DoctorCheck] = [:]
+        for check in checks where check.state == .action || check.state == .fail {
+            let kind = RequiredActionKind.infer(from: check)
+            if byKind[kind] == nil {
+                byKind[kind] = check
+            }
+        }
+        return byKind
+            .map { RequiredAction(kind: $0.key, check: $0.value) }
+            .sorted {
+                if $0.kind.sortOrder == $1.kind.sortOrder {
+                    return $0.check.id < $1.check.id
+                }
+                return $0.kind.sortOrder < $1.kind.sortOrder
+            }
+    }
+
+    public static func requiredActionTexts(from checks: [DoctorCheck]) -> [String] {
+        canonicalRequiredActions(from: checks).map { action in
+            StatusInterpreter.friendlyAction(for: action.check)
+        }
     }
 }
 
@@ -169,14 +348,14 @@ public enum StatusInterpreter {
     }
 
     public static func friendlyAction(for check: DoctorCheck) -> String {
-        if check.component == "Xcode" {
-            return "Install Xcode from Apple, open it once, and complete any prompts."
+        if check.component == "Xcode" || check.component == "Apple Tooling" {
+            return "Install or select Apple's developer tools required for iPhone discovery and app installation."
         }
         if check.name.localizedCaseInsensitiveContains("Developer Mode") {
             return "On your iPhone, open Settings > Privacy & Security > Developer Mode, enable it, then return here."
         }
         if check.name.localizedCaseInsensitiveContains("connected iPhone") {
-            return "Connect your iPhone with USB, unlock it, and trust this Mac."
+            return "Connect and unlock an iPhone to continue."
         }
         if check.name.localizedCaseInsensitiveContains("LocalDevVPN") {
             return "Open LocalDevVPN on your iPhone and approve Apple's VPN configuration prompt."

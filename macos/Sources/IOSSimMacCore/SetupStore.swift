@@ -9,18 +9,48 @@ public final class SetupStore: ObservableObject {
     @Published public private(set) var completedInstallStages: Set<InstallStage> = []
     @Published public private(set) var lastError: SetupError?
     @Published public private(set) var logs: [EngineLogEntry] = []
-    @Published public var selectedDeviceIdentifier: String?
+    @Published public private(set) var selectedDeviceIdentifier: String?
+    @Published public private(set) var deviceSelectionReason: DeviceSelectionReason = .noConnectedDevices
 
     public let engine: any IOSSimSetupEngine
     private var task: Task<Void, Never>?
     private let onboardingKey = "IOSSimMac.onboardingCompleted"
+    private let selectedDeviceKey = "IOSSimMac.selectedDeviceIdentifier"
+    private let selectedDeviceNameKey = "IOSSimMac.selectedDeviceName"
 
     public init(engine: any IOSSimSetupEngine) {
         self.engine = engine
+        selectedDeviceIdentifier = UserDefaults.standard.string(forKey: selectedDeviceKey)
     }
 
     public var onboardingCompleted: Bool {
         UserDefaults.standard.bool(forKey: onboardingKey)
+    }
+
+    public var selectedDevice: DetectedDevice? {
+        guard let selectedDeviceIdentifier else { return nil }
+        return status?.device.devices.first { $0.selectionIdentifier == selectedDeviceIdentifier }
+    }
+
+    public var selectedDeviceProvisioningReady: Bool {
+        selectedDevice.map { $0.pairingState == "paired" && $0.developerModeStatus == "enabled" } ?? false
+    }
+
+    public var deviceSelectionRequired: Bool {
+        guard let status else { return false }
+        if status.device.devices.count > 1, selectedDeviceIdentifier == nil {
+            return true
+        }
+        return DeviceSelectionPolicy.resolve(
+            devices: status.device.devices,
+            rememberedIdentifier: UserDefaults.standard.string(forKey: selectedDeviceKey),
+            rememberedName: UserDefaults.standard.string(forKey: selectedDeviceNameKey)
+        ).selectionRequired
+    }
+
+    public var disconnectedDeviceName: String? {
+        guard case .rememberedDeviceDisconnected = deviceSelectionReason else { return nil }
+        return UserDefaults.standard.string(forKey: selectedDeviceNameKey)
     }
 
     public func bootstrap() {
@@ -51,7 +81,7 @@ public final class SetupStore: ObservableObject {
             runSetup()
             return
         }
-        if status.provisioningReady {
+        if selectedDeviceProvisioningReady {
             runProvisioning()
             return
         }
@@ -69,7 +99,8 @@ public final class SetupStore: ObservableObject {
                 let result = try await engine.setup()
                 logs.append(.init(stage: "setup", result: result))
             }
-            if next.provisioningReady {
+            applyDeviceSelection(from: next)
+            if selectedDeviceProvisioningReady {
                 try await runProvisioningBody()
             } else {
                 routeAfterDoctor(next)
@@ -86,7 +117,7 @@ public final class SetupStore: ObservableObject {
             logs.append(.init(stage: "build", result: buildResult))
             completedInstallStages.insert(.installIOSSim)
             completedInstallStages.insert(.installRuntime)
-            let deviceResult = try await engine.provisionDevice(selectedDeviceIdentifier: selectedDeviceIdentifier)
+            let deviceResult = try await engine.provisionDevice(selectedDeviceIdentifier: try selectedDeviceIdentifierForOperation())
             logs.append(.init(stage: "device", result: deviceResult))
             completedInstallStages.insert(.verify)
             phase = .verifying
@@ -106,6 +137,18 @@ public final class SetupStore: ObservableObject {
     public func showDashboard() {
         UserDefaults.standard.set(true, forKey: onboardingKey)
         phase = .complete
+    }
+
+    public func selectDevice(identifier: String) {
+        guard let status,
+              let device = status.device.devices.first(where: { $0.selectionIdentifier == identifier }) else {
+            selectedDeviceIdentifier = nil
+            return
+        }
+        selectedDeviceIdentifier = device.selectionIdentifier
+        deviceSelectionReason = .rememberedDeviceConnected
+        UserDefaults.standard.set(device.selectionIdentifier, forKey: selectedDeviceKey)
+        UserDefaults.standard.set(device.name, forKey: selectedDeviceNameKey)
     }
 
     private func runSetup() {
@@ -129,7 +172,7 @@ public final class SetupStore: ObservableObject {
 
     private func runProvisioningBody() async throws {
         completedInstallStages.insert(.installIOSSim)
-        let result = try await engine.provisionDevice(selectedDeviceIdentifier: selectedDeviceIdentifier)
+        let result = try await engine.provisionDevice(selectedDeviceIdentifier: try selectedDeviceIdentifierForOperation())
         logs.append(.init(stage: "device", result: result))
         completedInstallStages.insert(.installRuntime)
         phase = .verifying
@@ -140,17 +183,8 @@ public final class SetupStore: ObservableObject {
     }
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
-        if status.device.devices.count == 1 {
-            selectedDeviceIdentifier = status.device.devices[0].identifier
-        } else if status.device.devices.count > 1 {
-            let knownIdentifiers = Set(status.device.devices.map(\.identifier))
-            if selectedDeviceIdentifier.map({ !knownIdentifiers.contains($0) }) ?? true {
-                selectedDeviceIdentifier = status.device.devices[0].identifier
-            }
-        } else if status.device.devices.isEmpty {
-            selectedDeviceIdentifier = nil
-        }
-        if status.setupCompleteForDashboard || onboardingCompleted {
+        applyDeviceSelection(from: status)
+        if (status.mac.ready && selectedDeviceProvisioningReady && status.runtimeActionChecks.isEmpty) || onboardingCompleted {
             phase = .complete
             return
         }
@@ -171,6 +205,44 @@ public final class SetupStore: ObservableObject {
             phase = .complete
             UserDefaults.standard.set(true, forKey: onboardingKey)
         }
+    }
+
+    private func applyDeviceSelection(from status: DoctorStatus) {
+        let remembered = UserDefaults.standard.string(forKey: selectedDeviceKey)
+        let rememberedName = UserDefaults.standard.string(forKey: selectedDeviceNameKey)
+        let result = DeviceSelectionPolicy.resolve(
+            devices: status.device.devices,
+            rememberedIdentifier: remembered,
+            rememberedName: rememberedName
+        )
+        selectedDeviceIdentifier = result.selectedIdentifier
+        deviceSelectionReason = result.reason
+        if let selectedDevice = status.device.devices.first(where: { $0.selectionIdentifier == result.selectedIdentifier }) {
+            UserDefaults.standard.set(selectedDevice.selectionIdentifier, forKey: selectedDeviceKey)
+            UserDefaults.standard.set(selectedDevice.name, forKey: selectedDeviceNameKey)
+        }
+    }
+
+    private func selectedDeviceIdentifierForOperation() throws -> String {
+        guard let status else {
+            throw selectionFailure("DEVICE_SELECTION_REQUIRED: refresh device status before provisioning.")
+        }
+        let liveMatches = status.device.devices.filter { $0.selectionIdentifier == selectedDeviceIdentifier }
+        guard let selected = liveMatches.first, liveMatches.count == 1 else {
+            if status.device.devices.isEmpty {
+                let name = UserDefaults.standard.string(forKey: selectedDeviceNameKey) ?? "this iPhone"
+                throw selectionFailure("IPHONE_DISCONNECTED: Reconnect \(name) or choose another device.")
+            }
+            throw selectionFailure("DEVICE_SELECTION_REQUIRED: choose one connected iPhone before provisioning.")
+        }
+        return selected.selectionIdentifier
+    }
+
+    private func selectionFailure(_ message: String) -> ProcessFailure {
+        ProcessFailure(
+            commandName: "device-selection",
+            result: ProcessResult(exitCode: 2, stdout: "", stderr: message)
+        )
     }
 
     private func runCancellable(stage: SetupPhase, operation: @escaping @MainActor () async throws -> Void) {
@@ -217,6 +289,27 @@ public final class SetupStore: ObservableObject {
             return SetupError(
                 headline: "IOSSim could not install on this iPhone.",
                 recovery: "Unlock your iPhone and try again.",
+                details: result.combinedOutput
+            )
+        }
+        if lower.contains("iphone_disconnected") || lower.contains("iphone disconnected") {
+            return SetupError(
+                headline: "iPhone Disconnected",
+                recovery: "Reconnect the selected iPhone or choose another device.",
+                details: result.combinedOutput
+            )
+        }
+        if lower.contains("device_selection_required") {
+            return SetupError(
+                headline: "Choose an iPhone",
+                recovery: "Select the connected iPhone you want IOSSim to set up, then try again.",
+                details: result.combinedOutput
+            )
+        }
+        if lower.contains("device_not_in_profile") || lower.contains("artifact_eligibility") {
+            return SetupError(
+                headline: "This iPhone is not authorized for this IOSSim build.",
+                recovery: "Use an iPhone included in the bundled provisioning profile or create a new signed build for this device.",
                 details: result.combinedOutput
             )
         }

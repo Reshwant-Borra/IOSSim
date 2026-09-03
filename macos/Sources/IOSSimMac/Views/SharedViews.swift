@@ -133,3 +133,61 @@ struct DiagnosticsView: View {
         """
     }
 }
+
+struct DevicePickerSheet: View {
+    @EnvironmentObject private var store: SetupStore
+    @Binding var isPresented: Bool
+    @State private var pendingIdentifier: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Choose an iPhone")
+                .font(.title2.weight(.semibold))
+            if let devices = store.status?.device.devices, !devices.isEmpty {
+                Picker("iPhone", selection: selectionBinding) {
+                    ForEach(devices) { device in
+                        Text(deviceLabel(device)).tag(Optional(device.selectionIdentifier))
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .accessibilityLabel("Choose an iPhone")
+            } else {
+                Text("No iPhone Connected")
+                    .font(.headline)
+                Text("Connect and unlock an iPhone to continue.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isPresented = false
+                }
+                Button("Use This iPhone") {
+                    if let pendingIdentifier {
+                        store.selectDevice(identifier: pendingIdentifier)
+                    }
+                    isPresented = false
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(pendingIdentifier == nil)
+            }
+        }
+        .padding(24)
+        .frame(width: 460, height: 340)
+        .onAppear {
+            pendingIdentifier = store.selectedDevice?.selectionIdentifier ?? store.status?.device.devices.first?.selectionIdentifier
+        }
+    }
+
+    private var selectionBinding: Binding<String?> {
+        Binding(
+            get: { pendingIdentifier },
+            set: { pendingIdentifier = $0 }
+        )
+    }
+
+    private func deviceLabel(_ device: DetectedDevice) -> String {
+        [device.name, device.osVersion.map { "iOS \($0)" }].compactMap { $0 }.joined(separator: " - ")
+    }
+}

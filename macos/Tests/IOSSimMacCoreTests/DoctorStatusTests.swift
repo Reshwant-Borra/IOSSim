@@ -52,6 +52,23 @@ final class DoctorStatusTests: XCTestCase {
         XCTAssertEqual(StatusInterpreter.deviceReadiness(from: status(runtimeName: "PAIRING MATERIAL")), .pairingRequired)
     }
 
+    func testRequiredActionsDeduplicateBySemanticKindWithStableOrdering() {
+        let checks: [DoctorCheck] = [
+            .init(state: .action, component: "Runtime", name: "PAIRING MATERIAL", action: "Open IOSSim on your iPhone and complete the device pairing step.", requiredFor: "device"),
+            .init(state: .action, component: "Runtime", name: "LocalDevVPN", action: "Open LocalDevVPN on your iPhone and approve Apple's VPN configuration prompt.", requiredFor: "device"),
+            .init(state: .action, component: "Runtime", name: "RPPairing", action: "Open IOSSim on your iPhone and complete the device pairing step.", requiredFor: "device"),
+            .init(state: .action, component: "Device", name: "connected iPhone", action: "Connect and unlock an iPhone.", requiredFor: "device"),
+            .init(state: .action, component: "Device", name: "device trusted", action: "Unlock the iPhone and trust this Mac.", requiredFor: "device")
+        ]
+        let actions = DoctorStatus.canonicalRequiredActions(from: checks)
+        XCTAssertEqual(actions.map(\.kind), [
+            .connectUnlockDevice,
+            .trustComputer,
+            .enableLocalDevVPN,
+            .importRPPairing
+        ])
+    }
+
     func testRedaction() {
         let input = "token=abcdef password: hunter2 email me@example.com key 0123456789abcdef0123456789abcdef"
         let output = Redactor.redact(input)

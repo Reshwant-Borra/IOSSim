@@ -49,6 +49,16 @@ public enum RuntimeProvisioning {
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }
 
+    public static func devicectlForbidden() -> Bool {
+        devicectlForbidden(environment: ProcessInfo.processInfo.environment)
+    }
+
+    public static func devicectlForbidden(environment env: [String: String]) -> Bool {
+        return ["IOSSIM_FORBID_DEVICETCTL", "IOSSIM_NO_DEVICETCTL"].contains { key in
+            ["1", "true", "TRUE", "yes", "YES"].contains(env[key] ?? "")
+        }
+    }
+
     public static func shortIdentifier(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "unknown" }
         if value.count <= 10 { return value }
@@ -58,8 +68,94 @@ public enum RuntimeProvisioning {
     }
 }
 
+public enum ProvisioningBackendKind: String, Sendable {
+    case devicectl
+    case idevice
+
+    public static func selected() -> ProvisioningBackendKind {
+        let raw = ProcessInfo.processInfo.environment["IOSSIM_DEVICE_BACKEND"]?.lowercased()
+        if raw == "idevice" {
+            return .idevice
+        }
+        return .devicectl
+    }
+}
+
+public protocol DeviceProvisioningBackend: Sendable {
+    func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice]
+    func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String?
+    func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool?
+    func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult
+}
+
+public enum DeviceProvisioningBackendFactory {
+    public static func makeSelectedBackend() -> any DeviceProvisioningBackend {
+        switch ProvisioningBackendKind.selected() {
+        case .devicectl:
+            return DevicectlProvisioningBackend()
+        case .idevice:
+            return IdeviceProvisioningBackend()
+        }
+    }
+}
+
+public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
+    public init() {}
+
+    public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
+        []
+    }
+
+    public func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
+        nil
+    }
+
+    public func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
+        nil
+    }
+
+    public func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
+        ProcessResult(
+            exitCode: 78,
+            stdout: "",
+            stderr: "IDEVICE_BACKEND_UNAVAILABLE: host-side idevice provisioning requires a macOS idevice FFI library; the current bundled library is iOS-only."
+        )
+    }
+}
+
 public enum AppleDeviceTool {
     public static func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
+        await DeviceProvisioningBackendFactory.makeSelectedBackend().discoverDevices(context: context)
+    }
+
+    public static func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
+        await DeviceProvisioningBackendFactory.makeSelectedBackend().rawDeviceIdentifier(matching: selector, context: context)
+    }
+
+    public static func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
+        await DeviceProvisioningBackendFactory.makeSelectedBackend().isAppInstalled(
+            bundleIdentifier: bundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        )
+    }
+
+    public static func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
+        try await DeviceProvisioningBackendFactory.makeSelectedBackend().install(
+            component: component,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        )
+    }
+}
+
+public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
+    public init() {}
+
+    public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
+        guard !RuntimeProvisioning.devicectlForbidden() else {
+            return []
+        }
         guard let xcrun = RuntimeProvisioning.xcrunURL() else {
             return []
         }
@@ -96,29 +192,42 @@ public enum AppleDeviceTool {
               let deviceItems = resultObject["devices"] as? [[String: Any]] else {
             return []
         }
-        return deviceItems.compactMap { item -> DetectedDevice? in
+        var candidates: [(device: DetectedDevice, rawIdentifier: String)] = []
+        for item in deviceItems {
             let properties = item["deviceProperties"] as? [String: Any] ?? [:]
             let hardware = item["hardwareProperties"] as? [String: Any] ?? [:]
             let connection = item["connectionProperties"] as? [String: Any] ?? [:]
             let deviceType = hardware["deviceType"] as? String
             let platform = hardware["platform"] as? String
             guard deviceType == "iPhone" || platform == "iOS" else {
-                return nil
+                continue
             }
             let rawIdentifier = (item["identifier"] as? String) ?? (hardware["udid"] as? String)
-            return DetectedDevice(
+            guard let rawIdentifier else { continue }
+            candidates.append((DetectedDevice(
                 name: (properties["name"] as? String) ?? (hardware["marketingName"] as? String) ?? "iPhone",
                 identifier: RuntimeProvisioning.shortIdentifier(rawIdentifier),
+                selectionIdentifier: rawIdentifier,
                 udidRedacted: RuntimeProvisioning.shortIdentifier(hardware["udid"] as? String),
                 osVersion: properties["osVersionNumber"] as? String,
                 developerModeStatus: properties["developerModeStatus"] as? String,
                 pairingState: connection["pairingState"] as? String,
                 tunnelState: connection["tunnelState"] as? String
-            )
+            ), rawIdentifier))
         }
+        var liveDevices: [DetectedDevice] = []
+        for candidate in candidates {
+            if await canReadLockState(rawDeviceIdentifier: candidate.rawIdentifier, context: context) {
+                liveDevices.append(candidate.device)
+            }
+        }
+        return liveDevices
     }
 
-    public static func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
+    public func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
+        guard !RuntimeProvisioning.devicectlForbidden() else {
+            return nil
+        }
         guard let xcrun = RuntimeProvisioning.xcrunURL() else {
             return nil
         }
@@ -163,19 +272,65 @@ public enum AppleDeviceTool {
                 connection["pairingState"] as? String == "paired" && properties["developerModeStatus"] as? String == "enabled"
             )
         }.filter { $0.ready }
-        guard !ready.isEmpty else { return nil }
         guard let selector, !selector.isEmpty else {
-            return ready.count == 1 ? ready[0].raw : nil
+            return nil
         }
-        let wanted = selector.lowercased()
-        return ready.first {
-            $0.redacted.lowercased().contains(wanted) ||
-            $0.raw.lowercased().contains(wanted) ||
-            $0.name.lowercased() == wanted
-        }?.raw
+        guard ready.filter({ $0.raw == selector }).count == 1 else { return nil }
+        return await canReadLockState(rawDeviceIdentifier: selector, context: context) ? selector : nil
     }
 
-    public static func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
+    public func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
+        guard !RuntimeProvisioning.devicectlForbidden() else {
+            return nil
+        }
+        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+            return nil
+        }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-app-lookup-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let jsonURL = temporaryDirectory.appendingPathComponent("apps.json")
+        let result = try? await context.runner.run(
+            executableURL: xcrun,
+            arguments: [
+                "devicectl",
+                "device",
+                "info",
+                "apps",
+                "--device",
+                rawDeviceIdentifier,
+                "--bundle-id",
+                bundleIdentifier,
+                "--timeout",
+                "10",
+                "--json-output",
+                jsonURL.path,
+                "--quiet"
+            ],
+            workingDirectory: temporaryDirectory,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+        guard result?.exitCode == 0,
+              let data = try? Data(contentsOf: jsonURL),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let resultObject = raw["result"] as? [String: Any],
+              let apps = resultObject["apps"] as? [[String: Any]] else {
+            return nil
+        }
+        return !apps.isEmpty
+    }
+
+    public func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
+        guard !RuntimeProvisioning.devicectlForbidden() else {
+            return ProcessResult(exitCode: 78, stdout: "", stderr: "DEVICETCTL_FORBIDDEN: devicectl backend is disabled for this run.")
+        }
         guard let xcrun = RuntimeProvisioning.xcrunURL() else {
             return ProcessResult(exitCode: 127, stdout: "", stderr: "Apple development support required: /usr/bin/xcrun is unavailable.")
         }
@@ -197,5 +352,41 @@ public enum AppleDeviceTool {
             workingDirectory: context.resourcesURL,
             environment: RuntimeProvisioning.deterministicEnvironment()
         )
+    }
+
+    private func canReadLockState(rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool {
+        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+            return false
+        }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-lockstate-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+        let jsonURL = temporaryDirectory.appendingPathComponent("lockstate.json")
+        let result = try? await context.runner.run(
+            executableURL: xcrun,
+            arguments: [
+                "devicectl",
+                "device",
+                "info",
+                "lockState",
+                "--device",
+                rawDeviceIdentifier,
+                "--timeout",
+                "5",
+                "--json-output",
+                jsonURL.path,
+                "--quiet"
+            ],
+            workingDirectory: temporaryDirectory,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+        return result?.exitCode == 0
     }
 }

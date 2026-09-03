@@ -147,13 +147,14 @@ struct MacCheckView: View {
             Text("Checking this Mac...")
                 .font(.title2.weight(.semibold))
             FriendlyCheckRow(title: "macOS supported", state: rowState(component: "Mac"))
-            FriendlyCheckRow(title: "Required Apple tools ready", state: rowState(component: "Xcode"))
+            FriendlyCheckRow(title: "Required Apple tools ready", state: rowState(component: "Apple Tooling"))
             FriendlyCheckRow(title: "IOSSim components ready", state: componentReadiness)
         }
     }
 
     private func rowState(component: String) -> CheckState {
-        guard let checks = store.status?.checks.filter({ $0.component == component }), !checks.isEmpty else {
+        let equivalentComponents: Set<String> = component == "Apple Tooling" ? ["Apple Tooling", "Xcode"] : [component]
+        guard let checks = store.status?.checks.filter({ equivalentComponents.contains($0.component) }), !checks.isEmpty else {
             return store.isRunning ? .skip : .warn
         }
         return checks.contains { $0.state == .fail || $0.state == .action } ? .action : .pass
@@ -167,29 +168,56 @@ struct MacCheckView: View {
 
 struct DeviceConnectView: View {
     @EnvironmentObject private var store: SetupStore
+    @State private var showingDevicePicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Connect your iPhone")
+            Text(title)
                 .font(.title2.weight(.semibold))
-            Text("Connect your iPhone to this Mac using a USB cable and unlock it.")
+            Text(message)
                 .foregroundStyle(.secondary)
             if let devices = store.status?.device.devices, devices.count > 1 {
-                Text("Choose the iPhone to set up.")
-                    .foregroundStyle(.secondary)
-                Picker("iPhone", selection: $store.selectedDeviceIdentifier) {
-                    ForEach(devices) { device in
-                        Text(deviceLabel(device)).tag(Optional(device.identifier))
-                    }
+                if let device = store.selectedDevice {
+                    FriendlyCheckRow(title: "Selected iPhone", detail: deviceLabel(device), state: .pass)
+                } else {
+                    FriendlyCheckRow(title: "Choose an iPhone", detail: "Multiple iPhones are connected.", state: .action)
                 }
-                .pickerStyle(.radioGroup)
-                .accessibilityLabel("Select iPhone")
-            } else if let device = store.status?.primaryDevice {
+                Button("Change Device") {
+                    showingDevicePicker = true
+                }
+            } else if let device = store.selectedDevice {
                 FriendlyCheckRow(title: "iPhone detected", detail: deviceLabel(device), state: .pass)
             } else {
                 FriendlyCheckRow(title: "Waiting for iPhone...", state: .skip)
             }
         }
+        .sheet(isPresented: $showingDevicePicker) {
+            DevicePickerSheet(isPresented: $showingDevicePicker)
+                .environmentObject(store)
+        }
+    }
+
+    private var title: String {
+        if store.status?.device.devices.isEmpty == true {
+            return "No iPhone Connected"
+        }
+        if store.deviceSelectionRequired {
+            return "Choose an iPhone"
+        }
+        return "Connect your iPhone"
+    }
+
+    private var message: String {
+        if store.status?.device.devices.isEmpty == true {
+            return "Connect and unlock an iPhone to continue."
+        }
+        if let name = store.disconnectedDeviceName {
+            return "Reconnect \(name) or choose another device."
+        }
+        if store.deviceSelectionRequired {
+            return "Select the iPhone IOSSim should set up."
+        }
+        return "Connect your iPhone to this Mac using a USB cable and unlock it."
     }
 
     private func deviceLabel(_ device: DetectedDevice) -> String {
@@ -206,6 +234,15 @@ struct DeviceRequirementsView: View {
                 .font(.title2.weight(.semibold))
             ForEach(store.status?.checks.filter { $0.requiredFor == "device" && $0.component == "Device" } ?? []) { check in
                 FriendlyCheckRow(title: friendlyTitle(check), detail: friendlyDetail(check), state: check.state)
+            }
+            if let device = store.selectedDevice,
+               let eligibility = device.provisioningEligibilityStatus,
+               eligibility != .installable {
+                FriendlyCheckRow(
+                    title: "iPhone authorization",
+                    detail: "This iPhone is not yet authorized for this IOSSim build.",
+                    state: .action
+                )
             }
         }
     }

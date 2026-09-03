@@ -207,8 +207,13 @@ public enum ArtifactManifestLoader {
             }
         }
         var hasher = SHA256()
+        let rootPath = normalizedPathForRelativeHash(url.path)
         for fileURL in files.sorted(by: { $0.path < $1.path }) {
-            let relative = String(fileURL.path.dropFirst(url.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let filePath = normalizedPathForRelativeHash(fileURL.path)
+            guard filePath == rootPath || filePath.hasPrefix(rootPath + "/") else {
+                return nil
+            }
+            let relative = String(filePath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             hasher.update(data: Data(relative.utf8))
             hasher.update(data: Data([0]))
             if let target = try? FileManager.default.destinationOfSymbolicLink(atPath: fileURL.path) {
@@ -223,5 +228,15 @@ public enum ArtifactManifestLoader {
             hasher.update(data: Data([0]))
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func normalizedPathForRelativeHash(_ path: String) -> String {
+        if path == "/private/var" {
+            return "/var"
+        }
+        if path.hasPrefix("/private/var/") {
+            return "/var/" + path.dropFirst("/private/var/".count)
+        }
+        return path
     }
 }
