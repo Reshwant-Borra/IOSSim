@@ -234,6 +234,13 @@ public final class SetupStore: ObservableObject {
                 details: result.combinedOutput
             )
         }
+        if lower.contains("permission denied") || result.exitCode == 126 {
+            return SetupError(
+                headline: "IOSSim could not start its setup helper.",
+                recovery: "The development helper could not be launched. Open Diagnostics for the executable and repository checks.",
+                details: result.combinedOutput.isEmpty ? "Exit code \(result.exitCode)" : result.combinedOutput
+            )
+        }
         return SetupError(
             headline: "IOSSim could not complete \(commandName).",
             recovery: "Try again after addressing the details below.",

@@ -10,14 +10,16 @@ BUILD_ROOT="${ROOT_DIR}/.build/iossim/mac"
 APP_DIR="${BUILD_ROOT}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
+RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 
 swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" --product IOSSimMac
 BIN_PATH="$(swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" --show-bin-path)"
 
 rm -rf "${APP_DIR}"
-mkdir -p "${MACOS_DIR}"
+mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "${BIN_PATH}/IOSSimMac" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
+printf '%s\n' "${ROOT_DIR}" > "${RESOURCES_DIR}/DevelopmentRepositoryRoot.txt"
 
 cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -18,11 +18,17 @@ public struct ProcessFailure: Error, Equatable, Sendable {
 public final class ProcessRunner: @unchecked Sendable {
     public init() {}
 
-    public func run(executableURL: URL, arguments: [String], workingDirectory: URL) async throws -> ProcessResult {
+    public func run(
+        executableURL: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        environment: [String: String]? = nil
+    ) async throws -> ProcessResult {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
         process.currentDirectoryURL = workingDirectory
+        process.environment = environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
