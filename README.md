@@ -15,6 +15,11 @@ See [docs/SETUP.md](docs/SETUP.md) for the canonical developer setup flow.
 The frozen historical desktop frontend/backend implementation is preserved on
 the `desktop-legacy` branch.
 
+Some older sections below still describe the pre-split desktop workflow and
+engineering frontend/backend surfaces that remain in this tree for validation.
+For current iPhone/on-device setup, treat `./iossim` and `docs/SETUP.md` as the
+source of truth.
+
 # iOS Location Sim
 
 Free, open-source iOS location testing tool. Windows-first with macOS support, USB connection, no paid Apple Developer account required.
