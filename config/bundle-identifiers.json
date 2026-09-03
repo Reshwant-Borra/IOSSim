@@ -1,0 +1,58 @@
+{
+  "identifiers": [
+    {
+      "logicalRole": "iosMain",
+      "target": "IOSSimOnDevicePOC",
+      "bundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "installedOn": "iPhone",
+      "externallyConstrained": true,
+      "safeToChange": false,
+      "reason": "Main iPhone app signing, installation, test host, and runtime metadata depend on this identifier."
+    },
+    {
+      "logicalRole": "locationWitness",
+      "target": "IOSSimLocationWitness",
+      "bundleIdentifier": "com.iossim.location-witness",
+      "installedOn": "iPhone",
+      "externallyConstrained": true,
+      "safeToChange": false,
+      "reason": "XCUILocation tests launch this owned witness app by bundle identifier."
+    },
+    {
+      "logicalRole": "locationControlTests",
+      "target": "IOSSimLocationControlTests",
+      "bundleIdentifier": "com.iossim.location-control-tests",
+      "installedOn": "iPhone test host",
+      "externallyConstrained": true,
+      "safeToChange": false,
+      "reason": "Hosted test bundle uses the main app TEST_HOST and BUNDLE_LOADER."
+    },
+    {
+      "logicalRole": "locationControlUITests",
+      "target": "IOSSimLocationControlUITests",
+      "bundleIdentifier": "com.iossim.location-control-uitests",
+      "installedOn": "iPhone XCTest runner",
+      "externallyConstrained": true,
+      "safeToChange": false,
+      "reason": "UI-test bundle is built by AppleXCUILocationControl and generates the runner used by runtime orchestration."
+    },
+    {
+      "logicalRole": "locationControlRunner",
+      "target": "IOSSimLocationControlUITests-Runner",
+      "bundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "installedOn": "iPhone",
+      "externallyConstrained": true,
+      "safeToChange": false,
+      "reason": "Generated XCTest runner identifier is referenced by the retained supplied-RSD launch path."
+    },
+    {
+      "logicalRole": "macProvisioner",
+      "target": "IOSSimMac",
+      "bundleIdentifier": "com.iossim.mac-provisioner",
+      "installedOn": "Mac",
+      "externallyConstrained": false,
+      "safeToChange": true,
+      "reason": "Development Mac app identifier is isolated from iPhone signing and configurable with IOSSIM_MAC_BUNDLE_IDENTIFIER."
+    }
+  ]
+}

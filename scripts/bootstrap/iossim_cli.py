@@ -20,8 +20,10 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 IOS_DIR = ROOT / "ios"
+MAC_DIR = ROOT / "macos"
 IOS_PROJECT = IOS_DIR / "IOSSimOnDevicePOC.xcodeproj"
 DERIVED_DATA = IOS_DIR / ".build" / "DerivedData"
+MAC_APP_PATH = ROOT / ".build" / "iossim" / "mac" / "IOSSim.app"
 LOG_DIR = ROOT / ".build" / "iossim" / "logs"
 STATE_DIR = ROOT / ".build" / "iossim" / "state"
 LOCAL_ENV = ROOT / ".iossim.local.env"
@@ -760,6 +762,29 @@ def build_ios(runner: Runner) -> bool:
     return bool(ok)
 
 
+def build_mac_app(runner: Runner) -> bool:
+    script = MAC_DIR / "scripts" / "build_app.sh"
+    if not script.exists():
+        print_step("FAIL", "IOSSim Mac app", "macos/scripts/build_app.sh missing")
+        return False
+    return run_step(runner, "IOSSim Mac app", "build-mac-app", [str(script)])
+
+
+def test_mac_app(runner: Runner) -> bool:
+    if not (MAC_DIR / "Package.swift").exists():
+        print_step("FAIL", "Mac tests", "macos/Package.swift missing")
+        return False
+    return run_step(runner, "Mac tests", "mac-swift-test", ["swift", "test", "--package-path", str(MAC_DIR)])
+
+
+def check_bundle_identifiers(runner: Runner) -> bool:
+    script = ROOT / "scripts" / "checks" / "check_bundle_identifiers.py"
+    if not script.exists():
+        print_step("FAIL", "Bundle identifier inventory", "scripts/checks/check_bundle_identifiers.py missing")
+        return False
+    return run_step(runner, "Bundle identifier inventory", "bundle-identifier-check", [sys.executable, str(script)])
+
+
 def command_setup(args: argparse.Namespace) -> int:
     runner = Runner(verbose=args.verbose)
     print("IOSSim Setup")
@@ -800,6 +825,7 @@ def command_build(args: argparse.Namespace) -> int:
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
     ok &= build_ios(runner)
+    ok &= build_mac_app(runner)
     print("")
     print(f"Overall: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
@@ -818,7 +844,10 @@ def command_test(args: argparse.Namespace) -> int:
     print("IOSSim Test")
     print("")
     ok = True
+    ok &= check_bundle_identifiers(runner)
     ok &= run_step(runner, "POCUnitChecks", "swift-run-pocunitchecks", ["swift", "run", "--package-path", str(IOS_DIR), "POCUnitChecks"])
+    ok &= test_mac_app(runner)
+    ok &= build_mac_app(runner)
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
     cargo = discover_tool("cargo")
@@ -878,7 +907,12 @@ def command_device(args: argparse.Namespace) -> int:
     if not ok:
         print_step("FAIL", "Build required before install", "fix build failures above")
         return 1
-    device = ready_devices[0]
+    device = select_device(ready_devices, getattr(args, "device", None))
+    if not device:
+        print_step("ACTION", "Select a ready iPhone", "rerun ./iossim device --device <redacted id or device name>")
+        for item in ready_devices:
+            print(f"- {item.get('name', 'iPhone')} ({item.get('identifier', 'unknown')})")
+        return 2
     raw_id = device.get("_deviceIdentifier")
     installed = 0
     for app in built_app_paths():
@@ -905,12 +939,30 @@ def command_device(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def select_device(devices: list[dict[str, Any]], selector: str | None) -> dict[str, Any] | None:
+    if not selector:
+        if len(devices) == 1:
+            return devices[0]
+        connected = [device for device in devices if device.get("tunnelState") == "connected"]
+        return connected[0] if len(connected) == 1 else None
+    wanted = selector.strip().lower()
+    matches = [
+        device for device in devices
+        if wanted in str(device.get("identifier", "")).lower()
+        or wanted == str(device.get("name", "")).lower()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def command_info(args: argparse.Namespace) -> int:
     matrix = [
         ("macOS", "yes", "system", "13.0+", "no", "compatible Mac", "./iossim doctor"),
         ("Xcode", "yes", "Apple", "15.0+", "no", "install/sign in/accept license", "./iossim doctor"),
         ("SwiftPM package", "yes", "ios/Package.swift", "Swift tools 5.9", "n/a", "none", "swift build --package-path ios"),
         ("iOS app project", "yes", "ios/IOSSimOnDevicePOC.xcodeproj", "iOS 17 target", "n/a", "Apple signing", "./iossim build"),
+        ("Mac app", "yes", "macos/Package.swift", "macOS 13+", "yes for development app bundle", "none for ad-hoc development signing", "./iossim build"),
         ("idevice FFI", "yes", "jkcoxson/idevice pinned commit", PINNED_IDEVICE_COMMIT[:12], "yes", "Rust required", "./iossim build"),
         ("Rust iOS target", "yes", "rustup", "aarch64-apple-ios", "yes", "install rustup", "./iossim doctor"),
         ("Frontend engineering UI", "yes on main", "frontend/package.json", "Node 20+", "yes", "install Node", "npm test"),
@@ -954,6 +1006,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--verbose", action="store_true", help="print detailed command output")
         if name == "doctor":
             p.add_argument("--json", action="store_true", help="emit machine-readable status")
+        if name == "device":
+            p.add_argument("--device", help="target a ready iPhone by redacted identifier or exact device name")
         if name == "clean":
             p.add_argument("--generated", action="store_true", help="remove CLI-owned generated state")
     return parser
