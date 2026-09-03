@@ -1,5 +1,6 @@
 import Foundation
 
+#if !IOSSIM_BUNDLED_ENGINE
 public struct DevelopmentCLIEngine: IOSSimSetupEngine {
     public let cliURL: URL
     public let repositoryRoot: URL
@@ -213,3 +214,4 @@ public struct DevelopmentCLIEngine: IOSSimSetupEngine {
         return nil
     }
 }
+#endif

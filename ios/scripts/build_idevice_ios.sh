@@ -72,6 +72,7 @@ fi
 cd "${REPO_DIR}/ffi"
 BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path)" \
 IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix ${HOME}=~ --remap-path-prefix ${REPO_DIR}=idevice-src --remap-path-prefix ${CARGO_HOME:-${HOME}/.cargo}=cargo" \
 "${CARGO_BIN}" build --release --target aarch64-apple-ios --no-default-features --features "${FEATURES}"
 
 cp "${REPO_DIR}/target/aarch64-apple-ios/release/libidevice_ffi.a" "${OUT_DIR}/libidevice_ffi.a"

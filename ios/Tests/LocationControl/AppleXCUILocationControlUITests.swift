@@ -688,7 +688,7 @@ final class AppleXCUILocationControlUITests: XCTestCase {
 
   private func assertControlsDoNotOverlap(
     _ controls: [XCUIElement],
-    file: StaticString = #filePath,
+    file: StaticString = #fileID,
     line: UInt = #line
   ) {
     for index in controls.indices {

@@ -7,6 +7,15 @@ struct IOSSimMacApp: App {
 
     init() {
         let engine: any IOSSimSetupEngine
+#if IOSSIM_BUNDLED_ENGINE
+        do {
+            engine = try BundledProvisioningEngine.live()
+        } catch {
+            engine = UnavailableIOSSimSetupEngine(
+                message: "Bundled runtime damaged: IOSSim cannot find its setup helper. Reinstall IOSSim."
+            )
+        }
+#else
         do {
             engine = try DevelopmentCLIEngine.live()
         } catch {
@@ -14,6 +23,7 @@ struct IOSSimMacApp: App {
                 message: "The development IOSSim CLI could not be found. Set IOSSIM_REPOSITORY_ROOT or IOSSIM_CLI_PATH for this development build."
             )
         }
+#endif
         _store = StateObject(wrappedValue: SetupStore(engine: engine))
     }
 

@@ -24,6 +24,7 @@ MAC_DIR = ROOT / "macos"
 IOS_PROJECT = IOS_DIR / "IOSSimOnDevicePOC.xcodeproj"
 DERIVED_DATA = IOS_DIR / ".build" / "DerivedData"
 MAC_APP_PATH = ROOT / ".build" / "iossim" / "mac" / "IOSSim.app"
+SELF_CONTAINED_APP_PATH = ROOT / ".build" / "iossim" / "self-contained" / "IOSSim.app"
 LOG_DIR = ROOT / ".build" / "iossim" / "logs"
 STATE_DIR = ROOT / ".build" / "iossim" / "state"
 LOCAL_ENV = ROOT / ".iossim.local.env"
@@ -33,6 +34,13 @@ MIN_MACOS = (13, 0, 0)
 MIN_XCODE = (15, 0, 0)
 MIN_NODE = (20, 0, 0)
 MIN_PYTHON = (3, 11, 0)
+HELPER_SCHEMA_VERSION = 1
+MAC_VERSION = "0.1"
+PROTECTED_BUNDLE_IDS = {
+    "iosMain": "com.iossim.on-device-dvt-poc",
+    "locationWitness": "com.iossim.location-witness",
+    "locationControlRunner": "com.iossim.location-control-uitests.xctrunner",
+}
 
 
 SENSITIVE_PATTERNS = [
@@ -83,6 +91,35 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_tree(path: Path) -> str:
+    h = hashlib.sha256()
+    files: list[Path] = []
+    for root, dirs, names in os.walk(path):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        for name in names:
+            if name.startswith("."):
+                continue
+            files.append(Path(root) / name)
+    for file in sorted(files):
+        relative = file.relative_to(path).as_posix()
+        h.update(relative.encode("utf-8"))
+        h.update(b"\0")
+        if file.is_symlink():
+            h.update(b"symlink")
+            h.update(b"\0")
+            h.update(os.readlink(file).encode("utf-8"))
+        else:
+            with file.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def sha256_path(path: Path) -> str:
+    return sha256_tree(path) if path.is_dir() else sha256_file(path)
 
 
 def load_local_env() -> dict[str, str]:
@@ -744,20 +781,51 @@ def verify_idevice(runner: Runner) -> bool:
     return run_step(runner, "Verify idevice FFI symbols", "verify-idevice-symbols", [str(IOS_DIR / "scripts" / "verify_idevice_symbols.sh")])
 
 
-def build_ios(runner: Runner) -> bool:
+def build_ios(runner: Runner, configuration: str = "Debug", packaged: bool = False) -> bool:
     ok = True
     ok &= run_step(runner, "Swift package build", "swift-build", ["swift", "build", "--package-path", str(IOS_DIR)])
+    build_settings: list[str] = []
+    if packaged:
+        build_settings = [
+            "DEBUG_INFORMATION_FORMAT=",
+            "GCC_GENERATE_DEBUGGING_SYMBOLS=NO",
+            "SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO",
+            f"OTHER_SWIFT_FLAGS=$(inherited) -enable-experimental-concise-pound-file -file-prefix-map {ROOT}=IOSSim -debug-prefix-map {ROOT}=IOSSim -file-compilation-dir IOSSim",
+            "COPY_PHASE_STRIP=YES",
+            "STRIP_INSTALLED_PRODUCT=YES",
+            "DEPLOYMENT_POSTPROCESSING=YES",
+        ]
     ok &= run_step(
         runner,
-        "Generic iOS Debug app build",
-        "xcodebuild-iossim",
-        xcodebuild_args("-scheme", "IOSSimOnDevicePOC", "-configuration", "Debug", "-destination", "generic/platform=iOS", "build"),
+        f"Generic iOS {configuration} app build",
+        f"xcodebuild-iossim-{configuration.lower()}",
+        xcodebuild_args(
+            "-scheme",
+            "IOSSimOnDevicePOC",
+            "-configuration",
+            configuration,
+            "-destination",
+            "generic/platform=iOS",
+            *(["clean"] if packaged else []),
+            "build",
+            *build_settings,
+        ),
     )
     ok &= run_step(
         runner,
         "Internal app/Witness/XCUILocation runner build",
-        "xcodebuild-xcuilocation-runner",
-        xcodebuild_args("-scheme", "AppleXCUILocationControl", "-configuration", "Debug", "-destination", "generic/platform=iOS", "build-for-testing"),
+        f"xcodebuild-xcuilocation-runner-{configuration.lower()}",
+        xcodebuild_args(
+            "-scheme",
+            "AppleXCUILocationControl",
+            "-configuration",
+            configuration,
+            "-destination",
+            "generic/platform=iOS",
+            *(["clean"] if packaged else []),
+            "build-for-testing",
+            *build_settings,
+        ),
     )
     return bool(ok)
 
@@ -875,13 +943,439 @@ def command_test(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
-def built_app_paths() -> list[Path]:
-    product = DERIVED_DATA / "Build" / "Products" / "Debug-iphoneos"
+def built_app_paths(configuration: str = "Debug") -> list[Path]:
+    product = DERIVED_DATA / "Build" / "Products" / f"{configuration}-iphoneos"
     return [
         product / "IOSSim DVT POC.app",
         product / "IOSSimLocationWitness.app",
         product / "IOSSimLocationControlUITests-Runner.app",
     ]
+
+
+def bundled_artifact_specs(configuration: str = "Release") -> list[tuple[str, str, Path]]:
+    apps = built_app_paths(configuration)
+    return [
+        ("iosMain", PROTECTED_BUNDLE_IDS["iosMain"], apps[0]),
+        ("locationWitness", PROTECTED_BUNDLE_IDS["locationWitness"], apps[1]),
+        ("locationControlRunner", PROTECTED_BUNDLE_IDS["locationControlRunner"], apps[2]),
+    ]
+
+
+def read_bundle_info(app: Path) -> dict[str, Any]:
+    info = app / "Info.plist"
+    if not info.exists():
+        raise RuntimeError(f"{app} is missing Info.plist")
+    with info.open("rb") as fh:
+        return plistlib.load(fh)
+
+
+def first_apple_development_identity() -> str | None:
+    result = subprocess.run(
+        ["security", "find-identity", "-v", "-p", "codesigning"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if "Apple Development" not in line:
+            continue
+        match = re.search(r"\b([A-Fa-f0-9]{40})\b", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def replace_bytes_same_length(data: bytes, needle: bytes, replacement_text: str) -> bytes:
+    if needle not in data:
+        return data
+    replacement = replacement_text.encode("utf-8")
+    if len(replacement) > len(needle):
+        replacement = replacement[: len(needle)]
+    replacement = replacement.ljust(len(needle), b"_")
+    return data.replace(needle, replacement)
+
+
+def sanitize_packaged_artifact_paths(path: Path) -> int:
+    replacements = [
+        (str(ROOT).encode("utf-8"), "IOSSimSourceRoot"),
+        (str(ROOT.parent).encode("utf-8"), "IOSSimSourceParent"),
+        (str(Path.home()).encode("utf-8"), "IOSSimHome"),
+    ]
+    changed = 0
+    for file in path.rglob("*"):
+        if not file.is_file() or file.is_symlink():
+            continue
+        try:
+            data = file.read_bytes()
+        except OSError:
+            continue
+        updated = data
+        for needle, replacement in replacements:
+            updated = replace_bytes_same_length(updated, needle, replacement)
+        if updated != data:
+            file.write_bytes(updated)
+            changed += 1
+    return changed
+
+
+def resign_ios_artifact(runner: Runner, app: Path) -> bool:
+    identity = first_apple_development_identity()
+    if not identity:
+        print_step("FAIL", "Re-sign sanitized iPhone artifact", "Apple Development identity unavailable")
+        return False
+    signables: list[Path] = []
+    for child in app.rglob("*"):
+        if child.suffix in {".framework", ".xctest"} or child.suffix == ".dylib":
+            signables.append(child)
+    signables.append(app)
+    ok = True
+    for target in sorted(signables, key=lambda item: len(item.parts), reverse=True):
+        if not target.exists():
+            continue
+        ok &= run_step(
+            runner,
+            f"Re-sign {target.name}",
+            f"resign-ios-{safe_name(target.name)}",
+            [
+                "codesign",
+                "--force",
+                "--sign",
+                identity,
+                "--timestamp=none",
+                "--preserve-metadata=identifier,entitlements,flags",
+                "--generate-entitlement-der",
+                str(target),
+            ],
+        )
+    ok &= run_step(
+        runner,
+        f"Verify {app.name} signature",
+        f"verify-ios-signature-{safe_name(app.name)}",
+        ["codesign", "--verify", "--deep", "--strict", str(app)],
+    )
+    return bool(ok)
+
+
+def source_commit() -> str:
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def source_dirty() -> bool:
+    result = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return bool(result.stdout.strip()) if result.returncode == 0 else True
+
+
+def build_self_contained_macos_products(runner: Runner) -> bool:
+    args = [
+        "swift",
+        "build",
+        "--package-path",
+        str(MAC_DIR),
+        "-c",
+        "release",
+        "-Xswiftc",
+        "-D",
+        "-Xswiftc",
+        "IOSSIM_BUNDLED_ENGINE",
+    ]
+    ok = True
+    ok &= run_step(runner, "Self-contained Mac GUI", "swift-build-mac-bundled", args + ["--product", "IOSSimMac"])
+    ok &= run_step(runner, "Compiled provisioning helper", "swift-build-provisioner", args + ["--product", "IOSSimProvisioner"])
+    return bool(ok)
+
+
+def macos_bin_path(runner: Runner) -> Path:
+    result = runner.run(
+        "swift-show-mac-bin-path",
+        ["swift", "build", "--package-path", str(MAC_DIR), "-c", "release", "--show-bin-path"],
+    )
+    return Path(result.stdout.strip())
+
+
+def write_app_info_plist(contents_dir: Path) -> None:
+    plist = {
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleDisplayName": "IOSSim",
+        "CFBundleExecutable": "IOSSim",
+        "CFBundleIdentifier": "com.iossim.mac-provisioner",
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleName": "IOSSim",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": MAC_VERSION,
+        "CFBundleVersion": "1",
+        "LSApplicationCategoryType": "public.app-category.developer-tools",
+        "LSMinimumSystemVersion": "13.0",
+        "NSHighResolutionCapable": True,
+    }
+    with (contents_dir / "Info.plist").open("wb") as fh:
+        plistlib.dump(plist, fh)
+
+
+def assemble_self_contained_app(runner: Runner, ios_configuration: str = "Release") -> Path:
+    bin_path = macos_bin_path(runner)
+    app_dir = SELF_CONTAINED_APP_PATH
+    contents = app_dir / "Contents"
+    macos_dir = contents / "MacOS"
+    resources = contents / "Resources"
+    device_artifacts = resources / "DeviceArtifacts"
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+    macos_dir.mkdir(parents=True)
+    device_artifacts.mkdir(parents=True)
+
+    shutil.copy2(bin_path / "IOSSimMac", macos_dir / "IOSSim")
+    shutil.copy2(bin_path / "IOSSimProvisioner", macos_dir / "IOSSimProvisioner")
+    os.chmod(macos_dir / "IOSSim", 0o755)
+    os.chmod(macos_dir / "IOSSimProvisioner", 0o755)
+    write_app_info_plist(contents)
+
+    components: list[dict[str, Any]] = []
+    for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
+        if not source.exists():
+            raise RuntimeError(f"required iPhone artifact is missing: {source}")
+        info = read_bundle_info(source)
+        actual_bundle_id = info.get("CFBundleIdentifier")
+        if actual_bundle_id != expected_bundle_id:
+            raise RuntimeError(f"{source.name} bundle ID is {actual_bundle_id}, expected {expected_bundle_id}")
+        destination = device_artifacts / source.name
+        shutil.copytree(source, destination, symlinks=True)
+        for dsym in destination.rglob("*.dSYM"):
+            if dsym.is_dir():
+                shutil.rmtree(dsym)
+            else:
+                dsym.unlink()
+        sanitized_count = sanitize_packaged_artifact_paths(destination)
+        if sanitized_count:
+            print_step("PASS", f"Sanitized source paths in {source.name}", f"{sanitized_count} file(s)")
+            if not resign_ios_artifact(runner, destination):
+                raise RuntimeError(f"failed to re-sign sanitized iPhone artifact: {destination.name}")
+        relative = destination.relative_to(resources).as_posix()
+        components.append(
+            {
+                "role": role,
+                "bundleIdentifier": expected_bundle_id,
+                "version": str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "unknown"),
+                "relativePath": relative,
+                "sha256": sha256_path(destination),
+            }
+        )
+
+    manifest = {
+        "schemaVersion": 1,
+        "release": {
+            "sourceCommit": source_commit(),
+            "sourceDirty": source_dirty(),
+            "buildTimestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "macVersion": MAC_VERSION,
+            "helperSchemaVersion": HELPER_SCHEMA_VERSION,
+        },
+        "components": components,
+    }
+    (device_artifacts / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return app_dir
+
+
+def sign_self_contained_app(runner: Runner, app_dir: Path) -> bool:
+    identity = os.environ.get("IOSSIM_MAC_CODE_SIGN_IDENTITY", "-") or "-"
+    ok = True
+    for executable in [app_dir / "Contents" / "MacOS" / "IOSSimProvisioner", app_dir / "Contents" / "MacOS" / "IOSSim"]:
+        ok &= run_step(runner, f"Strip {executable.name}", f"strip-{executable.name}", ["/usr/bin/strip", "-x", str(executable)])
+        ok &= run_step(runner, f"Sign {executable.name}", f"codesign-{executable.name}", ["codesign", "--force", "--sign", identity, str(executable)])
+    ok &= run_step(runner, "Sign IOSSim.app", "codesign-iossim-app", ["codesign", "--force", "--deep", "--sign", identity, str(app_dir)])
+    ok &= run_step(runner, "Verify IOSSim.app signature", "codesign-verify-iossim-app", ["codesign", "--verify", "--deep", "--strict", str(app_dir)])
+    return bool(ok)
+
+
+def command_package_app(args: argparse.Namespace) -> int:
+    runner = Runner(verbose=args.verbose)
+    print("IOSSim Self-Contained App Package")
+    print("")
+    dirty = source_dirty()
+    if dirty:
+        print_step("WARN", "Repository state", "working tree has uncommitted changes; manifest will record sourceDirty=true")
+    else:
+        print_step("PASS", "Repository state", "clean")
+    ok = True
+    ok &= check_bundle_identifiers(runner)
+    ok &= build_idevice(runner)
+    ok &= verify_idevice(runner)
+    ok &= build_ios(runner, configuration="Release", packaged=True)
+    ok &= build_self_contained_macos_products(runner)
+    if not ok:
+        print("")
+        print("Overall: FAIL")
+        return 1
+    try:
+        app_dir = assemble_self_contained_app(runner, ios_configuration="Release")
+        print_step("PASS", "Assemble self-contained IOSSim.app", str(app_dir))
+    except Exception as exc:
+        print_step("FAIL", "Assemble self-contained IOSSim.app", Redactor.redact(str(exc)))
+        return 1
+    ok &= sign_self_contained_app(runner, app_dir)
+    ok &= audit_app(app_dir, verbose=args.verbose)
+    print("")
+    print(f"App: {app_dir}")
+    print(f"Overall: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+def audit_pass(label: str, detail: str = "") -> bool:
+    print_step("PASS", label, detail or None)
+    return True
+
+
+def audit_fail(label: str, detail: str = "") -> bool:
+    print_step("FAIL", label, redact(detail) if detail else None)
+    return False
+
+
+def is_allowed_mobileprovision(path: Path, app_dir: Path) -> bool:
+    relative = path.relative_to(app_dir).as_posix()
+    return (
+        relative.startswith("Contents/Resources/DeviceArtifacts/")
+        and relative.endswith(".app/embedded.mobileprovision")
+    )
+
+
+def scan_file_for_bytes(path: Path, needles: list[bytes]) -> list[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    found: list[str] = []
+    for needle in needles:
+        if needle and needle in data:
+            found.append(needle.decode("utf-8", errors="ignore"))
+    return found
+
+
+def audit_app(app_dir: Path, verbose: bool = False) -> bool:
+    ok = True
+    contents = app_dir / "Contents"
+    macos_dir = contents / "MacOS"
+    resources = contents / "Resources"
+    manifest_path = resources / "DeviceArtifacts" / "manifest.json"
+    ok &= audit_pass("App bundle exists", str(app_dir)) if app_dir.is_dir() else audit_fail("App bundle exists", str(app_dir))
+    ok &= audit_pass("Mac executable exists", "Contents/MacOS/IOSSim") if os.access(macos_dir / "IOSSim", os.X_OK) else audit_fail("Mac executable exists", "Contents/MacOS/IOSSim")
+    ok &= audit_pass("Provisioner executable exists", "Contents/MacOS/IOSSimProvisioner") if os.access(macos_dir / "IOSSimProvisioner", os.X_OK) else audit_fail("Provisioner executable exists", "Contents/MacOS/IOSSimProvisioner")
+    ok &= audit_pass("Development repository locator absent") if not (resources / "DevelopmentRepositoryRoot.txt").exists() else audit_fail("Development repository locator absent")
+    if not manifest_path.exists():
+        ok &= audit_fail("Device artifact manifest", "missing")
+        return False
+    ok &= audit_pass("Device artifact manifest", "present")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for component in manifest.get("components", []):
+            relative = component["relativePath"]
+            artifact = resources / relative
+            expected_hash = component["sha256"]
+            expected_bundle_id = component["bundleIdentifier"]
+            actual_hash = sha256_path(artifact) if artifact.exists() else "missing"
+            ok &= audit_pass(f"Artifact hash {component['role']}", actual_hash[:12]) if actual_hash == expected_hash else audit_fail(f"Artifact hash {component['role']}", relative)
+            try:
+                info = read_bundle_info(artifact)
+                actual_bundle_id = info.get("CFBundleIdentifier")
+                ok &= audit_pass(f"Bundle ID {component['role']}", actual_bundle_id) if actual_bundle_id == expected_bundle_id else audit_fail(f"Bundle ID {component['role']}", f"{actual_bundle_id} != {expected_bundle_id}")
+            except Exception as exc:
+                ok &= audit_fail(f"Bundle ID {component.get('role', relative)}", str(exc))
+    except Exception as exc:
+        ok &= audit_fail("Device artifact manifest decode", str(exc))
+
+    forbidden_name_parts = {
+        ".git",
+        "node_modules",
+        "scripts/bootstrap",
+        "iossim_cli.py",
+        "DevelopmentRepositoryRoot.txt",
+        "RPPairing",
+        "DerivedData/Logs",
+    }
+    forbidden_suffixes = {
+        ".py",
+        ".rs",
+        ".swift",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".sh",
+        ".p12",
+        ".pem",
+        ".key",
+        ".xcresult",
+        ".dSYM",
+    }
+    source_like: list[str] = []
+    forbidden_material: list[str] = []
+    mobileprovisions: list[str] = []
+    path_needles = [
+        str(ROOT).encode("utf-8"),
+        b"/Users/rishiborra",
+        b"/Desktop/IOSSim",
+        b"DevelopmentRepositoryRoot.txt",
+        b"IOSSIM_REPOSITORY_ROOT",
+    ]
+    secret_needles = [
+        b"-----BEGIN PRIVATE KEY-----",
+        b"-----BEGIN RSA PRIVATE KEY-----",
+        b"-----BEGIN EC PRIVATE KEY-----",
+        b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        b"auth_blob =",
+        b"auth_blob:",
+        b"auth token=",
+        b"auth token:",
+        b"private_key =",
+        b"private_key:",
+        b"psk =",
+        b"psk:",
+    ]
+    path_hits: list[str] = []
+    secret_hits: list[str] = []
+    world_writable: list[str] = []
+    for path in app_dir.rglob("*"):
+        relative = path.relative_to(app_dir).as_posix()
+        if path.is_dir():
+            if any(part in relative for part in forbidden_name_parts):
+                forbidden_material.append(relative)
+            if path.suffix in forbidden_suffixes:
+                source_like.append(relative)
+            continue
+        if path.name == "embedded.mobileprovision" or path.suffix == ".mobileprovision":
+            if is_allowed_mobileprovision(path, app_dir):
+                mobileprovisions.append(relative)
+            else:
+                forbidden_material.append(relative)
+        if any(part in relative for part in forbidden_name_parts):
+            forbidden_material.append(relative)
+        if path.suffix in forbidden_suffixes:
+            source_like.append(relative)
+        mode = path.stat().st_mode
+        if mode & 0o002:
+            world_writable.append(relative)
+        path_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_bytes(path, path_needles))
+        secret_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_bytes(path, secret_needles))
+    ok &= audit_pass("No source-like files") if not source_like else audit_fail("No source-like files", ", ".join(source_like[:10]))
+    ok &= audit_pass("No forbidden development material") if not forbidden_material else audit_fail("No forbidden development material", ", ".join(sorted(set(forbidden_material))[:10]))
+    ok &= audit_pass("Allowed embedded provisioning profiles", str(len(mobileprovisions))) if mobileprovisions else audit_fail("Allowed embedded provisioning profiles", "none found in signed iPhone artifacts")
+    ok &= audit_pass("No absolute repository paths") if not path_hits else audit_fail("No absolute repository paths", "; ".join(path_hits[:10]))
+    ok &= audit_pass("No private keys/pairing/auth material") if not secret_hits else audit_fail("No private keys/pairing/auth material", "; ".join(secret_hits[:10]))
+    ok &= audit_pass("No world-writable files") if not world_writable else audit_fail("No world-writable files", ", ".join(world_writable[:10]))
+    if verbose and mobileprovisions:
+        for item in mobileprovisions:
+            print_step("INFO", "Embedded mobileprovision retained for signed iPhone artifact", item)
+    return bool(ok)
+
+
+def command_audit_app(args: argparse.Namespace) -> int:
+    app_dir = Path(args.app).expanduser().resolve()
+    print("IOSSim Self-Contained App Audit")
+    print("")
+    ok = audit_app(app_dir, verbose=args.verbose)
+    print("")
+    print(f"Overall: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
 
 
 def command_device(args: argparse.Namespace) -> int:
@@ -958,15 +1452,16 @@ def select_device(devices: list[dict[str, Any]], selector: str | None) -> dict[s
 
 def command_info(args: argparse.Namespace) -> int:
     matrix = [
-        ("macOS", "yes", "system", "13.0+", "no", "compatible Mac", "./iossim doctor"),
-        ("Xcode", "yes", "Apple", "15.0+", "no", "install/sign in/accept license", "./iossim doctor"),
-        ("SwiftPM package", "yes", "ios/Package.swift", "Swift tools 5.9", "n/a", "none", "swift build --package-path ios"),
-        ("iOS app project", "yes", "ios/IOSSimOnDevicePOC.xcodeproj", "iOS 17 target", "n/a", "Apple signing", "./iossim build"),
-        ("Mac app", "yes", "macos/Package.swift", "macOS 13+", "yes for development app bundle", "none for ad-hoc development signing", "./iossim build"),
-        ("idevice FFI", "yes", "jkcoxson/idevice pinned commit", PINNED_IDEVICE_COMMIT[:12], "yes", "Rust required", "./iossim build"),
-        ("Rust iOS target", "yes", "rustup", "aarch64-apple-ios", "yes", "install rustup", "./iossim doctor"),
-        ("Frontend engineering UI", "yes on main", "frontend/package.json", "Node 20+", "yes", "install Node", "npm test"),
-        ("Backend engineering API", "yes on main", "backend/requirements.txt", "Python 3.11+", "yes", "install Python", "pytest backend"),
+        ("macOS", "runtime", "system", "13.0+", "no", "compatible Mac", "IOSSimProvisioner doctor --json"),
+        ("xcrun/devicectl", "runtime", "Apple developer tools", "current Xcode path", "no", "install/select Apple developer tools", "IOSSimProvisioner device-status --json"),
+        ("Xcode/xcodebuild", "build-time", "Apple", "15.0+", "yes from packaged runtime", "build machine only", "./iossim package-app"),
+        ("SwiftPM package", "build-time", "ios/Package.swift and macos/Package.swift", "Swift tools 5.9", "yes from packaged runtime", "none", "./iossim build"),
+        ("iOS app project", "build-time", "ios/IOSSimOnDevicePOC.xcodeproj", "iOS 17 target", "yes from packaged runtime", "Apple signing at package time", "./iossim package-app"),
+        ("Mac app", "runtime", "compiled bundle", "macOS 13+", "n/a", "none for ad-hoc development signing", "./iossim audit-app"),
+        ("idevice FFI", "build-time", "jkcoxson/idevice pinned commit", PINNED_IDEVICE_COMMIT[:12], "yes from packaged runtime", "Rust required at build time", "./iossim build"),
+        ("Rust iOS target", "build-time", "rustup", "aarch64-apple-ios", "yes from packaged runtime", "install rustup on build machine", "./iossim doctor"),
+        ("Frontend engineering UI", "development-only", "frontend/package.json", "Node 20+", "yes from packaged runtime", "install Node for tests", "npm test"),
+        ("Backend engineering API", "development-only", "backend/requirements.txt", "Python 3.11+", "yes from packaged runtime", "install Python for tests", "pytest backend"),
         ("LocalDevVPN", "runtime", "external iPhone app", "current external app", "no", "install/approve on iPhone", "in-app diagnostics"),
         ("RPPairing", "runtime", "iPhone app Keychain", "valid plist", "no", "import in IOSSim", "in-app diagnostics"),
     ]
@@ -997,6 +1492,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("setup", "configure local dependencies and build IOSSim"),
         ("doctor", "read-only environment check"),
         ("build", "build current iPhone/on-device components"),
+        ("package-app", "build a self-contained IOSSim.app bundle"),
+        ("audit-app", "audit a self-contained IOSSim.app bundle"),
         ("test", "run current main validation suite"),
         ("device", "build and install internal device-side components"),
         ("info", "print dependency matrix"),
@@ -1008,6 +1505,8 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--json", action="store_true", help="emit machine-readable status")
         if name == "device":
             p.add_argument("--device", help="target a ready iPhone by redacted identifier or exact device name")
+        if name == "audit-app":
+            p.add_argument("app", help="path to IOSSim.app")
         if name == "clean":
             p.add_argument("--generated", action="store_true", help="remove CLI-owned generated state")
     return parser
@@ -1026,6 +1525,10 @@ def main(argv: list[str] | None = None) -> int:
         return command_setup(args)
     if args.command == "build":
         return command_build(args)
+    if args.command == "package-app":
+        return command_package_app(args)
+    if args.command == "audit-app":
+        return command_audit_app(args)
     if args.command == "test":
         return command_test(args)
     if args.command == "device":

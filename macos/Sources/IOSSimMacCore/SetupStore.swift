@@ -234,6 +234,20 @@ public final class SetupStore: ObservableObject {
                 details: result.combinedOutput
             )
         }
+        if lower.contains("bundled runtime damaged") || lower.contains("bundled artifact") || lower.contains("artifact manifest") {
+            return SetupError(
+                headline: "Bundled runtime damaged.",
+                recovery: "Required IOSSim components are missing from this application. Reinstall IOSSim.",
+                details: result.combinedOutput
+            )
+        }
+        if lower.contains("apple development support required") || lower.contains("devicectl") || lower.contains("xcrun") {
+            return SetupError(
+                headline: "Apple development support required.",
+                recovery: "Install or select Apple's developer tools required for iPhone discovery and app installation.",
+                details: result.combinedOutput
+            )
+        }
         if lower.contains("permission denied") || result.exitCode == 126 {
             return SetupError(
                 headline: "IOSSim could not start its setup helper.",

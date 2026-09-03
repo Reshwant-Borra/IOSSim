@@ -8,12 +8,17 @@ let package = Package(
     ],
     products: [
         .library(name: "IOSSimMacCore", targets: ["IOSSimMacCore"]),
-        .executable(name: "IOSSimMac", targets: ["IOSSimMac"])
+        .executable(name: "IOSSimMac", targets: ["IOSSimMac"]),
+        .executable(name: "IOSSimProvisioner", targets: ["IOSSimProvisioner"])
     ],
     targets: [
         .target(name: "IOSSimMacCore"),
         .executableTarget(
             name: "IOSSimMac",
+            dependencies: ["IOSSimMacCore"]
+        ),
+        .executableTarget(
+            name: "IOSSimProvisioner",
             dependencies: ["IOSSimMacCore"]
         ),
         .testTarget(

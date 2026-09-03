@@ -36,12 +36,22 @@ public struct DoctorCheck: Codable, Equatable, Sendable, Identifiable {
 
 public struct MacSummary: Codable, Equatable, Sendable {
     public let ready: Bool
+
+    public init(ready: Bool) {
+        self.ready = ready
+    }
 }
 
 public struct DeviceSummary: Codable, Equatable, Sendable {
     public let ready: Bool
     public let connected: Bool
     public let devices: [DetectedDevice]
+
+    public init(ready: Bool, connected: Bool, devices: [DetectedDevice]) {
+        self.ready = ready
+        self.connected = connected
+        self.devices = devices
+    }
 }
 
 public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
