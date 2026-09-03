@@ -8,6 +8,7 @@ backend/.pytest_cache/
 # Local runtime data
 backend/data/
 backend/data/drive_testing/
+ios/DiagnosticRun/
 *.log
 *.pid
 

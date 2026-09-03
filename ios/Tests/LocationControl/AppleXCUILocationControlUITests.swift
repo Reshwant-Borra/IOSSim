@@ -27,6 +27,68 @@ final class AppleXCUILocationControlUITests: XCTestCase {
     XCTAssertTrue(app.buttons["AppleLocationControls.StopRecording"].exists)
   }
 
+  func testLocationWitnessExportMetricsDoesNotTriggerStop() throws {
+    try requireXCUILocationSupport()
+    let witness = launchWitnessApp()
+    XCTAssertTrue(witness.buttons["LocationWitness.Reset"].waitForExistence(timeout: 10))
+
+    let reset = witness.buttons["LocationWitness.Reset"]
+    let start = witness.buttons["LocationWitness.Start"]
+    let stop = witness.buttons["LocationWitness.Stop"]
+    let export = witness.buttons["LocationWitness.ExportMetrics"]
+
+    assertControlsDoNotOverlap([reset, start, stop, export])
+
+    reset.tap()
+    XCTAssertFalse(export.isEnabled, "Export remains disabled before completed recording data exists.")
+
+    start.tap()
+    allowLocationIfPrompted(in: witness)
+    allowAlwaysLocationUpgradeIfPrompted()
+    let baselineSequence =
+      latestRawLocationSnapshot(in: witness, prefix: "LocationWitness")?.sequence ?? 0
+    let injectedLatitude = 37.334_456
+    let injectedLongitude = -122.008_654
+    XCUIDevice.shared.location = XCUILocation(
+      location: richLocation(
+        latitude: injectedLatitude,
+        longitude: injectedLongitude,
+        altitude: 123,
+        course: 90,
+        speed: 15.646,
+        timestamp: Date()
+      ))
+    XCTAssertNotNil(
+      waitForFreshRawLocation(
+        in: witness,
+        prefix: "LocationWitness",
+        afterSequence: baselineSequence,
+        latitude: injectedLatitude,
+        longitude: injectedLongitude,
+        timeout: 15
+      ),
+      "Witness should receive at least one raw callback before exporting."
+    )
+
+    stop.tap()
+    let status = witness.staticTexts["LocationWitness.Status"]
+    XCTAssertTrue(status.waitForExistence(timeout: 3))
+    XCTAssertEqual(status.label, "Stopped")
+    XCTAssertTrue(export.waitForExistence(timeout: 3))
+    XCTAssertTrue(export.isEnabled)
+    XCTAssertTrue(
+      ((export.value as? String) ?? "").contains("IOSSim-Witness-Metrics-"),
+      "Export button exposes a prepared JSON file name."
+    )
+
+    export.tap()
+    XCTAssertEqual(status.label, "Stopped", "Export Metrics must not change recorder state.")
+    XCTAssertTrue(
+      waitForShareSheet(in: witness, timeout: 8),
+      "Export Metrics should present the system share sheet."
+    )
+  }
+
   func testXCUILocationSinglePointMetadataControl() throws {
     try requireXCUILocationSupport()
     let app = launchApp()
@@ -624,6 +686,52 @@ final class AppleXCUILocationControlUITests: XCTestCase {
     )
   }
 
+  private func assertControlsDoNotOverlap(
+    _ controls: [XCUIElement],
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    for index in controls.indices {
+      XCTAssertTrue(controls[index].waitForExistence(timeout: 5), file: file, line: line)
+      for otherIndex in controls.indices where otherIndex > index {
+        XCTAssertFalse(
+          controls[index].frame.intersects(controls[otherIndex].frame),
+          "\(controls[index].identifier) overlaps \(controls[otherIndex].identifier)",
+          file: file,
+          line: line
+        )
+      }
+    }
+  }
+
+  private func waitForShareSheet(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+    let sharingViewService = XCUIApplication(bundleIdentifier: "com.apple.SharingViewService")
+    let uiKitActivityService = XCUIApplication(bundleIdentifier: "com.apple.UIKit.activity")
+    let end = Date().addingTimeInterval(timeout)
+    while Date() < end {
+      if app.sheets.firstMatch.exists
+        || app.navigationBars["Share"].exists
+        || app.buttons["Copy"].exists
+        || sharingViewService.state == .runningForeground
+        || sharingViewService.sheets.firstMatch.exists
+        || sharingViewService.navigationBars["Share"].exists
+        || sharingViewService.buttons["Copy"].exists
+        || sharingViewService.staticTexts["AirDrop"].exists
+        || sharingViewService.staticTexts["Messages"].exists
+        || uiKitActivityService.state == .runningForeground
+        || uiKitActivityService.sheets.firstMatch.exists
+        || uiKitActivityService.navigationBars["Share"].exists
+        || uiKitActivityService.buttons["Copy"].exists
+        || uiKitActivityService.staticTexts["AirDrop"].exists
+        || uiKitActivityService.staticTexts["Messages"].exists
+      {
+        return true
+      }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    return false
+  }
+
   private func openAppleLocationControls(in app: XCUIApplication) {
     app.tabBars.buttons["Settings"].tap()
     let link = app.buttons["Apple Location Controls"]
@@ -1142,6 +1250,7 @@ private final class RichDriveRunnerServer {
   private let port: UInt16
   private let timeoutSeconds: TimeInterval
   private var readBuffer = Data()
+  private var activeSessionID: String?
 
   init(port: UInt16, timeoutSeconds: TimeInterval) {
     self.port = port
@@ -1211,8 +1320,19 @@ private final class RichDriveRunnerServer {
         let message = try JSONDecoder().decode(RichDriveRunnerMessage.self, from: line)
         switch message.type {
         case .startSession, .ping:
+          if message.type == .startSession {
+            activeSessionID = message.sessionID
+          }
           try writeAck(sequence: message.sequence, fd: clientFD)
         case .setLocation:
+          guard acceptsSession(message.sessionID) else {
+            try writeAck(
+              sequence: message.sequence,
+              fd: clientFD,
+              status: "ERROR",
+              message: "stale session")
+            continue
+          }
           guard let sample = message.sample else {
             try writeAck(
               sequence: message.sequence, fd: clientFD, status: "ERROR", message: "missing sample")
@@ -1231,6 +1351,15 @@ private final class RichDriveRunnerServer {
             ].joined(separator: " "))
           try writeAck(sequence: message.sequence, fd: clientFD)
         case .stopSession:
+          guard acceptsSession(message.sessionID) else {
+            try writeAck(
+              sequence: message.sequence,
+              fd: clientFD,
+              status: "ERROR",
+              message: "stale session")
+            continue
+          }
+          activeSessionID = nil
           try writeAck(sequence: message.sequence, fd: clientFD)
           print("RICH_DRIVE_RUNNER_STOPPED")
           return
@@ -1239,6 +1368,11 @@ private final class RichDriveRunnerServer {
     }
 
     print("RICH_DRIVE_RUNNER_TIMEOUT")
+  }
+
+  private func acceptsSession(_ sessionID: String?) -> Bool {
+    guard let activeSessionID else { return true }
+    return sessionID == activeSessionID
   }
 
   private func acceptClient(serverFD: Int32) throws -> Int32 {

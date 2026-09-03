@@ -6,6 +6,7 @@ public enum DriveSessionState: String, Codable, Equatable, Sendable {
     case routeReady
     case driving
     case paused
+    case holding
     case completedHolding
     case stopped
 }
@@ -37,6 +38,18 @@ public struct DrivePosition: Sendable {
     public let expectedDistanceMeters: CLLocationDistance
     public let activeElapsedSeconds: TimeInterval
     public let completed: Bool
+
+    public init(
+        coordinate: CLLocationCoordinate2D,
+        expectedDistanceMeters: CLLocationDistance,
+        activeElapsedSeconds: TimeInterval,
+        completed: Bool
+    ) {
+        self.coordinate = coordinate
+        self.expectedDistanceMeters = expectedDistanceMeters
+        self.activeElapsedSeconds = activeElapsedSeconds
+        self.completed = completed
+    }
 }
 
 public final class DriveSessionController: @unchecked Sendable {
@@ -108,12 +121,52 @@ public final class DriveSessionController: @unchecked Sendable {
     public func resume(now: TimeInterval) {
         lock.lock()
         defer { lock.unlock() }
-        guard state == .paused else { return }
-        if let pauseStartedInstant {
+        if state == .paused, let pauseStartedInstant {
             accumulatedPausedDuration += max(0, now - pauseStartedInstant)
+        } else if state == .holding {
+            let activeElapsedAtHold = speedMetersPerSecond > 0
+                ? previousExpectedDistance / speedMetersPerSecond
+                : 0
+            driveStartInstant = now - activeElapsedAtHold
+            accumulatedPausedDuration = 0
+        } else {
+            return
         }
         pauseStartedInstant = nil
         state = .driving
+    }
+
+    public func holdCurrent(now: TimeInterval) -> DrivePosition? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard route != nil else { return nil }
+        let position = expectedPositionLocked(now: now)
+        pausedPosition = position
+        driveStartInstant = nil
+        pauseStartedInstant = nil
+        accumulatedPausedDuration = 0
+        state = .holding
+        return position
+    }
+
+    public func hold(position: DrivePosition) {
+        lock.lock()
+        pausedPosition = position
+        previousExpectedDistance = position.expectedDistanceMeters
+        driveStartInstant = nil
+        pauseStartedInstant = nil
+        accumulatedPausedDuration = 0
+        state = position.completed ? .completedHolding : .holding
+        lock.unlock()
+    }
+
+    public func pauseForTransition(position: DrivePosition, now: TimeInterval) {
+        lock.lock()
+        pausedPosition = position
+        previousExpectedDistance = position.expectedDistanceMeters
+        pauseStartedInstant = now
+        state = .paused
+        lock.unlock()
     }
 
     public func completeHolding(now: TimeInterval) -> DrivePosition? {
@@ -192,7 +245,7 @@ public final class DriveSessionController: @unchecked Sendable {
         switch state {
         case .idle, .routeReady, .stopped:
             return pausedPosition
-        case .paused, .completedHolding:
+        case .paused, .holding, .completedHolding:
             return pausedPosition
         case .driving:
             let activeElapsed = activeElapsedLocked(now: now)

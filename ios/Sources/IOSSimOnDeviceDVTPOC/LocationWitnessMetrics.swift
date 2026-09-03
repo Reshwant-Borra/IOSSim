@@ -273,7 +273,7 @@ public enum LocationWitnessMetricsExporter {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.timeZone = TimeZone(secondsFromGMT: 0)
-    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
     return "IOSSim-Witness-Metrics-\(formatter.string(from: generatedAt)).json"
   }
 

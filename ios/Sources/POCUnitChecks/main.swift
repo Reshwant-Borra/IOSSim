@@ -22,6 +22,8 @@ struct POCUnitChecks {
     try routeInterpolation()
     try constantSpeedDistanceCalculations()
     try driveCadenceConfiguration()
+    try driveCadenceDefaultsToSmoothPreferred()
+    try driveCadenceFallbackPolicyRequiresSustainedFailure()
     try absoluteDeadlineSchedulerCalculations()
     try missedDeadlineCalculationsSkipReplay()
     try cadenceDoesNotChangeRouteTraversalTime()
@@ -29,6 +31,7 @@ struct POCUnitChecks {
     try richDriveSampleUsesSelectedSpeed()
     try richDriveCourseCardinalsAndDiagonal()
     try richDriveCourseTurnTransitionAndRouteEnd()
+    try richDriveHeldSampleIsStationary()
     try richDriveIPCSerialization()
     try richDriveACKSequencing()
     try richDriveLatestSampleWins()
@@ -39,15 +42,23 @@ struct POCUnitChecks {
     try await richStopBeforeDVTFallbackLeavesNoRichWriter()
     try pauseDoesNotAdvanceRouteProgress()
     try resumeUsesActiveElapsedTime()
+    try stopAndHoldPreservesCurrentCoordinate()
+    try resumeFromHoldContinuesFromHeldProgress()
     try pauseResumeDeadlineCalculations()
     try backgroundDelayCalculationsCollapseMissedTicks()
     try suspensionTickSkipsMissedPoints()
     try monotonicRouteProgression()
     try completedHoldingDoesNotClearSimulation()
+    try naturalCompletionHoldsExactDestination()
+    try driveTransportFallbackPolicyRequiresRepeatedRichFailure()
     try await staleWriterCannotSendAfterOwnershipChanges()
     try await staleGenerationCallbackCannotAffectCurrentConnection()
     try await reconnectRestoresCurrentDrivePosition()
     try await stopPreventsDelayedWrites()
+    try await schedulerStopWaitsForBlockedTransportSet()
+    try await cancelledSchedulerSetDoesNotReconnect()
+    try await latestSampleTransportWrapperCoalescesPendingSamples()
+    try await latestSampleTransportWrapperDropsPendingSamplesOnStop()
     try routeDistanceClamping()
     try await driveDiagnosticsSerialize()
     try driveTraceMetricCalculations()
@@ -396,10 +407,64 @@ struct POCUnitChecks {
 
   static func driveCadenceConfiguration() throws {
     try require(DriveUpdateCadence.baseline1Hz.intervalSeconds == 1, "baseline cadence is 1 Hz")
-    try require(DriveUpdateCadence.smooth2Hz.intervalSeconds == 0.5, "smooth test cadence is 2 Hz")
+    try require(DriveUpdateCadence.smooth2Hz.intervalSeconds == 0.5, "smooth cadence is 2 Hz")
     try require(
       DriveUpdateCadence.baseline1Hz.effectiveUpdateFrequencyHz == 1, "baseline frequency")
     try require(DriveUpdateCadence.smooth2Hz.effectiveUpdateFrequencyHz == 2, "smooth frequency")
+    try require(
+      DriveUpdateCadence.smooth2Hz.displayName == "Smooth 2 Hz",
+      "smooth cadence label is preferred")
+    try require(
+      DriveUpdateCadence.baseline1Hz.displayName == "Baseline 1 Hz Compatibility",
+      "baseline cadence label is compatibility")
+    try require(
+      DriveUpdateCadence.smooth2Hz.diagnosticName == "smooth_2hz",
+      "smooth diagnostic name is stable")
+  }
+
+  static func driveCadenceDefaultsToSmoothPreferred() throws {
+    try require(
+      DriveUpdateCadence.defaultCadence == .smooth2Hz,
+      "Drive cadence defaults to Smooth 2 Hz")
+  }
+
+  static func driveCadenceFallbackPolicyRequiresSustainedFailure() throws {
+    var policy = DriveCadenceHealthPolicy()
+    for _ in 0..<DriveCadenceHealthPolicy.evaluationWindow - 1 {
+      let reason = policy.record(
+        sample: DriveCadenceHealthSample(
+          missedDeadlineCount: 1,
+          ackLatencyMs: nil,
+          droppedOrReplacedSamples: 0
+        ),
+        cadence: .smooth2Hz
+      )
+      try require(reason == nil, "cadence fallback waits for a full health window")
+    }
+    let reason = policy.record(
+      sample: DriveCadenceHealthSample(
+        missedDeadlineCount: 1,
+        ackLatencyMs: nil,
+        droppedOrReplacedSamples: 0
+      ),
+      cadence: .smooth2Hz
+    )
+    try require(
+      reason?.contains("missed") == true,
+      "sustained missed deadlines trigger cadence fallback")
+
+    var baselinePolicy = DriveCadenceHealthPolicy()
+    for _ in 0..<DriveCadenceHealthPolicy.evaluationWindow {
+      let baselineReason = baselinePolicy.record(
+        sample: DriveCadenceHealthSample(
+          missedDeadlineCount: 10,
+          ackLatencyMs: 1_000,
+          droppedOrReplacedSamples: 10
+        ),
+        cadence: .baseline1Hz
+      )
+      try require(baselineReason == nil, "baseline cadence does not fall back again")
+    }
   }
 
   static func absoluteDeadlineSchedulerCalculations() throws {
@@ -553,6 +618,24 @@ struct POCUnitChecks {
         tolerance: 1), "route end keeps last segment course")
     try require(RichDriveSample.normalizedCourse(-90) == 270, "negative course normalized")
     try require(RichDriveSample.normalizedCourse(450) == 90, "over-360 course normalized")
+  }
+
+  static func richDriveHeldSampleIsStationary() throws {
+    let route = try testRoute()
+    let position = DrivePosition(
+      coordinate: route.coordinate(atDistance: 100),
+      expectedDistanceMeters: 100,
+      activeElapsedSeconds: 12,
+      completed: false
+    )
+    let sample = RichDriveSampleBuilder.sample(
+      position: position,
+      route: route,
+      speedMetersPerSecond: 0,
+      previousCourseDegrees: 90
+    )
+    try require(sample.speedMetersPerSecond == 0, "held rich sample reports stationary speed")
+    try require(angleClose(sample.courseDegrees, 90, tolerance: 1), "held rich sample keeps route course")
   }
 
   static func richDriveIPCSerialization() throws {
@@ -710,6 +793,39 @@ struct POCUnitChecks {
       abs(position.expectedDistanceMeters - expected) < 1, "resume excludes paused duration")
   }
 
+  static func stopAndHoldPreservesCurrentCoordinate() throws {
+    let controller = DriveSessionController()
+    controller.prepareRoute(try driveRoute(), speedMPH: 35)
+    try controller.startDrive(now: 0)
+    let beforeHold = try requireValue(controller.expectedPosition(now: 20), "position before hold")
+    let held = try requireValue(controller.holdCurrent(now: 20), "held position")
+    let later = try requireValue(controller.expectedPosition(now: 120), "held later")
+    try require(controller.currentState() == .holding, "stop and hold enters holding state")
+    try require(
+      abs(held.expectedDistanceMeters - beforeHold.expectedDistanceMeters) < 0.001,
+      "hold preserves current route progress")
+    try require(
+      abs(later.expectedDistanceMeters - held.expectedDistanceMeters) < 0.001,
+      "held route progress does not advance")
+    try require(
+      abs(later.coordinate.longitude - held.coordinate.longitude) < 0.000001,
+      "held coordinate does not move")
+  }
+
+  static func resumeFromHoldContinuesFromHeldProgress() throws {
+    let controller = DriveSessionController()
+    controller.prepareRoute(try driveRoute(), speedMPH: 35)
+    try controller.startDrive(now: 0)
+    let held = try requireValue(controller.holdCurrent(now: 20), "held position")
+    controller.resume(now: 60)
+    let resumed = try requireValue(controller.expectedPosition(now: 70), "resumed position")
+    let expectedDelta = DriveSpeed.metersPerSecond(fromMPH: 35) * 10
+    try require(controller.currentState() == .driving, "held route resumes driving")
+    try require(
+      abs(resumed.expectedDistanceMeters - (held.expectedDistanceMeters + expectedDelta)) < 1,
+      "resume from hold continues from held route progress")
+  }
+
   static func pauseResumeDeadlineCalculations() throws {
     let controller = DriveSessionController()
     controller.prepareRoute(try driveRoute(), speedMPH: 30)
@@ -784,6 +900,57 @@ struct POCUnitChecks {
     try require(complete.completed, "route completes")
     _ = controller.completeHolding(now: 10_000)
     try require(controller.currentState() == .completedHolding, "destination held after completion")
+  }
+
+  static func naturalCompletionHoldsExactDestination() throws {
+    let route = try driveRoute()
+    let controller = DriveSessionController()
+    controller.prepareRoute(route, speedMPH: 70)
+    try controller.startDrive(now: 0)
+    let complete = try requireValue(controller.expectedPosition(now: 10_000), "complete")
+    try require(complete.completed, "route naturally completes")
+    let held = try requireValue(controller.completeHolding(now: 10_000), "held destination")
+    try require(held.completed, "destination held position is completed")
+    try require(
+      abs(held.expectedDistanceMeters - route.routeDistanceMeters) < 0.001,
+      "held route distance is exact destination distance")
+    try require(
+      abs(held.coordinate.latitude - route.destination.latitude) < 0.000001,
+      "held destination latitude exact")
+    try require(
+      abs(held.coordinate.longitude - route.destination.longitude) < 0.000001,
+      "held destination longitude exact")
+    let later = try requireValue(controller.expectedPosition(now: 20_000), "later destination")
+    try require(
+      abs(later.expectedDistanceMeters - held.expectedDistanceMeters) < 0.001,
+      "destination hold does not advance after completion")
+  }
+
+  static func driveTransportFallbackPolicyRequiresRepeatedRichFailure() throws {
+    var failurePolicy = DriveTransportHealthPolicy()
+    let oneFailure = failurePolicy.recordFailure(POCError(.disconnected, "first"))
+    try require(oneFailure == nil, "one rich send failure does not trigger fallback")
+    let secondFailure = failurePolicy.recordFailure(POCError(.disconnected, "second"))
+    try require(
+      secondFailure?.contains("Rich Drive failed") == true,
+      "repeated rich send failures trigger fallback")
+
+    var ackPolicy = DriveTransportHealthPolicy()
+    for index in 0..<DriveTransportHealthPolicy.richMissingAckLimit {
+      let reason = ackPolicy.recordSuccess(
+        result: DriveLocationTransportSetResult(
+          transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName,
+          connectionGeneration: 1,
+          sendMonotonicTime: Double(index),
+          ackMonotonicTime: nil,
+          ackLatencyMs: nil
+        ))
+      if index < DriveTransportHealthPolicy.richMissingAckLimit - 1 {
+        try require(reason == nil, "missing ACK fallback waits for repeated misses")
+      } else {
+        try require(reason?.contains("acknowledge") == true, "repeated missing ACKs trigger fallback")
+      }
+    }
   }
 
   static func staleWriterCannotSendAfterOwnershipChanges() async throws {
@@ -892,6 +1059,171 @@ struct POCUnitChecks {
     let clearCount = await tunnel.totalClearCount()
     try require(setCount == 0, "no delayed set after stop")
     try require(clearCount == 1, "stop clears exactly once")
+  }
+
+  static func schedulerStopWaitsForBlockedTransportSet() async throws {
+    let transport = BlockingDriveLocationTransport(
+      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
+    await transport.setBlocksUntilReleased(true)
+    let scheduler = try await startedScheduler(transport: transport)
+
+    scheduler.start()
+    await transport.waitForSetCount(1)
+    scheduler.stop()
+
+    let waitFinished = AsyncFlag()
+    let waiter = Task {
+      await scheduler.waitUntilStopped()
+      await waitFinished.set()
+    }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let stoppedEarly = await waitFinished.value()
+    try require(stoppedEarly == false, "scheduler wait remains blocked by in-flight set")
+
+    await transport.releaseBlockedSets()
+    await waiter.value
+    let count = await transport.setCount()
+    try require(count == 1, "cancelled scheduler does not emit another set after shutdown")
+  }
+
+  static func cancelledSchedulerSetDoesNotReconnect() async throws {
+    let transport = BlockingDriveLocationTransport(
+      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
+    await transport.setBlocksUntilReleased(true)
+    await transport.failReleasedSets(POCError(.disconnected, "forced send failure"))
+    let scheduler = try await startedScheduler(transport: transport)
+
+    scheduler.start()
+    await transport.waitForSetCount(1)
+    scheduler.stop()
+    let waiter = Task {
+      await scheduler.waitUntilStopped()
+    }
+    await transport.releaseBlockedSets()
+    await waiter.value
+
+    let reconnectCount = await transport.reconnectCount()
+    try require(reconnectCount == 0, "cancelled scheduler send cannot reconnect")
+  }
+
+  static func latestSampleTransportWrapperCoalescesPendingSamples() async throws {
+    let base = BlockingDriveLocationTransport(
+      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
+    await base.setBlocksUntilReleased(true)
+    let wrapper = LatestSampleDriveLocationTransport(base: base)
+    let sessionID = UUID()
+    try await wrapper.start(
+      DriveLocationTransportStartContext(
+        sessionID: sessionID,
+        writerID: "drive:test",
+        initialCoordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0)
+      ))
+
+    _ = try await wrapper.submit(
+      sample: richSample(latitude: 1),
+      writerID: "drive:test",
+      mode: .drive(sessionID: sessionID, current: nil),
+      traceContext: nil,
+      diagnostics: nil
+    )
+    await base.waitForSetCount(1)
+    let second = try await wrapper.submit(
+      sample: richSample(latitude: 2),
+      writerID: "drive:test",
+      mode: .drive(sessionID: sessionID, current: nil),
+      traceContext: nil,
+      diagnostics: nil
+    )
+    let third = try await wrapper.submit(
+      sample: richSample(latitude: 3),
+      writerID: "drive:test",
+      mode: .drive(sessionID: sessionID, current: nil),
+      traceContext: nil,
+      diagnostics: nil
+    )
+
+    try require(second.droppedOrReplacedSamples == 0, "first pending sample is retained")
+    try require(third.droppedOrReplacedSamples == 1, "newer pending sample replaces stale pending sample")
+    try require(!second.authoritative && !third.authoritative, "queued submits are not synchronous authority")
+
+    await base.setBlocksUntilReleased(false)
+    await base.releaseBlockedSets()
+    await base.waitForSetCount(2)
+    try await wrapper.stop(writerID: "drive:test", clearLocation: false)
+
+    let latitudes = await base.samples().map(\.latitude)
+    try require(latitudes == [1, 3], "latest-sample wrapper sends first in-flight and newest pending only")
+  }
+
+  static func latestSampleTransportWrapperDropsPendingSamplesOnStop() async throws {
+    let base = BlockingDriveLocationTransport(
+      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
+    await base.setBlocksUntilReleased(true)
+    let wrapper = LatestSampleDriveLocationTransport(base: base)
+    let sessionID = UUID()
+    try await wrapper.start(
+      DriveLocationTransportStartContext(
+        sessionID: sessionID,
+        writerID: "drive:test",
+        initialCoordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0)
+      ))
+
+    _ = try await wrapper.submit(
+      sample: richSample(latitude: 10),
+      writerID: "drive:test",
+      mode: .drive(sessionID: sessionID, current: nil),
+      traceContext: nil,
+      diagnostics: nil
+    )
+    await base.waitForSetCount(1)
+    _ = try await wrapper.submit(
+      sample: richSample(latitude: 11),
+      writerID: "drive:test",
+      mode: .drive(sessionID: sessionID, current: nil),
+      traceContext: nil,
+      diagnostics: nil
+    )
+
+    let stopper = Task {
+      try await wrapper.stop(writerID: "drive:test", clearLocation: true)
+    }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await base.setBlocksUntilReleased(false)
+    await base.releaseBlockedSets()
+    try await stopper.value
+
+    let latitudes = await base.samples().map(\.latitude)
+    try require(latitudes == [10], "pending latest sample is invalidated during stop")
+    let stopCount = await base.stopCount()
+    try require(stopCount == 1, "base transport stopped once")
+  }
+
+  static func startedScheduler(transport: DriveLocationTransport) async throws -> DriveScheduler {
+    let controller = DriveSessionController()
+    controller.prepareRoute(try driveRoute(), speedMPH: 35)
+    try controller.startDrive(now: 0)
+    try await transport.start(
+      DriveLocationTransportStartContext(
+        sessionID: controller.sessionID,
+        writerID: controller.writerID,
+        initialCoordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0)
+      ))
+    return DriveScheduler(
+      controller: controller,
+      locationTransport: transport,
+      diagnostics: DriveDiagnostics(recorder: testRecorder()),
+      clock: ManualDriveClock(start: 0),
+      updateCadence: .smooth2Hz
+    )
+  }
+
+  static func richSample(latitude: Double) -> RichDriveSample {
+    RichDriveSample(
+      latitude: latitude,
+      longitude: latitude,
+      speedMetersPerSecond: 1,
+      courseDegrees: 90
+    )
   }
 
   static func routeDistanceClamping() throws {
@@ -1195,7 +1527,7 @@ struct POCUnitChecks {
     let name = LocationWitnessMetricsExporter.fileName(
       generatedAt: Date(timeIntervalSince1970: 1_800_000_000))
     try require(
-      name == "IOSSim-Witness-Metrics-20270115-080000.json",
+      name == "IOSSim-Witness-Metrics-20270115T080000Z.json",
       "filename is deterministic UTC JSON")
   }
 
@@ -1959,6 +2291,133 @@ private final class LockedValues<T>: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return storage
+  }
+}
+
+private actor AsyncFlag {
+  private var storage = false
+
+  func set() {
+    storage = true
+  }
+
+  func value() -> Bool {
+    storage
+  }
+}
+
+private actor BlockingDriveLocationTransport: DriveLocationTransport {
+  let transportName: String
+  private var shouldBlockSets = false
+  private var releasedSetError: Error?
+  private var setSamples: [RichDriveSample] = []
+  private var setWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+  private var blockedSetContinuations: [CheckedContinuation<Void, Never>] = []
+  private var starts = 0
+  private var stops = 0
+  private var reconnects = 0
+  private var generation = 1
+
+  init(transportName: String) {
+    self.transportName = transportName
+  }
+
+  func start(_ context: DriveLocationTransportStartContext) async throws {
+    starts += 1
+  }
+
+  func set(
+    sample: RichDriveSample,
+    writerID: String,
+    mode: SimulationMode,
+    traceContext: DriveTraceContext?,
+    diagnostics: DriveDiagnostics?
+  ) async throws -> DriveLocationTransportSetResult {
+    setSamples.append(sample)
+    resumeReadySetWaiters()
+    if shouldBlockSets {
+      await withCheckedContinuation { continuation in
+        blockedSetContinuations.append(continuation)
+      }
+    }
+    if let releasedSetError {
+      throw releasedSetError
+    }
+    return DriveLocationTransportSetResult(
+      transportName: transportName,
+      connectionGeneration: generation,
+      sendMonotonicTime: ProcessInfo.processInfo.systemUptime,
+      ackMonotonicTime: ProcessInfo.processInfo.systemUptime,
+      ackLatencyMs: 0
+    )
+  }
+
+  func stop(writerID: String, clearLocation: Bool) async throws {
+    stops += 1
+  }
+
+  func reconnectIfNeeded() async {
+    reconnects += 1
+  }
+
+  func currentConnectionGeneration() async -> Int {
+    generation
+  }
+
+  func setReconnectRestoreProvider(
+    writerID: String,
+    provider: (@Sendable () async -> RichDriveSample?)?
+  ) async {}
+
+  func setBlocksUntilReleased(_ value: Bool) {
+    shouldBlockSets = value
+  }
+
+  func failReleasedSets(_ error: Error?) {
+    releasedSetError = error
+  }
+
+  func releaseBlockedSets() {
+    let continuations = blockedSetContinuations
+    blockedSetContinuations = []
+    for continuation in continuations {
+      continuation.resume()
+    }
+  }
+
+  func waitForSetCount(_ target: Int) async {
+    guard setSamples.count < target else { return }
+    await withCheckedContinuation { continuation in
+      setWaiters.append((target, continuation))
+    }
+  }
+
+  func setCount() -> Int {
+    setSamples.count
+  }
+
+  func samples() -> [RichDriveSample] {
+    setSamples
+  }
+
+  func stopCount() -> Int {
+    stops
+  }
+
+  func reconnectCount() -> Int {
+    reconnects
+  }
+
+  private func resumeReadySetWaiters() {
+    var remaining: [(Int, CheckedContinuation<Void, Never>)] = []
+    for waiter in setWaiters {
+      if setSamples.count >= waiter.0 {
+        waiter.1.resume()
+      } else {
+        remaining.append(waiter)
+      }
+    }
+    setWaiters = remaining
   }
 }
 

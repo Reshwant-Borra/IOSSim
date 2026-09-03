@@ -57,7 +57,7 @@ final class DriveViewModel: ObservableObject {
   /// shows `status`'s human-readable text.
   @Published var lastTechnicalError: String?
   @Published var speedMPH = 35.0
-  @Published var updateCadence = DriveUpdateCadence.baseline1Hz
+  @Published var updateCadence = DriveUpdateCadence.defaultCadence
   @Published var outputMode: DriveLocationOutputMode {
     didSet {
       outputSelectionStore.save(outputMode)
@@ -74,6 +74,9 @@ final class DriveViewModel: ObservableObject {
   @Published var routeResult: MapKitRouteResult?
   @Published var breadcrumbs: [CLLocationCoordinate2D] = []
   @Published var liveMetrics = DriveLiveMetrics.empty
+  @Published var activeOutputMode: DriveLocationOutputMode?
+  @Published var activeUpdateCadence: DriveUpdateCadence?
+  @Published var fallbackNotice: String?
 
   private let searchProvider = MapKitSearchProvider()
   private let routeProvider = MapKitRouteProvider()
@@ -90,6 +93,11 @@ final class DriveViewModel: ObservableObject {
   private var startCoordinate: CLLocationCoordinate2D?
   private var destinationCoordinate: CLLocationCoordinate2D?
   private var refreshLoopStarted = false
+  private var lastAuthoritativePosition: DrivePosition?
+  private var didFallbackTransportThisSession = false
+  private var didFallbackCadenceThisSession = false
+  private var transitionInProgress = false
+  private var clearRequested = false
 
   init(outputSelectionStore: DriveOutputSelectionStore = DriveOutputSelectionStore()) {
     self.outputSelectionStore = outputSelectionStore
@@ -142,6 +150,18 @@ final class DriveViewModel: ObservableObject {
       expectedTravelTimeText = duration(snapshot.expectedTravelTime)
       expectedProgressText = meters(snapshot.currentExpectedDistanceMeters)
       currentCoordinateText = coordinate(snapshot.currentLatitude, snapshot.currentLongitude)
+      if snapshot.state == .completedHolding {
+        scheduler?.stop()
+        scheduler = nil
+        background.end(reason: "drive destination holding")
+        background.setDiagnostics(nil)
+        verifier.stop()
+        if status != "Arrived — Holding Location" {
+          status = "Arrived — Holding Location"
+        }
+      } else if snapshot.state == .holding, status != "Holding Location" {
+        status = "Holding Location"
+      }
     }
     exportURLs = await diagnostics.exportURLs()
     liveMetrics = await diagnostics.liveMetrics()
@@ -271,11 +291,9 @@ final class DriveViewModel: ObservableObject {
 
   func startDrive() {
     Task {
-      var startedController: DriveSessionController?
-      var startedTransport: DriveLocationTransport?
       do {
         guard activeTransport == nil, scheduler == nil,
-          state != .driving, state != .paused, state != .completedHolding
+          state != .driving, state != .paused, state != .holding, state != .completedHolding
         else {
           throw POCError(
             .invalidDriveState,
@@ -287,17 +305,42 @@ final class DriveViewModel: ObservableObject {
         let activeController = DriveSessionController()
         activeController.prepareRoute(result.driveRoute, speedMPH: speedMPH)
         try activeController.startDrive(now: clock.nowSeconds())
-        startedController = activeController
         controller = activeController
+        lastAuthoritativePosition = nil
+        didFallbackTransportThisSession = false
+        didFallbackCadenceThisSession = false
+        transitionInProgress = false
+        clearRequested = false
+        fallbackNotice = nil
+        let normalOutputMode = DriveLocationOutputMode.defaultMode
+        let normalUpdateCadence = DriveUpdateCadence.defaultCadence
+        outputMode = normalOutputMode
+        updateCadence = normalUpdateCadence
         diagnostics = DriveDiagnostics(recorder: POCAppDependencies.recorder)
         await diagnostics.start(
           sessionID: activeController.sessionID,
           writerID: activeController.writerID,
           route: result.driveRoute.resampler,
           selectedSpeedMps: DriveSpeed.metersPerSecond(fromMPH: speedMPH),
-          updateCadence: updateCadence,
-          outputMode: outputMode
+          updateCadence: normalUpdateCadence,
+          outputMode: normalOutputMode
         )
+        await diagnostics.recordState(
+          "transport_primary_selected",
+          message: "primary drive transport selected",
+          metadata: [
+            "event": "TRANSPORT_PRIMARY_SELECTED",
+            "active_transport": normalOutputMode.displayName,
+            "active_cadence": normalUpdateCadence.diagnosticName,
+          ])
+        await diagnostics.recordState(
+          "cadence_primary_selected",
+          message: "primary drive cadence selected",
+          metadata: [
+            "event": "CADENCE_PRIMARY_SELECTED",
+            "active_transport": normalOutputMode.displayName,
+            "active_cadence": normalUpdateCadence.diagnosticName,
+          ])
         background.setDiagnostics(diagnostics)
         background.begin()
         verifier.setRequestedCoordinate(
@@ -305,38 +348,36 @@ final class DriveViewModel: ObservableObject {
           longitude: result.driveRoute.origin.longitude
         )
         verifier.start(backgroundCapable: true)
-        let transport = makeTransport(for: outputMode)
-        startedTransport = transport
-        try await transport.start(
-          DriveLocationTransportStartContext(
-            sessionID: activeController.sessionID,
-            writerID: activeController.writerID,
+        do {
+          try await startTransportAndScheduler(
+            controller: activeController,
+            mode: normalOutputMode,
+            cadence: normalUpdateCadence,
             initialCoordinate: result.driveRoute.origin
-          ))
-        activeTransport = transport
-        scheduler = DriveScheduler(
-          controller: activeController,
-          locationTransport: transport,
-          diagnostics: diagnostics,
-          clock: clock,
-          updateCadence: updateCadence,
-          observedProvider: { [weak verifier] in verifier?.latestObservation() },
-          lifecycleProvider: { [background] in background.applicationLifecycleState() },
-          backgroundActiveProvider: { [background] in background.isBackgroundSessionActive() }
-        )
-        scheduler?.start()
-        status = "Drive started with \(outputMode.displayName). Destination will hold until Stop."
+          )
+        } catch {
+          guard normalOutputMode == .richXCUILocationExperimental,
+            try await startDVTAfterRichStartupFailure(
+              error: error,
+              controller: activeController,
+              initialCoordinate: result.driveRoute.origin
+            )
+          else {
+            throw error
+          }
+        }
+        status = "Drive started."
         await diagnostics.recordState("driving", message: "drive started")
         await refresh()
       } catch {
         scheduler?.stop()
         await scheduler?.waitUntilStopped()
         scheduler = nil
-        if let startedController {
-          let writerID = startedController.writerID
-          startedController.stop(clearSimulation: true)
-          if let startedTransport {
-            try? await startedTransport.stop(writerID: writerID, clearLocation: true)
+        if let controller {
+          let writerID = controller.writerID
+          controller.stop(clearSimulation: true)
+          if let activeTransport {
+            try? await activeTransport.stop(writerID: writerID, clearLocation: true)
           } else {
             try? await coordinator.stopSimulation(writerID: writerID, clearLocation: true)
           }
@@ -353,6 +394,9 @@ final class DriveViewModel: ObservableObject {
           state = .idle
         }
         activeTransport = nil
+        activeOutputMode = nil
+        activeUpdateCadence = nil
+        lastAuthoritativePosition = nil
         background.end(reason: "drive start failed")
         background.setDiagnostics(nil)
         verifier.stop()
@@ -372,7 +416,7 @@ final class DriveViewModel: ObservableObject {
 
   func selectOutputMode(_ mode: DriveLocationOutputMode) {
     guard activeTransport == nil, scheduler == nil,
-      state != .driving, state != .paused, state != .completedHolding
+      state != .driving, state != .paused, state != .holding, state != .completedHolding
     else {
       fail(
         POCError(
@@ -386,8 +430,389 @@ final class DriveViewModel: ObservableObject {
     status = "Drive output set to \(mode.displayName)."
   }
 
+  private func startTransportAndScheduler(
+    controller: DriveSessionController,
+    mode: DriveLocationOutputMode,
+    cadence: DriveUpdateCadence,
+    initialCoordinate: CLLocationCoordinate2D
+  ) async throws {
+    let transport = makeTransport(for: mode)
+    try await transport.start(
+      DriveLocationTransportStartContext(
+        sessionID: controller.sessionID,
+        writerID: controller.writerID,
+        initialCoordinate: initialCoordinate
+      ))
+    activeTransport = transport
+    activeOutputMode = mode
+    activeUpdateCadence = cadence
+    let newScheduler = makeScheduler(
+      controller: controller,
+      transport: transport,
+      cadence: cadence
+    )
+    scheduler = newScheduler
+    newScheduler.start()
+  }
+
+  private func startDVTAfterRichStartupFailure(
+    error: Error,
+    controller: DriveSessionController,
+    initialCoordinate: CLLocationCoordinate2D
+  ) async throws -> Bool {
+    guard !didFallbackTransportThisSession else { return false }
+    guard !clearRequested else { return false }
+    didFallbackTransportThisSession = true
+    let transitionStart = ProcessInfo.processInfo.systemUptime
+    let position = controller.expectedPosition(now: clock.nowSeconds())
+      ?? DrivePosition(
+        coordinate: initialCoordinate,
+        expectedDistanceMeters: 0,
+        activeElapsedSeconds: 0,
+        completed: false
+      )
+    controller.pauseForTransition(position: position, now: clock.nowSeconds())
+    await diagnostics.recordState(
+      "transport_fallback_triggered",
+      message: "Rich Drive startup failed; falling back to DVT Compatibility",
+      metadata: fallbackMetadata(
+        event: "TRANSPORT_FALLBACK_TRIGGERED",
+        reason: String(describing: error),
+        position: position,
+        oldWriterStopped: false
+      )
+    )
+
+    var oldWriterStopped = true
+    if let activeTransport {
+      do {
+        try await activeTransport.stop(writerID: controller.writerID, clearLocation: false)
+      } catch {
+        oldWriterStopped = false
+        await diagnostics.recordState(
+          "transport_fallback_teardown_warning",
+          message: "Rich Drive startup fallback teardown reported an error",
+          metadata: ["error": String(describing: error)]
+        )
+      }
+      self.activeTransport = nil
+    } else {
+      try? await coordinator.stopSimulation(writerID: controller.writerID, clearLocation: false)
+    }
+
+    do {
+      guard !clearRequested else { return false }
+      let dvt = makeTransport(for: .dvtBaseline)
+      try await dvt.start(
+        DriveLocationTransportStartContext(
+          sessionID: controller.sessionID,
+          writerID: controller.writerID,
+          initialCoordinate: position.coordinate
+        ))
+      activeTransport = dvt
+      activeOutputMode = .dvtBaseline
+      activeUpdateCadence = updateCadence
+      fallbackNotice = "Rich Drive unavailable. Using DVT Compatibility."
+      try await writeAuthoritativePosition(
+        position,
+        speedMetersPerSecond: controller.snapshot(now: clock.nowSeconds()).speedMetersPerSecond,
+        transport: dvt,
+        reason: "transport_startup_fallback_takeover"
+      )
+      controller.resume(now: clock.nowSeconds())
+      let newScheduler = makeScheduler(controller: controller, transport: dvt, cadence: updateCadence)
+      scheduler = newScheduler
+      newScheduler.start()
+      await diagnostics.recordState(
+        "transport_fallback_completed",
+        message: "DVT Compatibility took over after Rich Drive startup failure",
+        metadata: fallbackMetadata(
+          event: "TRANSPORT_FALLBACK_COMPLETED",
+          reason: String(describing: error),
+          position: position,
+          oldWriterStopped: oldWriterStopped
+        ).merging([
+          "transition_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - transitionStart) * 1000),
+          "fallback_transport": DriveLocationOutputMode.dvtBaseline.displayName,
+        ]) { _, new in new }
+      )
+      return true
+    } catch {
+      activeTransport = nil
+      activeOutputMode = nil
+      activeUpdateCadence = nil
+      await diagnostics.recordState(
+        "transport_fallback_failed",
+        message: "DVT Compatibility failed to take over after Rich Drive startup failure",
+        metadata: fallbackMetadata(
+          event: "TRANSPORT_FALLBACK_FAILED",
+          reason: String(describing: error),
+          position: position,
+          oldWriterStopped: oldWriterStopped
+        )
+      )
+      throw error
+    }
+  }
+
+  private func makeScheduler(
+    controller: DriveSessionController,
+    transport: DriveLocationTransport,
+    cadence: DriveUpdateCadence
+  ) -> DriveScheduler {
+    DriveScheduler(
+      controller: controller,
+      locationTransport: transport,
+      diagnostics: diagnostics,
+      clock: clock,
+      updateCadence: cadence,
+      observedProvider: { [weak verifier] in verifier?.latestObservation() },
+      lifecycleProvider: { [background] in background.applicationLifecycleState() },
+      backgroundActiveProvider: { [background] in background.isBackgroundSessionActive() },
+      onAuthoritativePosition: { [weak self] position, _, _ in
+        Task { @MainActor [weak self] in
+          self?.lastAuthoritativePosition = position
+        }
+      },
+      onTransportFallbackNeeded: { [weak self] request in
+        Task { @MainActor [weak self] in
+          await self?.handleTransportFallback(request)
+        }
+      },
+      onCadenceFallbackNeeded: { [weak self] request in
+        Task { @MainActor [weak self] in
+          await self?.handleCadenceFallback(request)
+        }
+      }
+    )
+  }
+
+  private func handleTransportFallback(_ request: DriveTransportFallbackRequest) async {
+    guard !transitionInProgress, !didFallbackTransportThisSession,
+      !clearRequested,
+      activeOutputMode == .richXCUILocationExperimental,
+      let controller,
+      let oldTransport = activeTransport
+    else { return }
+    transitionInProgress = true
+    didFallbackTransportThisSession = true
+    let transitionStart = ProcessInfo.processInfo.systemUptime
+
+    scheduler?.stop()
+    await scheduler?.waitUntilStopped()
+    scheduler = nil
+    controller.pauseForTransition(position: request.position, now: clock.nowSeconds())
+
+    await diagnostics.recordState(
+      "transport_fallback_triggered",
+      message: "Rich Drive became unavailable; falling back to DVT Compatibility",
+      metadata: fallbackMetadata(
+        event: "TRANSPORT_FALLBACK_TRIGGERED",
+        reason: request.reason,
+        position: request.position,
+        oldWriterStopped: false
+      ).merging([
+        "first_error": request.errorDescription ?? request.reason,
+        "failing_transport": request.transportName,
+      ]) { _, new in new }
+    )
+
+    var oldWriterStopped = false
+    do {
+      activeTransport = nil
+      try await oldTransport.stop(writerID: controller.writerID, clearLocation: false)
+      oldWriterStopped = true
+      guard !clearRequested else {
+        transitionInProgress = false
+        return
+      }
+
+      let dvt = makeTransport(for: .dvtBaseline)
+      try await dvt.start(
+        DriveLocationTransportStartContext(
+          sessionID: controller.sessionID,
+          writerID: controller.writerID,
+          initialCoordinate: request.position.coordinate
+        ))
+      activeTransport = dvt
+      activeOutputMode = .dvtBaseline
+      activeUpdateCadence = activeUpdateCadence ?? updateCadence
+      fallbackNotice = "Rich Drive unavailable. Using DVT Compatibility."
+      try await writeAuthoritativePosition(
+        request.position,
+        speedMetersPerSecond: controller.snapshot(now: clock.nowSeconds()).speedMetersPerSecond,
+        transport: dvt,
+        reason: "transport_runtime_fallback_takeover"
+      )
+      controller.resume(now: clock.nowSeconds())
+      let newScheduler = makeScheduler(
+        controller: controller,
+        transport: dvt,
+        cadence: activeUpdateCadence ?? updateCadence
+      )
+      scheduler = newScheduler
+      newScheduler.start()
+      transitionInProgress = false
+      await diagnostics.recordState(
+        "transport_fallback_completed",
+        message: "DVT Compatibility took over from Rich Drive",
+        metadata: fallbackMetadata(
+          event: "TRANSPORT_FALLBACK_COMPLETED",
+          reason: request.reason,
+          position: request.position,
+          oldWriterStopped: oldWriterStopped
+        ).merging([
+          "transition_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - transitionStart) * 1000),
+          "fallback_transport": DriveLocationOutputMode.dvtBaseline.displayName,
+          "successful_dvt_takeover": "true",
+        ]) { _, new in new }
+      )
+      await refresh()
+    } catch {
+      transitionInProgress = false
+      activeTransport = nil
+      activeOutputMode = nil
+      activeUpdateCadence = nil
+      background.end(reason: "transport fallback failed")
+      background.setDiagnostics(nil)
+      verifier.stop()
+      fail(error, operation: "transportFallback")
+      await diagnostics.recordState(
+        "transport_fallback_failed",
+        message: "DVT Compatibility failed to take over from Rich Drive",
+        metadata: fallbackMetadata(
+          event: "TRANSPORT_FALLBACK_FAILED",
+          reason: String(describing: error),
+          position: request.position,
+          oldWriterStopped: oldWriterStopped
+        )
+      )
+      await refresh()
+    }
+  }
+
+  private func handleCadenceFallback(_ request: DriveCadenceFallbackRequest) async {
+    guard !transitionInProgress, !didFallbackCadenceThisSession,
+      !clearRequested,
+      request.activeCadence == .smooth2Hz,
+      let controller,
+      let transport = activeTransport
+    else { return }
+    transitionInProgress = true
+    didFallbackCadenceThisSession = true
+    let transitionStart = ProcessInfo.processInfo.systemUptime
+
+    scheduler?.stop()
+    await scheduler?.waitUntilStopped()
+    scheduler = nil
+    controller.pauseForTransition(position: request.position, now: clock.nowSeconds())
+    await diagnostics.recordState(
+      "cadence_fallback_triggered",
+      message: "Smooth 2 Hz became unhealthy; falling back to Baseline 1 Hz Compatibility",
+      metadata: fallbackMetadata(
+        event: "CADENCE_FALLBACK_TRIGGERED",
+        reason: request.reason,
+        position: request.position,
+        oldWriterStopped: true
+      ).merging([
+        "previous_cadence": request.activeCadence.diagnosticName,
+        "fallback_cadence": DriveUpdateCadence.baseline1Hz.diagnosticName,
+        "active_transport": request.transportName,
+      ]) { _, new in new }
+    )
+
+    activeUpdateCadence = .baseline1Hz
+    fallbackNotice = "\(fallbackNotice.map { "\($0) " } ?? "")Using Baseline 1 Hz Compatibility."
+    guard !clearRequested else {
+      transitionInProgress = false
+      return
+    }
+    try? await writeAuthoritativePosition(
+      request.position,
+      speedMetersPerSecond: controller.snapshot(now: clock.nowSeconds()).speedMetersPerSecond,
+      transport: transport,
+      reason: "cadence_fallback_segment_start"
+    )
+    controller.resume(now: clock.nowSeconds())
+    let newScheduler = makeScheduler(controller: controller, transport: transport, cadence: .baseline1Hz)
+    scheduler = newScheduler
+    newScheduler.start()
+    transitionInProgress = false
+    await diagnostics.recordState(
+      "cadence_fallback_completed",
+      message: "Baseline 1 Hz Compatibility resumed from the current route position",
+      metadata: fallbackMetadata(
+        event: "CADENCE_FALLBACK_COMPLETED",
+        reason: request.reason,
+        position: request.position,
+        oldWriterStopped: true
+      ).merging([
+        "transition_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - transitionStart) * 1000),
+        "active_cadence": DriveUpdateCadence.baseline1Hz.diagnosticName,
+      ]) { _, new in new }
+    )
+    await refresh()
+  }
+
+  private func writeAuthoritativePosition(
+    _ position: DrivePosition,
+    speedMetersPerSecond: Double,
+    transport: DriveLocationTransport,
+    reason: String
+  ) async throws {
+    guard let route = controller?.routeResampler(), let controller else { return }
+    let sample = RichDriveSampleBuilder.sample(
+      position: position,
+      route: route,
+      speedMetersPerSecond: speedMetersPerSecond,
+      previousCourseDegrees: nil
+    )
+    let requestTime = ProcessInfo.processInfo.systemUptime
+    let context = DriveTraceContext(
+      tickTraceID: "\(controller.sessionID.uuidString):\(reason)",
+      driveSessionID: controller.sessionID.uuidString,
+      tickSequence: 0,
+      requestSequence: 0,
+      updateRequestMonotonicTime: requestTime,
+      expectedRouteDistanceMeters: position.expectedDistanceMeters,
+      previousExpectedRouteDistanceMeters: nil,
+      expectedCoordinate: position.coordinate,
+      selectedSpeedMetersPerSecond: speedMetersPerSecond,
+      lifecycleState: background.applicationLifecycleState()
+    )
+    let result = try await transport.set(
+      sample: sample,
+      writerID: controller.writerID,
+      mode: .drive(sessionID: controller.sessionID, current: SimulatedCoordinate(position.coordinate)),
+      traceContext: context,
+      diagnostics: diagnostics
+    )
+    lastAuthoritativePosition = position
+    await diagnostics.recordRichDriveTransportSet(context: context, sample: sample, result: result)
+  }
+
+  private func fallbackMetadata(
+    event: String,
+    reason: String,
+    position: DrivePosition,
+    oldWriterStopped: Bool
+  ) -> [String: String] {
+    [
+      "event": event,
+      "fallback_reason": reason,
+      "route_progress_m": String(format: "%.3f", position.expectedDistanceMeters),
+      "latitude": String(format: "%.6f", position.coordinate.latitude),
+      "longitude": String(format: "%.6f", position.coordinate.longitude),
+      "active_transport": activeOutputMode?.displayName ?? outputMode.displayName,
+      "active_cadence": (activeUpdateCadence ?? updateCadence).diagnosticName,
+      "old_writer_confirmed_stopped": "\(oldWriterStopped)",
+      "timestamp": ISO8601DateFormatter().string(from: Date()),
+    ]
+  }
+
   func pause() {
     guard let controller else { return }
+    guard controller.currentState() == .driving else { return }
     _ = controller.pause(now: clock.nowSeconds())
     state = controller.currentState()
     Task {
@@ -398,38 +823,119 @@ final class DriveViewModel: ObservableObject {
 
   func resume() {
     guard let controller else { return }
+    let previousState = controller.currentState()
+    guard previousState == .paused || previousState == .holding else { return }
     controller.resume(now: clock.nowSeconds())
     state = controller.currentState()
+    if previousState == .holding, let activeTransport, scheduler == nil {
+      background.setDiagnostics(diagnostics)
+      background.begin()
+      if let position = controller.expectedPosition(now: clock.nowSeconds()) {
+        verifier.setRequestedCoordinate(
+          latitude: position.coordinate.latitude,
+          longitude: position.coordinate.longitude
+        )
+      }
+      verifier.start(backgroundCapable: true)
+      let newScheduler = makeScheduler(
+        controller: controller,
+        transport: activeTransport,
+        cadence: activeUpdateCadence ?? updateCadence
+      )
+      scheduler = newScheduler
+      newScheduler.start()
+    }
     Task {
       await diagnostics.recordState("driving", message: "drive resumed")
       await refresh()
     }
   }
 
-  func stopAndClear() {
+  func stopAndHold() {
     Task {
-      guard let controller else { return }
-      let writerID = controller.writerID
+      guard let controller, let activeTransport else { return }
       scheduler?.stop()
       await scheduler?.waitUntilStopped()
       scheduler = nil
-      controller.stop(clearSimulation: true)
+      let position = lastAuthoritativePosition
+        ?? controller.holdCurrent(now: clock.nowSeconds())
+      guard let position else { return }
+      controller.hold(position: position)
       do {
-        if let activeTransport {
+        try await writeAuthoritativePosition(
+          position,
+          speedMetersPerSecond: 0,
+          transport: activeTransport,
+          reason: "stop_and_hold"
+        )
+        status = "Holding Location"
+        state = controller.currentState()
+        background.end(reason: "drive stop and hold")
+        background.setDiagnostics(nil)
+        verifier.stop()
+        await diagnostics.recordState(
+          "holding",
+          message: "drive stopped and current simulated coordinate is held",
+          metadata: fallbackMetadata(
+            event: "DRIVE_STOP_AND_HOLD",
+            reason: "user_requested_stop_and_hold",
+            position: position,
+            oldWriterStopped: false
+          ))
+      } catch {
+        fail(error, operation: "stopAndHold")
+      }
+      await refresh()
+    }
+  }
+
+  func clearSimulation() {
+    Task {
+      let activeController = controller
+      let writerID = activeController?.writerID
+      clearRequested = true
+      scheduler?.stop()
+      await scheduler?.waitUntilStopped()
+      scheduler = nil
+      activeController?.stop(clearSimulation: true)
+
+      var clearSucceeded = true
+      do {
+        if let activeTransport, let writerID {
           try await activeTransport.stop(writerID: writerID, clearLocation: true)
-          self.activeTransport = nil
-        } else {
+        } else if let writerID {
           try await coordinator.stopSimulation(writerID: writerID, clearLocation: true)
         }
-        status = "Drive stopped and simulation cleared."
+      } catch let error as POCError where error.code == .staleWriter {
+        clearSucceeded = true
       } catch {
-        fail(error, operation: "stopAndClear")
+        clearSucceeded = false
+        fail(error, operation: "clearSimulation")
       }
-      background.end(reason: "drive stop clear")
+
+      activeTransport = nil
+      activeOutputMode = nil
+      activeUpdateCadence = nil
+      lastAuthoritativePosition = nil
+      fallbackNotice = nil
+      transitionInProgress = false
+      background.end(reason: "drive clear simulation")
       background.setDiagnostics(nil)
       verifier.stop()
-      await diagnostics.recordState("stopped", message: "explicit stop and clear")
+      if clearSucceeded {
+        status = "Simulation cleared. Real Core Location can resume."
+      }
+      await diagnostics.recordState(
+        "stopped",
+        message: "drive simulation explicitly cleared",
+        metadata: [
+          "event": "DRIVE_CLEAR_SIMULATION",
+          "clear_succeeded": "\(clearSucceeded)",
+          "active_transport": activeOutputMode?.displayName ?? "none",
+          "active_cadence": activeUpdateCadence?.diagnosticName ?? "none",
+        ])
       _ = await diagnostics.finalizeSummary()
+      state = activeController?.currentState() ?? .stopped
       await refresh()
     }
   }
@@ -460,6 +966,15 @@ final class DriveViewModel: ObservableObject {
       speedMetersPerSecond: DriveSpeed.metersPerSecond(fromMPH: speedMPH)
     )
     return String(format: "~%.1f m/update", meters)
+  }
+
+  var activeModeText: String {
+    "\(activeOutputMode?.displayName ?? outputMode.displayName) - \((activeUpdateCadence ?? updateCadence).displayName)"
+  }
+
+  var isFallbackActive: Bool {
+    activeOutputMode == .dvtBaseline && outputMode == .richXCUILocationExperimental
+      || activeUpdateCadence == .baseline1Hz && updateCadence == .smooth2Hz
   }
 
   private func coordinate(_ latitude: Double?, _ longitude: Double?) -> String {
@@ -511,9 +1026,11 @@ final class DriveViewModel: ObservableObject {
     case .dvtBaseline:
       return DVTDriveLocationTransport(locationCoordinator: coordinator)
     case .richXCUILocationExperimental:
-      return XCTestRichDriveLocationTransport(
-        locationCoordinator: coordinator,
-        runnerClient: POCAppDependencies.tunnelClient
+      return LatestSampleDriveLocationTransport(
+        base: XCTestRichDriveLocationTransport(
+          locationCoordinator: coordinator,
+          runnerClient: POCAppDependencies.tunnelClient
+        )
       )
     }
   }
@@ -538,7 +1055,7 @@ struct DriveView: View {
           routeSetupCard
         case .routeReady:
           routeReviewCard
-        case .driving, .paused, .completedHolding:
+        case .driving, .paused, .holding, .completedHolding:
           activeDriveCard
         }
         Spacer()
@@ -547,16 +1064,6 @@ struct DriveView: View {
     }
     .navigationTitle("Drive")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        NavigationLink {
-          DriveDiagnosticsView(model: model)
-        } label: {
-          Image(systemName: "wrench.and.screwdriver")
-        }
-        .accessibilityLabel("Drive Diagnostics")
-      }
-    }
     .task {
       model.startRefreshLoop()
     }
@@ -654,47 +1161,6 @@ struct DriveView: View {
         Slider(value: $model.speedMPH, in: DriveSpeed.minimumMPH...DriveSpeed.maximumMPH, step: 5)
       }
 
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Playback Cadence")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Picker("Playback Cadence", selection: $model.updateCadence) {
-          ForEach(DriveUpdateCadence.allCases) { cadence in
-            Text(cadence.displayName).tag(cadence)
-          }
-        }
-        .pickerStyle(.segmented)
-        LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
-          .font(.footnote)
-          .foregroundStyle(.secondary)
-      }
-
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Drive Output")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Picker(
-          "Drive Output",
-          selection: Binding(
-            get: { model.outputMode },
-            set: { model.selectOutputMode($0) }
-          )
-        ) {
-          ForEach(DriveLocationOutputMode.allCases) { mode in
-            Text(mode.displayName).tag(mode)
-          }
-        }
-        .pickerStyle(.menu)
-        if model.outputMode == .richXCUILocationExperimental {
-          Text("Requires Developer Mode, LocalDevVPN, saved RPPairing, a preinstalled signed XCTest runner, and developer services.")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        }
-        Text("Developer detail: \(model.outputMode.developerDetail)")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      }
-
       if model.status.hasPrefix("FAIL") {
         Label(model.status, systemImage: "exclamationmark.triangle.fill")
           .font(.footnote)
@@ -726,7 +1192,7 @@ struct DriveView: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
         Circle()
-          .fill(model.state == .paused ? Color.orange : Color.green)
+          .fill(model.state == .paused ? Color.orange : model.state == .driving ? Color.green : Color.blue)
           .frame(width: 8, height: 8)
         Text(driveStateLabel)
           .font(.subheadline.weight(.semibold))
@@ -738,16 +1204,20 @@ struct DriveView: View {
       Text("\(model.expectedProgressText) of \(model.routeDistanceText)")
         .font(.footnote)
         .foregroundStyle(.secondary)
-      Text("Output: \(model.outputMode.displayName)")
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-
-      HStack(spacing: 10) {
+      VStack(spacing: 10) {
         if model.state == .paused {
           Button {
             model.resume()
           } label: {
             Label("Resume", systemImage: "play.fill")
+              .frame(maxWidth: .infinity)
+          }
+          .buttonStyle(.borderedProminent)
+        } else if model.state == .holding {
+          Button {
+            model.resume()
+          } label: {
+            Label("Resume Drive", systemImage: "play.fill")
               .frame(maxWidth: .infinity)
           }
           .buttonStyle(.borderedProminent)
@@ -761,10 +1231,20 @@ struct DriveView: View {
           .buttonStyle(.bordered)
         }
 
+        if model.state == .driving || model.state == .paused {
+          Button {
+            model.stopAndHold()
+          } label: {
+            Label("Stop & Hold", systemImage: "pause.circle.fill")
+              .frame(maxWidth: .infinity)
+          }
+          .buttonStyle(.bordered)
+        }
+
         Button(role: .destructive) {
-          model.stopAndClear()
+          model.clearSimulation()
         } label: {
-          Label("Stop", systemImage: "stop.fill")
+          Label("Clear Simulation", systemImage: "xmark.circle.fill")
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
@@ -779,7 +1259,8 @@ struct DriveView: View {
     switch model.state {
     case .driving: return "Driving"
     case .paused: return "Paused"
-    case .completedHolding: return "Arrived"
+    case .holding: return "Holding Location"
+    case .completedHolding: return "Arrived — Holding Location"
     default: return model.state.rawValue
     }
   }
@@ -819,6 +1300,10 @@ struct DriveDiagnosticsView: View {
         LabeledContent("Drive Output", value: model.outputMode.displayName)
         LabeledContent("Transport Detail", value: model.outputMode.developerDetail)
         LabeledContent("Playback Cadence", value: model.updateCadence.displayName)
+        LabeledContent("Active Mode", value: model.activeModeText)
+        if let fallbackNotice = model.fallbackNotice {
+          LabeledContent("Fallback", value: fallbackNotice)
+        }
         LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
       }
 
@@ -849,7 +1334,8 @@ struct DriveDiagnosticsView: View {
         Button("START DRIVE") { model.startDrive() }
         Button("PAUSE") { model.pause() }
         Button("RESUME") { model.resume() }
-        Button("STOP / CLEAR SIMULATION", role: .destructive) { model.stopAndClear() }
+        Button("STOP & HOLD") { model.stopAndHold() }
+        Button("CLEAR SIMULATION", role: .destructive) { model.clearSimulation() }
       }
 
       Section("Export") {

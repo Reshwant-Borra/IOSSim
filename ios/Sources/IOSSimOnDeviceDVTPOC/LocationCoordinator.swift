@@ -174,6 +174,23 @@ public actor LocationCoordinator {
         )
     }
 
+    public func holdSimulation(writerID: String, mode requestedMode: SimulationMode) async throws {
+        guard writerID == activeWriterID else {
+            await recordStaleWriter(writerID)
+            throw POCError(.staleWriter, "Ignoring hold from stale writer \(writerID).")
+        }
+        mode = requestedMode
+        desiredCoordinate = requestedMode.coordinate ?? desiredCoordinate
+        await recorder.record(
+            category: "LOCATION_HELD",
+            component: "LocationCoordinator",
+            previousState: nil,
+            newState: "held",
+            message: "authoritative writer retained simulated coordinate",
+            metadata: writerMetadata(writerID: writerID)
+        )
+    }
+
     public func stopSimulation(writerID: String, clearLocation: Bool = true) async throws {
         guard writerID == activeWriterID else {
             await recordStaleWriter(writerID)

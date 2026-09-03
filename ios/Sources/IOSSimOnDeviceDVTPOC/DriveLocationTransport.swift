@@ -86,6 +86,7 @@ public struct DriveLocationTransportSetResult: Sendable {
   public let ackMonotonicTime: TimeInterval?
   public let ackLatencyMs: Double?
   public let droppedOrReplacedSamples: Int
+  public let authoritative: Bool
 
   public init(
     transportName: String,
@@ -93,7 +94,8 @@ public struct DriveLocationTransportSetResult: Sendable {
     sendMonotonicTime: TimeInterval? = nil,
     ackMonotonicTime: TimeInterval? = nil,
     ackLatencyMs: Double? = nil,
-    droppedOrReplacedSamples: Int = 0
+    droppedOrReplacedSamples: Int = 0,
+    authoritative: Bool = true
   ) {
     self.transportName = transportName
     self.connectionGeneration = connectionGeneration
@@ -101,6 +103,57 @@ public struct DriveLocationTransportSetResult: Sendable {
     self.ackMonotonicTime = ackMonotonicTime
     self.ackLatencyMs = ackLatencyMs
     self.droppedOrReplacedSamples = droppedOrReplacedSamples
+    self.authoritative = authoritative
+  }
+}
+
+public struct DriveTransportFallbackRequest: Sendable {
+  public let reason: String
+  public let errorDescription: String?
+  public let position: DrivePosition
+  public let transportName: String
+  public let routeProgressMeters: CLLocationDistance
+  public let timestamp: Date
+
+  public init(
+    reason: String,
+    errorDescription: String?,
+    position: DrivePosition,
+    transportName: String,
+    routeProgressMeters: CLLocationDistance,
+    timestamp: Date = Date()
+  ) {
+    self.reason = reason
+    self.errorDescription = errorDescription
+    self.position = position
+    self.transportName = transportName
+    self.routeProgressMeters = routeProgressMeters
+    self.timestamp = timestamp
+  }
+}
+
+public struct DriveCadenceFallbackRequest: Sendable {
+  public let reason: String
+  public let position: DrivePosition
+  public let activeCadence: DriveUpdateCadence
+  public let transportName: String
+  public let routeProgressMeters: CLLocationDistance
+  public let timestamp: Date
+
+  public init(
+    reason: String,
+    position: DrivePosition,
+    activeCadence: DriveUpdateCadence,
+    transportName: String,
+    routeProgressMeters: CLLocationDistance,
+    timestamp: Date = Date()
+  ) {
+    self.reason = reason
+    self.position = position
+    self.activeCadence = activeCadence
+    self.transportName = transportName
+    self.routeProgressMeters = routeProgressMeters
+    self.timestamp = timestamp
   }
 }
 
@@ -112,11 +165,34 @@ public protocol DriveLocationTransport: Sendable {
     sample: RichDriveSample, writerID: String, mode: SimulationMode,
     traceContext: DriveTraceContext?, diagnostics: DriveDiagnostics?
   ) async throws -> DriveLocationTransportSetResult
+  func submit(
+    sample: RichDriveSample, writerID: String, mode: SimulationMode,
+    traceContext: DriveTraceContext?, diagnostics: DriveDiagnostics?
+  ) async throws -> DriveLocationTransportSetResult
   func stop(writerID: String, clearLocation: Bool) async throws
   func reconnectIfNeeded() async
   func currentConnectionGeneration() async -> Int
   func setReconnectRestoreProvider(
     writerID: String, provider: (@Sendable () async -> RichDriveSample?)?) async
+}
+
+public extension DriveLocationTransport {
+  func submit(
+    sample: RichDriveSample, writerID: String, mode: SimulationMode,
+    traceContext: DriveTraceContext?, diagnostics: DriveDiagnostics?
+  ) async throws -> DriveLocationTransportSetResult {
+    try await set(
+      sample: sample,
+      writerID: writerID,
+      mode: mode,
+      traceContext: traceContext,
+      diagnostics: diagnostics
+    )
+  }
+}
+
+public protocol TerminalDriveLocationTransport: DriveLocationTransport {
+  func markTerminalForStop() async
 }
 
 public final class DVTDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
@@ -180,7 +256,188 @@ public final class DVTDriveLocationTransport: DriveLocationTransport, @unchecked
   }
 }
 
-public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
+public final class LatestSampleDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
+  public var transportName: String { base.transportName }
+
+  private let base: DriveLocationTransport
+  private let sender = LatestSampleDriveTransportSender()
+
+  public init(base: DriveLocationTransport) {
+    self.base = base
+  }
+
+  public func start(_ context: DriveLocationTransportStartContext) async throws {
+    await sender.start()
+    try await base.start(context)
+  }
+
+  public func set(
+    sample: RichDriveSample,
+    writerID: String,
+    mode: SimulationMode,
+    traceContext: DriveTraceContext?,
+    diagnostics: DriveDiagnostics?
+  ) async throws -> DriveLocationTransportSetResult {
+    try await base.set(
+      sample: sample,
+      writerID: writerID,
+      mode: mode,
+      traceContext: traceContext,
+      diagnostics: diagnostics
+    )
+  }
+
+  public func submit(
+    sample: RichDriveSample,
+    writerID: String,
+    mode: SimulationMode,
+    traceContext: DriveTraceContext?,
+    diagnostics: DriveDiagnostics?
+  ) async throws -> DriveLocationTransportSetResult {
+    try await sender.submit(
+      sample: sample,
+      writerID: writerID,
+      mode: mode,
+      traceContext: traceContext,
+      diagnostics: diagnostics,
+      base: base,
+      transportName: transportName
+    )
+  }
+
+  public func stop(writerID: String, clearLocation: Bool) async throws {
+    await (base as? TerminalDriveLocationTransport)?.markTerminalForStop()
+    await sender.stop()
+    try await base.stop(writerID: writerID, clearLocation: clearLocation)
+  }
+
+  public func reconnectIfNeeded() async {
+    await base.reconnectIfNeeded()
+  }
+
+  public func currentConnectionGeneration() async -> Int {
+    await base.currentConnectionGeneration()
+  }
+
+  public func setReconnectRestoreProvider(
+    writerID: String,
+    provider: (@Sendable () async -> RichDriveSample?)?
+  ) async {
+    await base.setReconnectRestoreProvider(writerID: writerID, provider: provider)
+  }
+}
+
+private struct LatestSampleDriveTransportItem: Sendable {
+  let sample: RichDriveSample
+  let writerID: String
+  let mode: SimulationMode
+  let traceContext: DriveTraceContext?
+  let diagnostics: DriveDiagnostics?
+}
+
+private actor LatestSampleDriveTransportSender {
+  private var pending: LatestSampleDriveTransportItem?
+  private var worker: Task<Void, Never>?
+  private var stopped = true
+  private var lastFailure: Error?
+
+  func start() {
+    pending = nil
+    lastFailure = nil
+    stopped = false
+  }
+
+  func submit(
+    sample: RichDriveSample,
+    writerID: String,
+    mode: SimulationMode,
+    traceContext: DriveTraceContext?,
+    diagnostics: DriveDiagnostics?,
+    base: DriveLocationTransport,
+    transportName: String
+  ) async throws -> DriveLocationTransportSetResult {
+    if let failure = lastFailure {
+      lastFailure = nil
+      throw failure
+    }
+    guard !stopped else {
+      throw POCError(.disconnected, "Latest-sample sender is stopped.")
+    }
+
+    let replaced = pending == nil ? 0 : 1
+    pending = LatestSampleDriveTransportItem(
+      sample: sample,
+      writerID: writerID,
+      mode: mode,
+      traceContext: traceContext,
+      diagnostics: diagnostics
+    )
+    if worker == nil {
+      worker = Task { [weak self] in
+        await self?.drain(base: base, transportName: transportName)
+      }
+    }
+    return DriveLocationTransportSetResult(
+      transportName: transportName,
+      connectionGeneration: await base.currentConnectionGeneration(),
+      droppedOrReplacedSamples: replaced,
+      authoritative: false
+    )
+  }
+
+  func stop() async {
+    stopped = true
+    pending = nil
+    worker?.cancel()
+    let running = worker
+    await running?.value
+    worker = nil
+  }
+
+  private func drain(base: DriveLocationTransport, transportName: String) async {
+    while !Task.isCancelled {
+      guard let item = takePending() else { break }
+      do {
+        let result = try await base.set(
+          sample: item.sample,
+          writerID: item.writerID,
+          mode: item.mode,
+          traceContext: item.traceContext,
+          diagnostics: item.diagnostics
+        )
+        guard !Task.isCancelled, !stopped else { continue }
+        if let traceContext = item.traceContext {
+          await item.diagnostics?.recordRichDriveTransportSet(
+            context: traceContext,
+            sample: item.sample,
+            result: result
+          )
+        }
+      } catch {
+        guard !Task.isCancelled, !stopped else { continue }
+        lastFailure = error
+        await item.diagnostics?.recordState(
+          "rich_latest_sample_send_failed",
+          message: "latest-sample transport send failed",
+          metadata: ["error": String(describing: error), "transport": transportName]
+        )
+      }
+    }
+    finishWorker()
+  }
+
+  private func takePending() -> LatestSampleDriveTransportItem? {
+    guard !stopped else { return nil }
+    defer { pending = nil }
+    return pending
+  }
+
+  private func finishWorker() {
+    worker = nil
+  }
+}
+
+public final class XCTestRichDriveLocationTransport: TerminalDriveLocationTransport, @unchecked Sendable {
   public let transportName = DriveLocationOutputMode.richXCUILocationExperimental.displayName
 
   private let coordinator: LocationCoordinator
@@ -189,7 +446,7 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
   private let port: UInt16
   private let runnerTimeoutSeconds: Double
   private let restoreStore = RichDriveRestoreSampleStore()
-  private var sessionID: String?
+  private let lifecycle = RichDriveTransportLifecycle()
 
   public init(
     locationCoordinator: LocationCoordinator,
@@ -205,7 +462,7 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
   }
 
   public func start(_ context: DriveLocationTransportStartContext) async throws {
-    sessionID = context.sessionID.uuidString
+    await lifecycle.start(sessionID: context.sessionID.uuidString)
     try await coordinator.startSimulation(
       writerID: context.writerID,
       mode: .drive(
@@ -228,9 +485,16 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
     traceContext: DriveTraceContext?,
     diagnostics: DriveDiagnostics?
   ) async throws -> DriveLocationTransportSetResult {
+    guard let activeSessionID = await lifecycle.activeSessionID() else {
+      throw POCError(.disconnected, "Rich Drive transport is stopped.")
+    }
     let generation = await coordinator.currentConnectionGeneration()
     let result = try await tcpClient.setLocation(
-      sample: sample, sessionID: sessionID, ackTimeoutSeconds: 0.2)
+      sample: sample, sessionID: activeSessionID, ackTimeoutSeconds: 0.2)
+    guard await lifecycle.isActive(sessionID: activeSessionID) else {
+      throw CancellationError()
+    }
+    try await coordinator.holdSimulation(writerID: writerID, mode: mode)
     return DriveLocationTransportSetResult(
       transportName: transportName,
       connectionGeneration: generation,
@@ -242,8 +506,10 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
   }
 
   public func stop(writerID: String, clearLocation: Bool) async throws {
+    let stoppedSessionID = await lifecycle.markTerminal()
+    await restoreStore.set(nil)
     _ = try? await tcpClient.send(
-      RichDriveIPCMessage(type: .stopSession, sequence: -1, sessionID: sessionID),
+      RichDriveIPCMessage(type: .stopSession, sequence: -1, sessionID: stoppedSessionID),
       ackTimeoutSeconds: 1
     )
     await tcpClient.disconnect()
@@ -251,21 +517,33 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
     try await coordinator.stopSimulation(writerID: writerID, clearLocation: clearLocation)
   }
 
+  public func markTerminalForStop() async {
+    _ = await lifecycle.markTerminal()
+    await restoreStore.set(nil)
+  }
+
   public func reconnectIfNeeded() async {
+    guard let activeSessionID = await lifecycle.activeSessionID() else { return }
     await tcpClient.disconnect()
     await runnerClient.stopGate3OnDeviceXCTest()
+    guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
     await coordinator.reconnectIfNeeded()
+    guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
     do {
       try await runnerClient.startRichDriveOnDeviceXCTest(
         port: port, timeoutSeconds: runnerTimeoutSeconds)
+      guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
       try await tcpClient.connect(timeoutSeconds: 8)
+      guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
       _ = try await tcpClient.send(
-        RichDriveIPCMessage(type: .startSession, sequence: 0, sessionID: sessionID),
+        RichDriveIPCMessage(type: .startSession, sequence: 0, sessionID: activeSessionID),
         ackTimeoutSeconds: 1
       )
-      if let sample = await currentRestoreSample() {
+      if await lifecycle.isActive(sessionID: activeSessionID),
+        let sample = await currentRestoreSample()
+      {
         _ = try await tcpClient.setLocation(
-          sample: sample, sessionID: sessionID, ackTimeoutSeconds: 0.5)
+          sample: sample, sessionID: activeSessionID, ackTimeoutSeconds: 0.5)
       }
     } catch {
       // The next scheduler send records the concrete failure.
@@ -288,6 +566,29 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
 
   private func currentRestoreSample() async -> RichDriveSample? {
     await restoreStore.currentSample()
+  }
+}
+
+private actor RichDriveTransportLifecycle {
+  private var sessionID: String?
+  private var terminal = true
+
+  func start(sessionID: String) {
+    self.sessionID = sessionID
+    terminal = false
+  }
+
+  func activeSessionID() -> String? {
+    terminal ? nil : sessionID
+  }
+
+  func isActive(sessionID candidate: String) -> Bool {
+    !terminal && sessionID == candidate
+  }
+
+  func markTerminal() -> String? {
+    terminal = true
+    return sessionID
   }
 }
 
@@ -382,9 +683,11 @@ public actor RichDriveTCPClient {
       guard socketFD >= 0 else {
         throw POCError(.disconnected, "Rich Drive IPC is not connected.")
       }
+      try Task.checkCancellation()
       let sendTime = ProcessInfo.processInfo.systemUptime
       let line = try RichDriveIPCCodec.encodeLine(message)
       try writeAll(line)
+      try Task.checkCancellation()
       let ack = try readAck(sequence: message.sequence, timeoutSeconds: ackTimeoutSeconds)
       let ackTime = ack == nil ? nil : ProcessInfo.processInfo.systemUptime
       return RichDriveTCPSendResult(
@@ -429,6 +732,7 @@ public actor RichDriveTCPClient {
       guard timeoutSeconds > 0 else { return nil }
       let deadline = Date().addingTimeInterval(timeoutSeconds)
       while Date() < deadline {
+        try Task.checkCancellation()
         if let line = nextBufferedLine(),
           let ack = try? RichDriveIPCCodec.decodeAcknowledgementLine(line),
           ack.sequence == expectedSequence
@@ -438,7 +742,8 @@ public actor RichDriveTCPClient {
 
         let remaining = max(0, deadline.timeIntervalSinceNow)
         var descriptor = pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)
-        let ready = Darwin.poll(&descriptor, 1, Int32(remaining * 1000))
+        let pollMilliseconds = Int32(min(remaining * 1000, 50))
+        let ready = Darwin.poll(&descriptor, 1, pollMilliseconds)
         if ready < 0 {
           throw POCError(.disconnected, "Rich Drive IPC ACK poll failed: \(errnoDescription())")
         }

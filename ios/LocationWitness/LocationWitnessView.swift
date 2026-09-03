@@ -15,6 +15,7 @@ final class LocationWitnessViewModel: ObservableObject {
     @Published private(set) var exportAvailabilityText = "No recording data to export."
 
     private let recorder = LocationWitnessRecorder()
+    private var preparedExportSignature: ExportSignature?
 
     init() {
         recorder.onChange = { [weak self] in
@@ -25,6 +26,7 @@ final class LocationWitnessViewModel: ObservableObject {
 
     func reset() {
         recorder.reset()
+        removePreparedExportFile()
         statusText = "Reset"
         refresh()
     }
@@ -40,6 +42,7 @@ final class LocationWitnessViewModel: ObservableObject {
         recorder.stop()
         isRecording = false
         statusText = "Stopped"
+        prepareMetricsExport()
         refresh()
     }
 
@@ -51,13 +54,7 @@ final class LocationWitnessViewModel: ObservableObject {
         isRecording = recorder.isRecording
         latestRawMetadataSummaryText = observations.last?.wireText ?? Self.unknownObservationText
         persistedObservationsText = observations.map(\.wireText).joined(separator: "|")
-        metricsExportFileURL = Self.writeMetricsExport(
-            observations: observations,
-            callbackCount: recorder.callbackCount,
-            isRecording: recorder.isRecording,
-            recordingStartTimestamp: recorder.recordingStartTimestamp,
-            recordingStopTimestamp: recorder.recordingStopTimestamp
-        )
+        prepareMetricsExportIfNeeded()
         if observations.isEmpty {
             exportAvailabilityText = "No recording data to export."
         } else if recorder.isRecording {
@@ -69,15 +66,71 @@ final class LocationWitnessViewModel: ObservableObject {
         }
     }
 
+    func prepareMetricsExportForSharing() -> URL? {
+        prepareMetricsExport()
+        return metricsExportFileURL
+    }
+
+    private func prepareMetricsExportIfNeeded() {
+        let signature = ExportSignature(
+            observationCount: recorder.observations.count,
+            callbackCount: recorder.callbackCount,
+            recordingStartTimestamp: recorder.recordingStartTimestamp,
+            recordingStopTimestamp: recorder.recordingStopTimestamp
+        )
+        guard !recorder.observations.isEmpty, !recorder.isRecording else {
+            removePreparedExportFile()
+            return
+        }
+        guard signature != preparedExportSignature || metricsExportFileURL?.isReachableFileURL != true else {
+            return
+        }
+        prepareMetricsExport(generatedAt: recorder.recordingStopTimestamp ?? Date())
+    }
+
+    private func prepareMetricsExport(generatedAt: Date = Date()) {
+        guard !recorder.observations.isEmpty, !recorder.isRecording else {
+            removePreparedExportFile()
+            return
+        }
+        let signature = ExportSignature(
+            observationCount: recorder.observations.count,
+            callbackCount: recorder.callbackCount,
+            recordingStartTimestamp: recorder.recordingStartTimestamp,
+            recordingStopTimestamp: recorder.recordingStopTimestamp
+        )
+        if signature == preparedExportSignature, metricsExportFileURL?.isReachableFileURL == true {
+            return
+        }
+        removePreparedExportFile()
+        metricsExportFileURL = Self.writeMetricsExport(
+            observations: recorder.observations,
+            callbackCount: recorder.callbackCount,
+            isRecording: recorder.isRecording,
+            recordingStartTimestamp: recorder.recordingStartTimestamp,
+            recordingStopTimestamp: recorder.recordingStopTimestamp,
+            generatedAt: generatedAt
+        )
+        preparedExportSignature = metricsExportFileURL == nil ? nil : signature
+    }
+
+    private func removePreparedExportFile() {
+        if let metricsExportFileURL {
+            try? FileManager.default.removeItem(at: metricsExportFileURL)
+        }
+        metricsExportFileURL = nil
+        preparedExportSignature = nil
+    }
+
     private static func writeMetricsExport(
         observations: [LocationWitnessObservation],
         callbackCount: Int,
         isRecording: Bool,
         recordingStartTimestamp: Date?,
-        recordingStopTimestamp: Date?
+        recordingStopTimestamp: Date?,
+        generatedAt: Date
     ) -> URL? {
         guard !observations.isEmpty, !isRecording else { return nil }
-        let generatedAt = Date()
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(LocationWitnessMetricsExporter.fileName(generatedAt: generatedAt))
         let document = LocationWitnessMetricsExporter.document(
@@ -124,6 +177,13 @@ final class LocationWitnessViewModel: ObservableObject {
         @unknown default: return "unknown"
         }
     }
+
+    private struct ExportSignature: Equatable {
+        let observationCount: Int
+        let callbackCount: Int
+        let recordingStartTimestamp: Date?
+        let recordingStopTimestamp: Date?
+    }
 }
 
 struct LocationWitnessView: View {
@@ -132,33 +192,36 @@ struct LocationWitnessView: View {
     var body: some View {
         List {
             Section("Recorder") {
-                HStack {
-                    Button("Reset") {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 10),
+                        GridItem(.flexible(), spacing: 10)
+                    ],
+                    spacing: 10
+                ) {
+                    witnessButton("Reset", id: "LocationWitness.Reset") {
                         model.reset()
                     }
-                    .accessibilityIdentifier("LocationWitness.Reset")
 
-                    Button("Start") {
+                    witnessButton("Start", id: "LocationWitness.Start") {
                         model.start()
                     }
                     .disabled(model.isRecording)
-                    .accessibilityIdentifier("LocationWitness.Start")
 
-                    Button("Stop") {
+                    witnessButton("Stop", id: "LocationWitness.Stop", role: .destructive) {
                         model.stop()
                     }
                     .disabled(!model.isRecording)
-                    .accessibilityIdentifier("LocationWitness.Stop")
 
-                    if let metricsExportFileURL = model.metricsExportFileURL {
-                        ShareLink("Export Metrics", item: metricsExportFileURL)
-                            .accessibilityIdentifier("LocationWitness.ExportMetrics")
-                    } else {
-                        Button("Export Metrics") {}
-                            .disabled(true)
-                            .accessibilityIdentifier("LocationWitness.ExportMetrics")
+                    witnessButton("Export Metrics", id: "LocationWitness.ExportMetrics") {
+                        if let url = model.prepareMetricsExportForSharing() {
+                            ShareSheetPresenter.present(url: url)
+                        }
                     }
+                    .disabled(model.metricsExportFileURL == nil)
+                    .accessibilityValue(model.metricsExportFileURL?.lastPathComponent ?? "disabled")
                 }
+                .buttonStyle(.bordered)
 
                 Text(model.statusText)
                     .font(.caption.monospaced())
@@ -193,6 +256,76 @@ struct LocationWitnessView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             model.refresh()
         }
+    }
+
+    private func witnessButton(
+        _ title: String,
+        id: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier(id)
+    }
+}
+
+private enum ShareSheetPresenter {
+    @MainActor
+    static func present(url: URL) {
+        guard let presenter = UIApplication.shared.activePresenter else { return }
+        let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = presenter.view
+            popover.sourceRect = CGRect(
+                x: presenter.view.bounds.midX,
+                y: presenter.view.bounds.midY,
+                width: 0,
+                height: 0
+            )
+            popover.permittedArrowDirections = []
+        }
+        presenter.present(activity, animated: true)
+    }
+}
+
+private extension UIApplication {
+    @MainActor
+    var activePresenter: UIViewController? {
+        connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .rootViewController?
+            .topMostPresented
+    }
+}
+
+private extension UIViewController {
+    var topMostPresented: UIViewController {
+        if let navigationController = self as? UINavigationController {
+            return navigationController.visibleViewController?.topMostPresented ?? navigationController
+        }
+        if let tabBarController = self as? UITabBarController {
+            return tabBarController.selectedViewController?.topMostPresented ?? tabBarController
+        }
+        if let presentedViewController {
+            return presentedViewController.topMostPresented
+        }
+        return self
+    }
+}
+
+private extension URL {
+    var isReachableFileURL: Bool {
+        (try? checkResourceIsReachable()) == true
     }
 }
 

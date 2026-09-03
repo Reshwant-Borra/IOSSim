@@ -79,12 +79,14 @@ public enum DriveUpdateCadence: String, CaseIterable, Codable, Equatable, Sendab
 
     public var id: String { rawValue }
 
+    public static let defaultCadence: DriveUpdateCadence = .smooth2Hz
+
     public var displayName: String {
         switch self {
         case .baseline1Hz:
-            return "Baseline - 1 update/sec"
+            return "Baseline 1 Hz Compatibility"
         case .smooth2Hz:
-            return "Smooth Test - 2 updates/sec"
+            return "Smooth 2 Hz"
         }
     }
 
@@ -93,7 +95,7 @@ public enum DriveUpdateCadence: String, CaseIterable, Codable, Equatable, Sendab
         case .baseline1Hz:
             return "baseline_1hz"
         case .smooth2Hz:
-            return "smooth_test_2hz"
+            return "smooth_2hz"
         }
     }
 
@@ -116,6 +118,92 @@ public enum DriveUpdateCadence: String, CaseIterable, Codable, Equatable, Sendab
 
     public func expectedDistancePerUpdateMeters(speedMetersPerSecond: Double) -> Double {
         speedMetersPerSecond * intervalSeconds
+    }
+}
+
+public struct DriveTransportHealthPolicy: Sendable {
+    public static let richConsecutiveFailureLimit = 2
+    public static let richMissingAckLimit = 3
+
+    private var consecutiveFailures = 0
+    private var consecutiveMissingAcks = 0
+
+    public init() {}
+
+    public mutating func recordSuccess(result: DriveLocationTransportSetResult) -> String? {
+        consecutiveFailures = 0
+        if result.sendMonotonicTime != nil && result.ackMonotonicTime == nil {
+            consecutiveMissingAcks += 1
+        } else {
+            consecutiveMissingAcks = 0
+        }
+        guard consecutiveMissingAcks >= Self.richMissingAckLimit else { return nil }
+        return "Rich Drive did not acknowledge \(consecutiveMissingAcks) consecutive location updates."
+    }
+
+    public mutating func recordFailure(_ error: Error) -> String? {
+        consecutiveFailures += 1
+        consecutiveMissingAcks = 0
+        guard consecutiveFailures >= Self.richConsecutiveFailureLimit else { return nil }
+        return "Rich Drive failed \(consecutiveFailures) consecutive location updates: \(String(describing: error))"
+    }
+}
+
+public struct DriveCadenceHealthSample: Sendable {
+    public let missedDeadlineCount: Int
+    public let ackLatencyMs: Double?
+    public let droppedOrReplacedSamples: Int
+
+    public init(
+        missedDeadlineCount: Int,
+        ackLatencyMs: Double?,
+        droppedOrReplacedSamples: Int
+    ) {
+        self.missedDeadlineCount = missedDeadlineCount
+        self.ackLatencyMs = ackLatencyMs
+        self.droppedOrReplacedSamples = droppedOrReplacedSamples
+    }
+}
+
+public struct DriveCadenceHealthPolicy: Sendable {
+    public static let evaluationWindow = 8
+    public static let unhealthyMissedDeadlineTotal = 3
+    public static let unhealthyDroppedOrReplacedTotal = 3
+    public static let unhealthyAckLatencyFractionOfInterval = 0.8
+    public static let unhealthyAckPressureCount = 4
+
+    private var samples: [DriveCadenceHealthSample] = []
+
+    public init() {}
+
+    public mutating func record(
+        sample: DriveCadenceHealthSample,
+        cadence: DriveUpdateCadence
+    ) -> String? {
+        guard cadence == .smooth2Hz else { return nil }
+        samples.append(sample)
+        if samples.count > Self.evaluationWindow {
+            samples.removeFirst(samples.count - Self.evaluationWindow)
+        }
+        guard samples.count == Self.evaluationWindow else { return nil }
+
+        let missedDeadlines = samples.reduce(0) { $0 + max(0, $1.missedDeadlineCount) }
+        if missedDeadlines >= Self.unhealthyMissedDeadlineTotal {
+            return "Smooth 2 Hz missed \(missedDeadlines) scheduler deadlines in the recent window."
+        }
+
+        let dropped = samples.reduce(0) { $0 + max(0, $1.droppedOrReplacedSamples) }
+        if dropped >= Self.unhealthyDroppedOrReplacedTotal {
+            return "Smooth 2 Hz replaced \(dropped) pending transport samples in the recent window."
+        }
+
+        let ackPressureThreshold = cadence.targetIntervalMs * Self.unhealthyAckLatencyFractionOfInterval
+        let pressuredAcks = samples.filter { ($0.ackLatencyMs ?? 0) >= ackPressureThreshold }.count
+        if pressuredAcks >= Self.unhealthyAckPressureCount {
+            return "Smooth 2 Hz transport ACK latency approached the update interval \(pressuredAcks) times in the recent window."
+        }
+
+        return nil
     }
 }
 

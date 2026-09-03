@@ -1,6 +1,6 @@
 # Experimental Drive Mode Implementation
 
-Status date: 2026-09-01
+Status date: 2026-09-02
 
 This document describes the testing-only Drive Mode added to the existing IOSSim iPhone app. It does not replace the proven static on-device DVT location simulation flow.
 
@@ -13,6 +13,8 @@ BASIC DRIVE POC PHYSICALLY DEMONSTRATED
 WITH FIRST INSTRUMENTED PHYSICAL CHARACTERIZATION COMPLETE
 ABSOLUTE-DEADLINE 1 HZ / 2 HZ CADENCE EXPERIMENT SOFTWARE-VALIDATED
 RICH XCUILOCATION DRIVE IS THE DEFAULT TRANSPORT
+SMOOTH 2 HZ IS THE DEFAULT CADENCE
+AUTOMATIC COMPATIBILITY FALLBACKS ARE IMPLEMENTED
 ```
 
 Implemented:
@@ -20,8 +22,8 @@ Implemented:
 - Experimental `Drive Mode` entry under the existing app's `Experimental` section.
 - MapKit automobile route generation and SwiftUI route preview.
 - Constant-speed route playback from 15-70 mph.
-- Monotonic elapsed-time scheduler at approximately 1 Hz.
-- Pause, resume, completed-holding, and explicit Stop/Clear controls.
+- Monotonic elapsed-time scheduler with Smooth 2 Hz default and Baseline 1 Hz Compatibility fallback.
+- Pause, resume, Stop & Hold, Clear Simulation, and destination-hold controls.
 - Single authoritative `LocationCoordinator` actor shared by static Set Location and Drive Mode.
 - Writer IDs for static and drive ownership.
 - Connection generations and stale-generation callback handling.
@@ -31,10 +33,12 @@ Implemented:
 - iPhone target Debug iphoneos build validation.
 - Basic foreground physical Drive route simulation on an actual iPhone.
 - First instrumented physical Drive characterization session `DRIVE-20260828-100624`.
-- Configurable Drive playback cadence: baseline 1 Hz and smooth-test 2 Hz.
+- Configurable Drive playback cadence: Smooth 2 Hz and Baseline 1 Hz Compatibility.
 - Absolute-deadline scheduler timing based on `ContinuousClock`.
 - Rich XCUILocation Drive transport as the default Drive output.
-- DVT LocationSimulation retained as the explicit compatibility fallback.
+- DVT LocationSimulation retained as manual and automatic compatibility fallback.
+- Automatic Rich Drive to DVT Compatibility fallback after bounded startup/runtime Rich failure.
+- Automatic Smooth 2 Hz to Baseline 1 Hz Compatibility fallback after sustained scheduler/transport health failure.
 - IOSSimLocationWitness JSON Export Metrics control for owned validation recordings.
 
 Proven physical results:
@@ -127,9 +131,11 @@ manual choice is preserved.
 
 Rich Drive still depends on Developer Mode, LocalDevVPN, saved RPPairing, a
 preinstalled signed XCTest runner, and developer-service availability. Startup
-failure is surfaced in the UI and diagnostics. IOSSim does not silently auto
-fallback to DVT because unsafe automatic fallback can reintroduce duplicate
-writers; fallback is a manual Drive Output selection.
+failure is surfaced in the UI and diagnostics. If Rich Drive cannot start or
+cannot continue after bounded health checks, IOSSim stops the scheduler, tears
+down Rich IPC and the XCTest runner, releases the Rich writer, starts DVT
+Compatibility, writes the current route coordinate once through DVT, and resumes
+from that route position. It never starts DVT while Rich still owns writes.
 
 `IdeviceOnDeviceTunnelClient` remains the only low-level native client. It still owns the FFI handles and still calls:
 
@@ -179,6 +185,15 @@ LocationCoordinator rejects stale writer
 Drive remains authoritative
 ```
 
+Fallback transitions preserve this invariant:
+
+- exactly one `DriveScheduler` is stored in `DriveViewModel`;
+- exactly one active `DriveLocationTransport` owns the session writer at a time;
+- Rich is stopped before DVT starts during automatic transport fallback;
+- cadence fallback replaces the scheduler only after the old scheduler is stopped;
+- stale generations and stale writer IDs are rejected by `LocationCoordinator`;
+- once a session falls back to DVT or Baseline 1 Hz, it stays there until the user starts a new Drive session.
+
 ## Connection Lifecycle
 
 `LocationCoordinator` owns the current connection generation. Every fresh DVT connection increments `connectionGeneration`. Stale callbacks from older generations are logged as `STALE_GENERATION` and ignored.
@@ -226,11 +241,12 @@ Pause stops route progression through the controller's existing active-elapsed c
 Drive Mode exposes an explicit playback cadence:
 
 ```text
-Baseline - 1 update/sec:      1.0s interval
-Smooth Test - 2 updates/sec:  0.5s interval
+Smooth 2 Hz:                    0.5s interval
+Baseline 1 Hz Compatibility:    1.0s interval
 ```
 
-Baseline 1 Hz remains the default to preserve the physically characterized behavior as the regression baseline. Smooth Test 2 Hz is an experimental comparison mode only.
+Smooth 2 Hz is the default. Baseline 1 Hz Compatibility remains selectable and is
+also the automatic fallback cadence.
 
 Route speed is cadence-independent:
 
@@ -242,10 +258,15 @@ At 35 mph / ~15.646 m/s, expected spatial step is approximately:
 
 ```text
 Baseline 1 Hz:     ~15.65 m/update
-Smooth Test 2 Hz:  ~7.82 m/update
+Smooth 2 Hz:       ~7.82 m/update
 ```
 
-The 2 Hz mode is not yet physically proven to improve visual smoothness or native speed/course metadata.
+Automatic cadence fallback uses a bounded rolling window rather than one-off
+jitter. Smooth 2 Hz falls back to Baseline 1 Hz Compatibility after sustained
+missed scheduler deadlines, repeated dropped/replaced samples, or repeated ACK
+latency pressure approaching the 0.5 second update interval. The route active
+elapsed time is preserved, missed points are not replayed, and a fresh
+absolute-deadline segment starts at the current route position.
 
 ## Route Design
 
@@ -261,9 +282,21 @@ It does not treat raw polyline vertices as scheduler ticks.
 
 ## Completion Behavior
 
-When expected distance reaches the route distance, Drive Mode enters `completedHolding`. It holds the destination coordinate and does not call `clear`.
+When expected distance reaches the route distance, Drive Mode enters
+`completedHolding`. It sends the final destination coordinate, sends one
+stationary held sample for Rich Drive so native speed is no longer the selected
+moving speed, stops route progression, and holds the destination coordinate. It
+does not call `clear`.
 
-The user must press `STOP / CLEAR SIMULATION` to call `location_simulation_clear` and return to real location behavior.
+Stop & Hold stops route progression immediately and holds the most recent
+authoritative route coordinate. It stops scheduler ticks and keeps the active
+transport only as needed to retain the simulated coordinate. It does not snap to
+origin, destination, static state, or real location.
+
+Clear Simulation stops the scheduler, stops Rich IPC/XCTest or DVT transport,
+calls the developer clear path, releases Drive state, and allows physical Core
+Location to resume naturally. Clear is intended to be idempotent from active,
+paused, held, arrived, fallback, reconnecting, or partially failed startup states.
 
 ## Background Behavior
 
@@ -305,7 +338,14 @@ Per requested update, Drive Mode records:
 - missed-deadline count
 - spatial step distance
 
-Lifecycle and connection events include start, pause, resume, completion, explicit stop, clear, reconnect start/success/failure, and stale generation callbacks.
+Lifecycle and connection events include start, pause, resume, Stop & Hold,
+destination hold, clear, transport fallback trigger/completion/failure, cadence
+fallback trigger/completion, reconnect start/success/failure, and stale
+generation callbacks.
+
+Fallback diagnostics include fallback reason, first error when available, active
+transport, active cadence, route progress, coordinate, transition duration, and
+whether the previous writer was confirmed stopped.
 
 Possible snap-back is detected when observed route progress decreases by more than 50 meters while Drive diagnostics are active. The event category is `POSSIBLE_SNAP_BACK`, with previous/current/expected progress, writer ID, generation, lifecycle state, and source flags.
 
@@ -526,35 +566,35 @@ Foreground test:
 2. Open `Experimental` -> `Drive Mode`.
 3. Use approximately the same route, selected speed, device, network, app build, and test duration for all comparison runs.
 
-Test A - Baseline 1 Hz:
+Test A - Smooth 2 Hz:
 
-1. Set `Playback Cadence` to `Baseline - 1 update/sec`.
+1. Confirm `Playback Cadence` is `Smooth 2 Hz`.
 2. Select approximately 35 mph.
 3. Use the same short route.
 4. Keep IOSSim foregrounded initially.
 5. Drive approximately 2-5 minutes.
-6. Stop/Clear.
+6. Use Stop & Hold, then Clear Simulation.
 7. Export diagnostics.
 
-Test B - Smooth Test 2 Hz:
+Test B - Baseline 1 Hz Compatibility:
 
 1. Use the same route.
 2. Use the same speed.
-3. Set `Playback Cadence` to `Smooth Test - 2 updates/sec`.
+3. Set `Playback Cadence` to `Baseline 1 Hz Compatibility`.
 4. Keep the same foreground state.
 5. Drive a similar duration.
-6. Stop/Clear.
+6. Use Stop & Hold, then Clear Simulation.
 7. Export diagnostics.
 
 Test C - 2 Hz Background:
 
 1. Run only after foreground 2 Hz works.
-2. Start a 2 Hz Drive.
+2. Start a Smooth 2 Hz Drive.
 3. Keep IOSSim visible approximately 30 seconds.
 4. Switch to another normal app without force-closing IOSSim.
 5. Leave IOSSim backgrounded several minutes.
 6. Return to IOSSim.
-7. Stop/Clear.
+7. Use Stop & Hold, then Clear Simulation.
 8. Export diagnostics.
 
 Compare visual smoothness, tick interval, distance per tick, DVT latency, Core Location latency, native `CLLocation.speed` availability, native `CLLocation.course` availability, snap-backs, and route completion timing.
@@ -575,7 +615,9 @@ Status:
 
 ```text
 RICH DRIVE DEFAULT IMPLEMENTED
-DVT FALLBACK PRESERVED
+DVT FALLBACK PRESERVED AND AUTOMATED
+SMOOTH 2 HZ DEFAULT IMPLEMENTED
+BASELINE 1 HZ FALLBACK PRESERVED AND AUTOMATED
 WITNESS EXPORT METRICS IMPLEMENTED
 ```
 
@@ -603,13 +645,20 @@ From the preserved checkpoint at commit `728c745929d585a529854fb1944c2e449c453d0
 ### IMPLEMENTED IN THIS PASS
 
 - Rich Drive is now `DriveLocationOutputMode.defaultMode`.
+- Smooth 2 Hz is now `DriveUpdateCadence.defaultCadence`.
 - The normal picker label is `Rich Drive`.
 - DVT remains selectable as `DVT Compatibility`.
+- Cadence labels are `Smooth 2 Hz` and `Baseline 1 Hz Compatibility`.
 - Stored selection migration prefers Rich Drive for unmigrated active-development installs.
 - Manual DVT selection after migration is preserved.
 - Rich startup failure cleanup stops any partially-started transport and clears coordinator ownership.
+- Rich startup/runtime failure now falls back to DVT only after Rich teardown.
+- Smooth 2 Hz now falls back to Baseline 1 Hz only after sustained health failure.
+- Stop & Hold keeps the most recent authoritative coordinate simulated.
+- Clear Simulation explicitly clears developer location simulation and lets real Core Location resume.
+- Natural route completion holds the exact destination coordinate with stationary held speed semantics.
 - Rich reconnect restores current route position through Rich IPC and avoids a DVT restore set.
-- IOSSimLocationWitness has a visible `Export Metrics` ShareLink backed by a JSON file.
+- IOSSimLocationWitness has a visible `Export Metrics` share-sheet button backed by a JSON file with non-overlapping hit targets.
 - Witness exports include metadata, summary, simulated_summary, optional speed_plateaus, and raw observations.
 
 ### UNRESOLVED RISKS
