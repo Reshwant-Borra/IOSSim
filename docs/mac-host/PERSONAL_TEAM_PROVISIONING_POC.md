@@ -2,6 +2,13 @@
 
 Status: Cycle 2 physical validation PASS.
 
+Productization status: the consumer orchestrator, packaged artifact boundary,
+SwiftUI flow, refresh foundation, and sanitized diagnostics are implemented on
+`work/consumer-personal-team-provisioning`. This does not retroactively expand
+the POC proof. Productized-flow physical validation is recorded independently,
+and true profile renewal remains pending until Xcode issues a profile with a
+later expiration date.
+
 The POC physically proves that IOSSim can use a free Apple Personal Team to sign,
 install, refresh, and run the required on-device runtime pieces without changing
 the Drive, XCUILocation, or XCTest feature behavior.
@@ -191,3 +198,10 @@ Move from POC to a consumer Mac provisioning system in three increments:
    explicit cross-team migration handling, redacted diagnostics export, profile
    renewal evidence capture after actual expiration or renewal, and rollback
    instructions that never discard pairing material without user approval.
+
+Implementation details for these increments are now maintained in:
+
+- `CONSUMER_PROVISIONING_ARCHITECTURE.md`
+- `CONSUMER_SETUP_FLOW.md`
+- `AUTOMATIC_REFRESH.md`
+- `PRODUCTION_VS_DEVELOPMENT.md`

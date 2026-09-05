@@ -28,6 +28,8 @@ struct SetupWizardView: View {
                         message: "Complete the iPhone steps below, then check again.",
                         checks: store.status?.deviceActionChecks ?? []
                     )
+                case .appleAccount:
+                    AppleAccountView()
                 case .installing:
                     InstallationView()
                 case .runtimeSetup:
@@ -71,7 +73,7 @@ struct WizardControls: View {
                 primaryAction()
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isRunning)
+            .disabled(store.isRunning || (store.phase == .appleAccount && store.selectedTeam == nil))
             .keyboardShortcut(.defaultAction)
             .accessibilityLabel(buttonTitle)
         }
@@ -79,10 +81,14 @@ struct WizardControls: View {
 
     private var buttonTitle: String {
         switch store.phase {
-        case .macActionRequired, .deviceActionRequired, .runtimeSetup:
+        case .macActionRequired, .deviceActionRequired:
             return "Check Again"
+        case .runtimeSetup:
+            return "I Finished Setup"
         case .waitingForDevice:
             return (store.status?.device.devices.isEmpty == false) ? "Continue" : "Check Again"
+        case .appleAccount:
+            return store.personalTeams.isEmpty ? "Check Again" : "Continue"
         case .installing:
             return "Install"
         case .complete:
@@ -96,8 +102,12 @@ struct WizardControls: View {
         switch store.phase {
         case .complete:
             store.showDashboard()
-        case .macActionRequired, .deviceActionRequired, .runtimeSetup:
+        case .macActionRequired, .deviceActionRequired:
             store.refresh()
+        case .runtimeSetup:
+            store.confirmRuntimeSetup()
+        case .appleAccount:
+            if store.personalTeams.isEmpty { store.refresh() } else { store.continueFromCurrentStatus() }
         case .waitingForDevice:
             if store.status?.device.devices.isEmpty == false {
                 store.continueFromCurrentStatus()
@@ -310,6 +320,41 @@ struct InstallationView: View {
     }
 }
 
+struct AppleAccountView: View {
+    @EnvironmentObject private var store: SetupStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Apple Account")
+                .font(.title2.weight(.semibold))
+            Text("Choose the Personal Team IOSSim should use for this iPhone.")
+                .foregroundStyle(.secondary)
+            if store.personalTeams.isEmpty {
+                FriendlyCheckRow(
+                    title: "Apple account needed",
+                    detail: "Open Xcode Settings > Accounts, sign in with your Apple Account, then return here.",
+                    state: .action
+                )
+            } else {
+                Picker("Personal Team", selection: Binding(
+                    get: { store.selectedTeamIdentifier ?? "" },
+                    set: { store.selectTeam(identifier: $0) }
+                )) {
+                    Text("Choose an account").tag("")
+                    ForEach(store.personalTeams) { team in
+                        Text(team.userDisplayName).tag(team.teamIdentifier)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text("IOSSim uses Xcode’s existing signed-in account. Your password and verification codes are never requested or stored.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 struct RuntimeSetupView: View {
     @EnvironmentObject private var store: SetupStore
 
@@ -317,9 +362,15 @@ struct RuntimeSetupView: View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Finish setup on your iPhone")
                 .font(.title2.weight(.semibold))
+            Text("Open IOSSim, tap Set Up IOSSim, and run Setup until the iPhone shows Setup Complete. Keep LocalDevVPN enabled while setup runs.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(store.status?.runtimeActionChecks ?? []) { check in
                 runtimeBlock(for: check)
             }
+            Text("After the iPhone shows Setup Complete, return here and confirm below.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 

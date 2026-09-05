@@ -34,13 +34,22 @@ public struct DeviceArtifactComponent: Codable, Equatable, Sendable, Identifiabl
     public let version: String
     public let relativePath: String
     public let sha256: String
+    public let signingMode: String?
 
-    public init(role: String, bundleIdentifier: String, version: String, relativePath: String, sha256: String) {
+    public init(
+        role: String,
+        bundleIdentifier: String,
+        version: String,
+        relativePath: String,
+        sha256: String,
+        signingMode: String? = nil
+    ) {
         self.role = role
         self.bundleIdentifier = bundleIdentifier
         self.version = version
         self.relativePath = relativePath
         self.sha256 = sha256
+        self.signingMode = signingMode
     }
 }
 

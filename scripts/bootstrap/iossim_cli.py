@@ -781,12 +781,20 @@ def verify_idevice(runner: Runner) -> bool:
     return run_step(runner, "Verify idevice FFI symbols", "verify-idevice-symbols", [str(IOS_DIR / "scripts" / "verify_idevice_symbols.sh")])
 
 
-def build_ios(runner: Runner, configuration: str = "Debug", packaged: bool = False) -> bool:
+def build_ios(
+    runner: Runner,
+    configuration: str = "Debug",
+    packaged: bool = False,
+    signed_for_device: bool = False,
+) -> bool:
     ok = True
     ok &= run_step(runner, "Swift package build", "swift-build", ["swift", "build", "--package-path", str(IOS_DIR)])
-    build_settings: list[str] = []
+    build_settings: list[str] = [] if signed_for_device else [
+        "CODE_SIGNING_ALLOWED=NO",
+        "CODE_SIGNING_REQUIRED=NO",
+    ]
     if packaged:
-        build_settings = [
+        build_settings += [
             "DEBUG_INFORMATION_FORMAT=",
             "GCC_GENERATE_DEBUGGING_SYMBOLS=NO",
             "SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO",
@@ -956,7 +964,6 @@ def bundled_artifact_specs(configuration: str = "Release") -> list[tuple[str, st
     apps = built_app_paths(configuration)
     return [
         ("iosMain", PROTECTED_BUNDLE_IDS["iosMain"], apps[0]),
-        ("locationWitness", PROTECTED_BUNDLE_IDS["locationWitness"], apps[1]),
         ("locationControlRunner", PROTECTED_BUNDLE_IDS["locationControlRunner"], apps[2]),
     ]
 
@@ -967,24 +974,6 @@ def read_bundle_info(app: Path) -> dict[str, Any]:
         raise RuntimeError(f"{app} is missing Info.plist")
     with info.open("rb") as fh:
         return plistlib.load(fh)
-
-
-def first_apple_development_identity() -> str | None:
-    result = subprocess.run(
-        ["security", "find-identity", "-v", "-p", "codesigning"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.splitlines():
-        if "Apple Development" not in line:
-            continue
-        match = re.search(r"\b([A-Fa-f0-9]{40})\b", line)
-        if match:
-            return match.group(1)
-    return None
 
 
 def replace_bytes_same_length(data: bytes, needle: bytes, replacement_text: str) -> bytes:
@@ -1021,10 +1010,7 @@ def sanitize_packaged_artifact_paths(path: Path) -> int:
 
 
 def resign_ios_artifact(runner: Runner, app: Path) -> bool:
-    identity = first_apple_development_identity()
-    if not identity:
-        print_step("FAIL", "Re-sign sanitized iPhone artifact", "Apple Development identity unavailable")
-        return False
+    identity = "-"
     signables: list[Path] = []
     for child in app.rglob("*"):
         if child.suffix in {".framework", ".xctest"} or child.suffix == ".dylib":
@@ -1142,6 +1128,8 @@ def assemble_self_contained_app(runner: Runner, ios_configuration: str = "Releas
             raise RuntimeError(f"{source.name} bundle ID is {actual_bundle_id}, expected {expected_bundle_id}")
         destination = device_artifacts / source.name
         shutil.copytree(source, destination, symlinks=True)
+        for profile in destination.rglob("embedded.mobileprovision"):
+            profile.unlink()
         for dsym in destination.rglob("*.dSYM"):
             if dsym.is_dir():
                 shutil.rmtree(dsym)
@@ -1150,8 +1138,8 @@ def assemble_self_contained_app(runner: Runner, ios_configuration: str = "Releas
         sanitized_count = sanitize_packaged_artifact_paths(destination)
         if sanitized_count:
             print_step("PASS", f"Sanitized source paths in {source.name}", f"{sanitized_count} file(s)")
-            if not resign_ios_artifact(runner, destination):
-                raise RuntimeError(f"failed to re-sign sanitized iPhone artifact: {destination.name}")
+        if not resign_ios_artifact(runner, destination):
+            raise RuntimeError(f"failed to prepare re-signable iPhone artifact: {destination.name}")
         relative = destination.relative_to(resources).as_posix()
         components.append(
             {
@@ -1160,6 +1148,7 @@ def assemble_self_contained_app(runner: Runner, ios_configuration: str = "Releas
                 "version": str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "unknown"),
                 "relativePath": relative,
                 "sha256": sha256_path(destination),
+                "signingMode": "personalTeamResign",
             }
         )
 
@@ -1232,14 +1221,6 @@ def audit_fail(label: str, detail: str = "") -> bool:
     return False
 
 
-def is_allowed_mobileprovision(path: Path, app_dir: Path) -> bool:
-    relative = path.relative_to(app_dir).as_posix()
-    return (
-        relative.startswith("Contents/Resources/DeviceArtifacts/")
-        and relative.endswith(".app/embedded.mobileprovision")
-    )
-
-
 def scan_file_for_bytes(path: Path, needles: list[bytes]) -> list[str]:
     try:
         data = path.read_bytes()
@@ -1268,7 +1249,12 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
     ok &= audit_pass("Device artifact manifest", "present")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for component in manifest.get("components", []):
+        components = manifest.get("components", [])
+        roles = sorted(component.get("role") for component in components)
+        expected_roles = ["iosMain", "locationControlRunner"]
+        ok &= audit_pass("Consumer install set", ", ".join(roles)) if roles == expected_roles else audit_fail("Consumer install set", f"{roles} != {expected_roles}")
+        ok &= audit_pass("Witness consumer artifact absent") if "locationWitness" not in roles else audit_fail("Witness consumer artifact absent")
+        for component in components:
             relative = component["relativePath"]
             artifact = resources / relative
             expected_hash = component["sha256"]
@@ -1343,10 +1329,8 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
                 source_like.append(relative)
             continue
         if path.name == "embedded.mobileprovision" or path.suffix == ".mobileprovision":
-            if is_allowed_mobileprovision(path, app_dir):
-                mobileprovisions.append(relative)
-            else:
-                forbidden_material.append(relative)
+            mobileprovisions.append(relative)
+            forbidden_material.append(relative)
         if any(part in relative for part in forbidden_name_parts):
             forbidden_material.append(relative)
         if path.suffix in forbidden_suffixes:
@@ -1358,13 +1342,10 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
         secret_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_bytes(path, secret_needles))
     ok &= audit_pass("No source-like files") if not source_like else audit_fail("No source-like files", ", ".join(source_like[:10]))
     ok &= audit_pass("No forbidden development material") if not forbidden_material else audit_fail("No forbidden development material", ", ".join(sorted(set(forbidden_material))[:10]))
-    ok &= audit_pass("Allowed embedded provisioning profiles", str(len(mobileprovisions))) if mobileprovisions else audit_fail("Allowed embedded provisioning profiles", "none found in signed iPhone artifacts")
+    ok &= audit_pass("No developer provisioning profiles packaged") if not mobileprovisions else audit_fail("No developer provisioning profiles packaged", ", ".join(mobileprovisions[:10]))
     ok &= audit_pass("No absolute repository paths") if not path_hits else audit_fail("No absolute repository paths", "; ".join(path_hits[:10]))
     ok &= audit_pass("No private keys/pairing/auth material") if not secret_hits else audit_fail("No private keys/pairing/auth material", "; ".join(secret_hits[:10]))
     ok &= audit_pass("No world-writable files") if not world_writable else audit_fail("No world-writable files", ", ".join(world_writable[:10]))
-    if verbose and mobileprovisions:
-        for item in mobileprovisions:
-            print_step("INFO", "Embedded mobileprovision retained for signed iPhone artifact", item)
     return bool(ok)
 
 
@@ -1397,7 +1378,7 @@ def command_device(args: argparse.Namespace) -> int:
     ok = True
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
-    ok &= build_ios(runner)
+    ok &= build_ios(runner, signed_for_device=True)
     if not ok:
         print_step("FAIL", "Build required before install", "fix build failures above")
         return 1

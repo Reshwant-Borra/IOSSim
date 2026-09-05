@@ -7,6 +7,7 @@ final class SetupStoreTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "IOSSimMac.onboardingCompleted")
         UserDefaults.standard.removeObject(forKey: "IOSSimMac.selectedDeviceIdentifier")
         UserDefaults.standard.removeObject(forKey: "IOSSimMac.selectedDeviceName")
+        UserDefaults.standard.removeObject(forKey: "IOSSimMac.selectedPersonalTeam")
     }
 
     func testSuccessfulSetupFlowReachesRuntimeSetupWhenManualActionsRemain() async throws {
@@ -151,6 +152,35 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertEqual(StatusInterpreter.deviceReadiness(from: status), .developerModeRequired)
     }
 
+    func testLockedSingleDeviceRequiresUnlockBeforeProvisioning() async throws {
+        let locked = DetectedDevice(
+            name: "Locked iPhone",
+            identifier: "A",
+            selectionIdentifier: "A",
+            osVersion: "26.6",
+            developerModeStatus: "enabled",
+            pairingState: "paired",
+            tunnelState: "connected",
+            isLocked: true
+        )
+        let lockCheck = DoctorCheck(
+            state: .action,
+            component: "Device",
+            name: "iPhone unlocked",
+            detail: "locked",
+            action: "Unlock the iPhone and keep it awake.",
+            requiredFor: "device"
+        )
+        let engine = SequenceSetupEngine(status: Self.status(devices: [locked], runtimeActions: [lockCheck]))
+        let store = SetupStore(engine: engine)
+
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .deviceActionRequired)
+        XCTAssertFalse(store.selectedDeviceProvisioningReady)
+    }
+
     func testInstallFailureFlow() async throws {
         let engine = MockIOSSimSetupEngine(scenario: .installFailure)
         let store = SetupStore(engine: engine)
@@ -160,6 +190,97 @@ final class SetupStoreTests: XCTestCase {
         try await waitUntilIdle(store)
         XCTAssertEqual(store.phase, .failed)
         XCTAssertNotNil(store.lastError)
+    }
+
+    func testConsumerFlowRequiresTeamSelectionWhenMultipleTeamsExist() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1"), .team("TEAM2")])
+        let store = SetupStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.phase, .appleAccount)
+        XCTAssertNil(store.selectedTeamIdentifier)
+    }
+
+    func testConsumerInstallBindsExplicitDeviceAndTeam() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1"), .team("TEAM2")])
+        let store = SetupStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        store.selectTeam(identifier: "TEAM2")
+        store.continueFromCurrentStatus()
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.phase, .runtimeSetup)
+        let requests = await engine.requests
+        XCTAssertEqual(requests.map(\.selectedDeviceIdentifier), ["A"])
+        XCTAssertEqual(requests.map(\.selectedTeamIdentifier), ["TEAM2"])
+        XCTAssertEqual(requests.map(\.operation), [.install])
+        XCTAssertEqual(store.provisioningManifest?.teamID, "TEAM2")
+    }
+
+    func testConsumerRuntimeConfirmationReachesCompleteAndPersistsReadyState() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
+        let store = SetupStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        store.continueFromCurrentStatus()
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.phase, .runtimeSetup)
+
+        store.confirmRuntimeSetup()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .complete)
+        XCTAssertEqual(store.provisioningManifest?.runtimeSetupStatus, .ready)
+        XCTAssertTrue(store.onboardingCompleted)
+    }
+
+    func testConsumerBootstrapResumesPendingRuntimeSetupAfterPriorOnboarding() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
+        let initialStore = SetupStore(engine: engine)
+        initialStore.getStarted()
+        try await waitUntilIdle(initialStore)
+        initialStore.continueFromCurrentStatus()
+        try await waitUntilIdle(initialStore)
+        XCTAssertEqual(initialStore.phase, .runtimeSetup)
+
+        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        let resumedStore = SetupStore(engine: engine)
+        resumedStore.bootstrap()
+        try await waitUntilIdle(resumedStore)
+
+        XCTAssertEqual(resumedStore.phase, .runtimeSetup)
+    }
+
+    func testConsumerRefreshAndRepairUseTypedOperations() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
+        let store = SetupStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        store.continueFromCurrentStatus()
+        try await waitUntilIdle(store)
+
+        store.runUpdateComponents()
+        try await waitUntilIdle(store)
+        store.runRepair()
+        try await waitUntilIdle(store)
+
+        let requests = await engine.requests
+        XCTAssertEqual(requests.map(\.operation), [.install, .refresh, .repair])
+        XCTAssertTrue(requests.allSatisfy { !$0.allowFreshInstallAfterCrossTeamConflict })
+    }
+
+    func testFreshInstallFlagRequiresExplicitConfirmedAction() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
+        let store = SetupStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        store.runConfirmedFreshInstall()
+        try await waitUntilIdle(store)
+
+        let request = await engine.requests.last
+        XCTAssertEqual(request?.operation, .install)
+        XCTAssertEqual(request?.allowFreshInstallAfterCrossTeamConflict, true)
     }
 
     private func waitUntilIdle(_ store: SetupStore, timeout: TimeInterval = 3) async throws {
@@ -213,6 +334,141 @@ final class SetupStoreTests: XCTestCase {
             device: DeviceSummary(ready: !devices.isEmpty && runtimeActions.isEmpty, connected: !devices.isEmpty, devices: devices),
             actionsRequired: [],
             checks: checks
+        )
+    }
+}
+
+private extension PersonalTeamCandidate {
+    static func team(_ identifier: String) -> PersonalTeamCandidate {
+        PersonalTeamCandidate(
+            teamIdentifier: identifier,
+            teamDisplayName: "Team \(identifier)",
+            signingIdentityCommonName: "Apple Development",
+            signingIdentityFingerprint: String(repeating: "A", count: 40),
+            certificateSubjectTeamIdentifier: identifier,
+            profileTeamIdentifiers: [identifier],
+            matchingProfileCount: 1,
+            selectedDeviceIncluded: true,
+            personalTeam: true
+        )
+    }
+}
+
+private actor ConsumerSequenceEngine: IOSSimSetupEngine {
+    nonisolated let consumerProvisioningEnabled = true
+    let teams: [PersonalTeamCandidate]
+    private(set) var requests: [ConsumerProvisioningRequest] = []
+    private var manifest: ConsumerProvisioningManifest?
+
+    init(teams: [PersonalTeamCandidate]) { self.teams = teams }
+
+    func doctor() async throws -> DoctorStatus {
+        var checks: [DoctorCheck] = [
+            .init(state: .pass, component: "Mac", name: "macOS supported", detail: "ready"),
+            .init(state: .pass, component: "Apple Tooling", name: "xcrun", detail: "ready")
+        ]
+        let device = DetectedDevice(
+            name: "Test iPhone",
+            identifier: "A",
+            selectionIdentifier: "A",
+            osVersion: "26.6",
+            developerModeStatus: "enabled",
+            pairingState: "paired",
+            tunnelState: "connected"
+        )
+        checks.append(.init(state: .pass, component: "Device", name: "iPhone detected", detail: device.name, requiredFor: "device"))
+        if manifest?.runtimeSetupStatus == .userActionRequired {
+            checks.append(.init(
+                state: .action,
+                component: "Runtime",
+                name: "PAIRING MATERIAL",
+                detail: "stored on iPhone",
+                action: "Open IOSSim on your iPhone and complete the pairing import.",
+                requiredFor: "device"
+            ))
+        }
+        return DoctorStatus(
+            ready: false,
+            mac: MacSummary(ready: true),
+            device: DeviceSummary(ready: true, connected: true, devices: [device]),
+            actionsRequired: [],
+            checks: checks
+        )
+    }
+
+    func setup() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func build() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] { teams }
+    func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { manifest }
+
+    func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest {
+        guard let manifest else {
+            throw ConsumerProvisioningFailure(
+                code: .runnerMappingMissing,
+                stage: .verifyingRuntimeReadiness,
+                userMessage: "Missing setup state.",
+                remediation: "Repair.",
+                developerDetail: "Test manifest missing."
+            )
+        }
+        let updated = manifest.updatingRuntimeSetupStatus(.ready)
+        self.manifest = updated
+        return updated
+    }
+
+    func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        requests.append(request)
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: request.selectedTeamIdentifier)
+        let profile = ConsumerProfileState(
+            artifact: "main",
+            teamIdentifier: request.selectedTeamIdentifier,
+            bundleIdentifier: ids.main,
+            creationDate: Date(),
+            expirationDate: Date().addingTimeInterval(7 * 24 * 60 * 60),
+            remainingValidity: 7 * 24 * 60 * 60,
+            selectedDeviceIncluded: true,
+            personalTeam: true,
+            profileIdentifier: nil,
+            profileFingerprint: nil,
+            refreshRecommended: false
+        )
+        let runnerProfile = ConsumerProfileState(
+            artifact: "runner",
+            teamIdentifier: request.selectedTeamIdentifier,
+            bundleIdentifier: ids.runner,
+            creationDate: profile.creationDate,
+            expirationDate: profile.expirationDate,
+            remainingValidity: profile.remainingValidity,
+            selectedDeviceIncluded: true,
+            personalTeam: true,
+            profileIdentifier: nil,
+            profileFingerprint: nil,
+            refreshRecommended: false
+        )
+        let manifest = ConsumerProvisioningManifest(
+            deviceIdentifierSafe: "A",
+            deviceIdentifierHash: "hash",
+            teamID: request.selectedTeamIdentifier,
+            sourceMainBundleID: ProtectedSourceBundleIdentifiers.default.main,
+            installedMainBundleID: ids.main,
+            sourceUITestBundleID: ProtectedSourceBundleIdentifiers.default.uiTests,
+            installedUITestBundleID: ids.uiTests,
+            sourceRunnerBundleID: ProtectedSourceBundleIdentifiers.default.runner,
+            installedRunnerBundleID: ids.runner,
+            mainProfile: profile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: Date(),
+            appVersion: "1",
+            provisionerVersion: "1"
+        )
+        self.manifest = manifest
+        return ConsumerProvisioningResult(
+            operation: request.operation,
+            finalStage: .complete,
+            manifest: manifest,
+            installedBundleIdentifiers: [ids.main, ids.runner],
+            runtimeRecoveryRecommended: false
         )
     }
 }

@@ -1,10 +1,53 @@
 import Foundation
 
 public protocol IOSSimSetupEngine: Sendable {
+    var consumerProvisioningEnabled: Bool { get }
     func doctor() async throws -> DoctorStatus
     func setup() async throws -> ProcessResult
     func build() async throws -> ProcessResult
     func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult
+    func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate]
+    func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult
+    func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest?
+    func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest
+    func exportSupportBundle() async throws -> URL
+}
+
+public extension IOSSimSetupEngine {
+    var consumerProvisioningEnabled: Bool { false }
+    func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] { [] }
+
+    func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        throw ConsumerProvisioningFailure(
+            code: .unsupported,
+            stage: .preparingArtifacts,
+            userMessage: "Consumer Personal Team provisioning is unavailable in this build.",
+            remediation: "Use the packaged production IOSSim Mac app.",
+            developerDetail: "The selected setup engine does not implement consumer provisioning."
+        )
+    }
+
+    func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { nil }
+
+    func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest {
+        throw ConsumerProvisioningFailure(
+            code: .unsupported,
+            stage: .verifyingRuntimeReadiness,
+            userMessage: "Runtime confirmation is unavailable in this build.",
+            remediation: "Use the packaged production IOSSim Mac app.",
+            developerDetail: "The selected setup engine does not implement runtime confirmation."
+        )
+    }
+
+    func exportSupportBundle() async throws -> URL {
+        throw ConsumerProvisioningFailure(
+            code: .unsupported,
+            stage: .idle,
+            userMessage: "Support export is unavailable in this build.",
+            remediation: "Use the packaged production IOSSim Mac app.",
+            developerDetail: "The selected setup engine does not implement support export."
+        )
+    }
 }
 
 public struct EngineLogEntry: Equatable, Sendable, Identifiable {

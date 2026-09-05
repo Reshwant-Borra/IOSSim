@@ -84,8 +84,21 @@ public enum ProvisioningBackendKind: String, Sendable {
 public protocol DeviceProvisioningBackend: Sendable {
     func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice]
     func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String?
+    func signingDeviceIdentifier(matching selector: String, context: RuntimeProvisioningContext) async -> String?
     func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool?
+    func installedAppCount(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Int?
     func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult
+}
+
+public extension DeviceProvisioningBackend {
+    func installedAppCount(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Int? {
+        guard let installed = await isAppInstalled(
+            bundleIdentifier: bundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        ) else { return nil }
+        return installed ? 1 : 0
+    }
 }
 
 public enum DeviceProvisioningBackendFactory {
@@ -107,6 +120,10 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     }
 
     public func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
+        nil
+    }
+
+    public func signingDeviceIdentifier(matching selector: String, context: RuntimeProvisioningContext) async -> String? {
         nil
     }
 
@@ -134,6 +151,21 @@ public enum AppleDeviceTool {
 
     public static func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
         await DeviceProvisioningBackendFactory.makeSelectedBackend().isAppInstalled(
+            bundleIdentifier: bundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        )
+    }
+
+    public static func signingDeviceIdentifier(matching selector: String, context: RuntimeProvisioningContext) async -> String? {
+        await DeviceProvisioningBackendFactory.makeSelectedBackend().signingDeviceIdentifier(
+            matching: selector,
+            context: context
+        )
+    }
+
+    public static func installedAppCount(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Int? {
+        await DeviceProvisioningBackendFactory.makeSelectedBackend().installedAppCount(
             bundleIdentifier: bundleIdentifier,
             rawDeviceIdentifier: rawDeviceIdentifier,
             context: context
@@ -210,6 +242,7 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
                 selectionIdentifier: rawIdentifier,
                 udidRedacted: RuntimeProvisioning.shortIdentifier(hardware["udid"] as? String),
                 osVersion: properties["osVersionNumber"] as? String,
+                model: hardware["marketingName"] as? String,
                 developerModeStatus: properties["developerModeStatus"] as? String,
                 pairingState: connection["pairingState"] as? String,
                 tunnelState: connection["tunnelState"] as? String
@@ -217,8 +250,8 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
         }
         var liveDevices: [DetectedDevice] = []
         for candidate in candidates {
-            if await canReadLockState(rawDeviceIdentifier: candidate.rawIdentifier, context: context) {
-                liveDevices.append(candidate.device)
+            if let locked = await deviceLockState(rawDeviceIdentifier: candidate.rawIdentifier, context: context) {
+                liveDevices.append(candidate.device.withLockState(locked))
             }
         }
         return liveDevices
@@ -276,10 +309,47 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
             return nil
         }
         guard ready.filter({ $0.raw == selector }).count == 1 else { return nil }
-        return await canReadLockState(rawDeviceIdentifier: selector, context: context) ? selector : nil
+        return await deviceLockState(rawDeviceIdentifier: selector, context: context) == false ? selector : nil
+    }
+
+    public func signingDeviceIdentifier(matching selector: String, context: RuntimeProvisioningContext) async -> String? {
+        guard !RuntimeProvisioning.devicectlForbidden(), let xcrun = RuntimeProvisioning.xcrunURL() else { return nil }
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-signing-device-\(UUID().uuidString)", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true) } catch { return nil }
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let jsonURL = temporaryDirectory.appendingPathComponent("devices.json")
+        let result = try? await context.runner.run(
+            executableURL: xcrun,
+            arguments: ["devicectl", "list", "devices", "--timeout", "8", "--json-output", jsonURL.path, "--quiet"],
+            workingDirectory: temporaryDirectory,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+        guard result?.exitCode == 0,
+              let data = try? Data(contentsOf: jsonURL),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let resultObject = raw["result"] as? [String: Any],
+              let items = resultObject["devices"] as? [[String: Any]] else { return nil }
+        let matches = items.compactMap { item -> String? in
+            let hardware = item["hardwareProperties"] as? [String: Any] ?? [:]
+            let coreDeviceIdentifier = item["identifier"] as? String
+            let udid = hardware["udid"] as? String
+            guard selector == coreDeviceIdentifier || selector == udid else { return nil }
+            return udid
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     public func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
+        guard let count = await installedAppCount(
+            bundleIdentifier: bundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        ) else { return nil }
+        return count > 0
+    }
+
+    public func installedAppCount(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Int? {
         guard !RuntimeProvisioning.devicectlForbidden() else {
             return nil
         }
@@ -324,7 +394,7 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
               let apps = resultObject["apps"] as? [[String: Any]] else {
             return nil
         }
-        return !apps.isEmpty
+        return apps.count
     }
 
     public func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
@@ -354,16 +424,16 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
         )
     }
 
-    private func canReadLockState(rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool {
+    private func deviceLockState(rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
         guard let xcrun = RuntimeProvisioning.xcrunURL() else {
-            return false
+            return nil
         }
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("iossim-lockstate-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         } catch {
-            return false
+            return nil
         }
         defer {
             try? FileManager.default.removeItem(at: temporaryDirectory)
@@ -387,6 +457,13 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
             workingDirectory: temporaryDirectory,
             environment: RuntimeProvisioning.deterministicEnvironment()
         )
-        return result?.exitCode == 0
+        guard result?.exitCode == 0,
+              let data = try? Data(contentsOf: jsonURL),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let resultObject = raw["result"] as? [String: Any],
+              let passcodeRequired = resultObject["passcodeRequired"] as? Bool else {
+            return nil
+        }
+        return passcodeRequired
     }
 }

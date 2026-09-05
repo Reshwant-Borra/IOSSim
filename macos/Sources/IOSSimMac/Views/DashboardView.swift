@@ -11,21 +11,22 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 12) {
                 DashboardStatusRow(title: "Mac", detail: "Ready", ready: store.status?.mac.ready == true)
                 DashboardStatusRow(title: "Device", detail: "Selected and trusted", ready: store.selectedDeviceProvisioningReady)
-                DashboardStatusRow(title: "IOSSim Installed", detail: "Project components", ready: store.selectedDevice?.allProjectAppsInstalled == true)
+                DashboardStatusRow(title: "IOSSim", detail: "Installed on your iPhone", ready: store.provisioningManifest != nil)
+                DashboardStatusRow(title: "Provisioning", detail: profileDetail, ready: !profileNeedsAttention)
                 DashboardStatusRow(title: "Runtime", detail: "LocalDevVPN and pairing", ready: store.selectedDeviceProvisioningReady && store.status?.runtimeActionChecks.isEmpty == true)
             }
             HStack {
                 Button("Check Setup") {
                     store.refresh()
                 }
-                Button("Update Components") {
+                Button("Refresh Now") {
                     store.runUpdateComponents()
                 }
-                .disabled(store.selectedDevice == nil)
-                Button("Repair Installation") {
+                .disabled(store.selectedDevice == nil || store.selectedTeam == nil)
+                Button("Repair") {
                     store.runRepair()
                 }
-                .disabled(store.selectedDevice == nil)
+                .disabled(store.selectedDevice == nil || store.selectedTeam == nil)
                 Spacer()
                 if store.isRunning {
                     ProgressView()
@@ -33,6 +34,11 @@ struct DashboardView: View {
                         .accessibilityLabel("Working")
                 }
             }
+            Toggle("Refresh automatically when this Mac and iPhone are available", isOn: Binding(
+                get: { store.automaticRefreshEnabled },
+                set: { store.setAutomaticRefreshEnabled($0) }
+            ))
+            .toggleStyle(.checkbox)
             if let status = store.status, !status.actionsRequired.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Needs attention")
@@ -52,6 +58,21 @@ struct DashboardView: View {
         .sheet(isPresented: $showingDevicePicker) {
             DevicePickerSheet(isPresented: $showingDevicePicker)
                 .environmentObject(store)
+        }
+    }
+
+    private var profileNeedsAttention: Bool {
+        [.dueNow, .expired, .unavailable].contains(store.refreshDueState)
+    }
+
+    private var profileDetail: String {
+        guard let expiration = store.provisioningManifest?.earliestExpiration else { return "Setup information unavailable" }
+        let days = max(0, Int(expiration.timeIntervalSinceNow / (24 * 60 * 60)))
+        switch store.refreshDueState {
+        case .expired: return "Refresh required"
+        case .dueNow: return "Refresh needed soon"
+        case .dueSoon, .current: return "Refresh due in \(days) day\(days == 1 ? "" : "s")"
+        case .unavailable: return "Setup information unavailable"
         }
     }
 
@@ -125,6 +146,7 @@ struct FailureView: View {
     @EnvironmentObject private var store: SetupStore
     @State private var showDetails = false
     @State private var showingDevicePicker = false
+    @State private var confirmingFreshInstall = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -145,6 +167,11 @@ struct FailureView: View {
                 Button(showDetails ? "Hide Details" : "Show Details") {
                     showDetails.toggle()
                 }
+                if store.lastError?.details.contains(ConsumerProvisioningErrorCode.crossTeamUpgradeBlocked.rawValue) == true {
+                    Button("Fresh Install", role: .destructive) {
+                        confirmingFreshInstall = true
+                    }
+                }
             }
             if showDetails {
                 ScrollView {
@@ -161,6 +188,18 @@ struct FailureView: View {
         .sheet(isPresented: $showingDevicePicker) {
             DevicePickerSheet(isPresented: $showingDevicePicker)
                 .environmentObject(store)
+        }
+        .confirmationDialog(
+            "Fresh install removes IOSSim data from this iPhone",
+            isPresented: $confirmingFreshInstall,
+            titleVisibility: .visible
+        ) {
+            Button("Remove IOSSim Data and Install", role: .destructive) {
+                store.runConfirmedFreshInstall()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Only the IOSSim app and its XCTest runner will be removed. LocalDevVPN and unrelated apps are not changed.")
         }
     }
 }

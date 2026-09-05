@@ -70,8 +70,25 @@ struct DiagnosticsView: View {
                     dismiss()
                 }
             }
-            Text("Development diagnostics. Pairing contents, keys, and credentials are never displayed.")
+            Text("Pairing contents, keys, and credentials are never included.")
                 .foregroundStyle(.secondary)
+#if IOSSIM_BUNDLED_ENGINE
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Create a sanitized support file with setup status, software versions, profile dates, and recent provisioning results.")
+                    .foregroundStyle(.secondary)
+                Button("Export Support File") {
+                    store.exportSupportBundle()
+                }
+                .disabled(store.isRunning)
+                if let url = store.lastSupportBundleURL {
+                    Text("Saved to \(url.path)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+            }
+#else
             TabView {
                 ScrollView {
                     Text(doctorText)
@@ -103,6 +120,7 @@ struct DiagnosticsView: View {
                 }
                 .tabItem { Text("Bundle IDs") }
             }
+#endif
         }
         .padding(24)
         .frame(width: 720, height: 520)

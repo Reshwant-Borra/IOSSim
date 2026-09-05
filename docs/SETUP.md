@@ -1,4 +1,26 @@
-# IOSSim Developer Setup
+# IOSSim Setup
+
+## Consumer Mac Setup
+
+The packaged IOSSim Mac app provides the consumer Personal Team flow:
+
+1. open IOSSim on the Mac;
+2. connect, unlock, and choose an iPhone;
+3. enable Developer Mode if requested;
+4. choose a Personal Team already signed in through Xcode;
+5. install IOSSim;
+6. enable LocalDevVPN and complete **Set Up IOSSim** on the iPhone;
+7. return to the Mac and confirm setup completion.
+
+The Mac app never requests an Apple ID password or verification code. Xcode and
+its developer tooling remain prerequisites for the current proven signing and
+installation path. The consumer package does not require this repository and
+installs only IOSSim plus its deterministic XCTest runner; Witness is excluded.
+
+See [Consumer Setup Flow](mac-host/CONSUMER_SETUP_FLOW.md) and
+[Consumer Provisioning Architecture](mac-host/CONSUMER_PROVISIONING_ARCHITECTURE.md).
+
+## Developer Setup
 
 This setup path is for the current iPhone/on-device IOSSim architecture on
 `main`. It does not package or run the frozen `desktop-legacy` frontend/backend
@@ -51,7 +73,9 @@ branch.
 the backend virtual environment, installs backend developer test requirements,
 installs frontend dependencies with `npm ci`, installs the Rust iOS target,
 builds the pinned `jkcoxson/idevice` FFI library, verifies required FFI symbols,
-and builds the iOS app plus the internal Witness/XCUILocation runner build.
+and performs profile-independent generic builds of the iOS app plus the internal
+Witness/XCUILocation runner. `./iossim device` remains the developer command that
+requests signed device products.
 
 The command is safe to rerun. It uses hash markers for dependency installs and
 does not rewrite shell profiles, reset Git history, remove user data, or create
@@ -98,6 +122,10 @@ builds the required local artifacts, and installs:
 The command is an internal developer provisioning helper. It does not generate,
 read, or export RPPairing files. It still reports LocalDevVPN and in-app pairing
 import as manual actions because those are runtime requirements on the iPhone.
+
+This three-artifact developer command is intentionally different from the
+production consumer flow. Production excludes Witness and dynamically signs the
+main app and deterministic derived runner for the selected Personal Team.
 
 ## Logs
 
