@@ -144,7 +144,9 @@ struct DashboardStatusRow: View {
 
 struct FailureView: View {
     @EnvironmentObject private var store: SetupStore
+#if !IOSSIM_BUNDLED_ENGINE
     @State private var showDetails = false
+#endif
     @State private var showingDevicePicker = false
     @State private var confirmingFreshInstall = false
 
@@ -164,15 +166,18 @@ struct FailureView: View {
                         showingDevicePicker = true
                     }
                 }
+#if !IOSSIM_BUNDLED_ENGINE
                 Button(showDetails ? "Hide Details" : "Show Details") {
                     showDetails.toggle()
                 }
+#endif
                 if store.lastError?.details.contains(ConsumerProvisioningErrorCode.crossTeamUpgradeBlocked.rawValue) == true {
                     Button("Fresh Install", role: .destructive) {
                         confirmingFreshInstall = true
                     }
                 }
             }
+#if !IOSSIM_BUNDLED_ENGINE
             if showDetails {
                 ScrollView {
                     Text(store.lastError?.details ?? "")
@@ -182,6 +187,7 @@ struct FailureView: View {
                 }
                 .frame(maxHeight: 220)
             }
+#endif
             Spacer()
         }
         .padding(32)
@@ -199,7 +205,11 @@ struct FailureView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
+#if IOSSIM_BUNDLED_ENGINE
+            Text("Only IOSSim and its installed support component will be removed. LocalDevVPN and unrelated apps are not changed.")
+#else
             Text("Only the IOSSim app and its XCTest runner will be removed. LocalDevVPN and unrelated apps are not changed.")
+#endif
         }
     }
 }

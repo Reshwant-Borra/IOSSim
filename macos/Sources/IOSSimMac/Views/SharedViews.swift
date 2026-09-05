@@ -72,6 +72,9 @@ struct DiagnosticsView: View {
             }
             Text("Pairing contents, keys, and credentials are never included.")
                 .foregroundStyle(.secondary)
+            Text(versionText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 #if IOSSIM_BUNDLED_ENGINE
             VStack(alignment: .leading, spacing: 12) {
                 Text("Create a sanitized support file with setup status, software versions, profile dates, and recent provisioning results.")
@@ -136,6 +139,12 @@ struct DiagnosticsView: View {
             return "Doctor status could not be encoded."
         }
         return Redactor.redact(text)
+    }
+
+    private var versionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        return "IOSSim \(version) (\(build))"
     }
 
     private var bundleAuditText: String {

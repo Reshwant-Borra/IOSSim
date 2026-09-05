@@ -15,14 +15,28 @@ public struct ArtifactManifest: Codable, Equatable, Sendable {
 
 public struct ReleaseManifest: Codable, Equatable, Sendable {
     public let sourceCommit: String
+    public let sourceDirty: Bool?
     public let buildTimestamp: String
     public let macVersion: String
+    public let buildNumber: String?
+    public let variant: String?
     public let helperSchemaVersion: Int
 
-    public init(sourceCommit: String, buildTimestamp: String, macVersion: String, helperSchemaVersion: Int) {
+    public init(
+        sourceCommit: String,
+        sourceDirty: Bool? = nil,
+        buildTimestamp: String,
+        macVersion: String,
+        buildNumber: String? = nil,
+        variant: String? = nil,
+        helperSchemaVersion: Int
+    ) {
         self.sourceCommit = sourceCommit
+        self.sourceDirty = sourceDirty
         self.buildTimestamp = buildTimestamp
         self.macVersion = macVersion
+        self.buildNumber = buildNumber
+        self.variant = variant
         self.helperSchemaVersion = helperSchemaVersion
     }
 }

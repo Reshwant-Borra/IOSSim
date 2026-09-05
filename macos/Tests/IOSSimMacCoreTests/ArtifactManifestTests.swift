@@ -3,6 +3,26 @@ import XCTest
 @testable import IOSSimMacCore
 
 final class ArtifactManifestTests: XCTestCase {
+    func testReleaseProvenanceRoundTrips() throws {
+        let release = ReleaseManifest(
+            sourceCommit: "abc123",
+            sourceDirty: false,
+            buildTimestamp: "2026-09-05T12:00:00Z",
+            macVersion: "0.1.0",
+            buildNumber: "1",
+            variant: "PRODUCTION",
+            helperSchemaVersion: 1
+        )
+
+        let data = try JSONEncoder().encode(release)
+        let decoded = try JSONDecoder().decode(ReleaseManifest.self, from: data)
+
+        XCTAssertEqual(decoded, release)
+        XCTAssertEqual(decoded.sourceDirty, false)
+        XCTAssertEqual(decoded.buildNumber, "1")
+        XCTAssertEqual(decoded.variant, "PRODUCTION")
+    }
+
     func testManifestDecodingAndChecksumVerification() throws {
         let root = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
         let artifact = root.appendingPathComponent("DeviceArtifacts/IOSSim DVT POC.app")

@@ -140,8 +140,10 @@ struct ProvisionerTool {
                     fputs("SUPPORT_OUTPUT_REQUIRED: provide --output <path>.\n", stderr)
                     return 2
                 }
+                let release = try? context.loadManifest().release
                 let exported = try await SupportBundleExporter.export(
                     to: URL(fileURLWithPath: output),
+                    release: release,
                     runner: context.runner
                 )
                 try printJSON(ProvisionerOutput(
@@ -241,15 +243,31 @@ struct ProvisionerTool {
             requiredFor: "mac"
         ))
         let backendKind = ProvisioningBackendKind.selected()
-        let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil || RuntimeProvisioning.devicectlForbidden()
+        let xcodeResult = try? await context.runner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+            arguments: ["-version"],
+            workingDirectory: context.resourcesURL,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+        let devicectlResult = try? await context.runner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["--find", "devicectl"],
+            workingDirectory: context.resourcesURL,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+        let fullXcodeAvailable = xcodeResult?.exitCode == 0
+        let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil
+            || RuntimeProvisioning.devicectlForbidden()
+            || devicectlResult?.exitCode != 0
+        let appleToolingReady = backendKind != .devicectl || (fullXcodeAvailable && !devicectlUnavailable)
         checks.append(DoctorCheck(
-            state: backendKind == .devicectl && devicectlUnavailable ? .action : .pass,
+            state: appleToolingReady ? .pass : .action,
             component: "Apple Tooling",
-            name: backendKind == .devicectl ? "xcrun devicectl" : "idevice backend",
+            name: backendKind == .devicectl ? "Xcode and devicectl" : "idevice backend",
             detail: backendKind == .devicectl
-                ? (RuntimeProvisioning.devicectlForbidden() ? "forbidden by test mode" : (RuntimeProvisioning.xcrunURL()?.path ?? "missing"))
+                ? (appleToolingReady ? (xcodeResult?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ready") : "full Xcode developer tools unavailable")
                 : "selected",
-            action: backendKind == .devicectl && devicectlUnavailable ? "Install/select Apple developer tools or choose a non-devicectl backend." : nil,
+            action: appleToolingReady ? nil : "Install Xcode, open it once, and select it in Xcode Settings > Locations.",
             requiredFor: "mac"
         ))
         do {

@@ -1,0 +1,13 @@
+{
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "buildNumber": "1",
+  "bundleIdentifier": "com.iossim.mac-provisioner",
+  "minimumMacOS": "13.0",
+  "productName": "IOSSim",
+  "schemaVersion": 1,
+  "shortVersion": "0.1.0",
+  "variant": "PRODUCTION"
+}

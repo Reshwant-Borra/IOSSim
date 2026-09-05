@@ -6,7 +6,11 @@ public struct SupportBundleExportResult: Codable, Equatable, Sendable {
 }
 
 private struct SupportEnvironment: Codable {
-    let appVersion: String?
+    let iPhoneAppVersion: String?
+    let macAppVersion: String?
+    let macBuildNumber: String?
+    let releaseVariant: String?
+    let sourceCommit: String?
     let macOSVersion: String
     let xcodeVersion: String
     let deviceName: String?
@@ -26,6 +30,7 @@ private struct SanitizedSupportDocument: Codable {
 public enum SupportBundleExporter {
     public static func export(
         to outputURL: URL,
+        release: ReleaseManifest? = nil,
         stateStore: ConsumerProvisioningStateStore = ConsumerProvisioningStateStore(),
         runner: ProcessRunner = ProcessRunner(),
         fileManager: FileManager = .default
@@ -43,7 +48,11 @@ public enum SupportBundleExporter {
             schemaVersion: 1,
             generatedAt: Date(),
             environment: SupportEnvironment(
-                appVersion: manifest?.appVersion,
+                iPhoneAppVersion: manifest?.appVersion,
+                macAppVersion: release?.macVersion,
+                macBuildNumber: release?.buildNumber,
+                releaseVariant: release?.variant,
+                sourceCommit: release?.sourceCommit,
                 macOSVersion: "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
                 xcodeVersion: await xcodeVersion(runner: runner),
                 deviceName: manifest?.deviceName,

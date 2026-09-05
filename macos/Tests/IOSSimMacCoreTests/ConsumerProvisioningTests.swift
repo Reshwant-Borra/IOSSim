@@ -157,7 +157,19 @@ final class ConsumerProvisioningTests: XCTestCase {
             detail: "password=do-not-export user@example.com"
         ))
 
-        _ = try await SupportBundleExporter.export(to: output, stateStore: store)
+        _ = try await SupportBundleExporter.export(
+            to: output,
+            release: ReleaseManifest(
+                sourceCommit: "release-commit",
+                sourceDirty: false,
+                buildTimestamp: "2026-09-05T12:00:00Z",
+                macVersion: "0.1.0",
+                buildNumber: "1",
+                variant: "PRODUCTION",
+                helperSchemaVersion: 1
+            ),
+            stateStore: store
+        )
         try FileManager.default.createDirectory(at: expandedDirectory, withIntermediateDirectories: true)
         let extraction = try await ProcessRunner().run(
             executableURL: URL(fileURLWithPath: "/usr/bin/ditto"),
@@ -168,6 +180,9 @@ final class ConsumerProvisioningTests: XCTestCase {
         let supportURL = expandedDirectory.appendingPathComponent("IOSSim Support/support.json")
         let text = try String(contentsOf: supportURL, encoding: .utf8)
         XCTAssertTrue(text.contains("TEAM1"))
+        XCTAssertTrue(text.contains("release-commit"))
+        XCTAssertTrue(text.contains("0.1.0"))
+        XCTAssertTrue(text.contains("PRODUCTION"))
         XCTAssertTrue(text.contains("True Personal Team profile-expiration extension remains pending"))
         XCTAssertFalse(text.contains(rawDevice))
         XCTAssertFalse(text.contains("do-not-export"))
