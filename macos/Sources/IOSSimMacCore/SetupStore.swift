@@ -11,16 +11,25 @@ public final class SetupStore: ObservableObject {
     @Published public private(set) var logs: [EngineLogEntry] = []
     @Published public private(set) var selectedDeviceIdentifier: String?
     @Published public private(set) var deviceSelectionReason: DeviceSelectionReason = .noConnectedDevices
+    @Published public private(set) var personalTeams: [PersonalTeamCandidate] = []
+    @Published public private(set) var selectedTeamIdentifier: String?
+    @Published public private(set) var provisioningManifest: ConsumerProvisioningManifest?
+    @Published public private(set) var consumerStage: ConsumerProvisioningStage = .idle
+    @Published public private(set) var lastSupportBundleURL: URL?
 
     public let engine: any IOSSimSetupEngine
     private var task: Task<Void, Never>?
     private let onboardingKey = "IOSSimMac.onboardingCompleted"
     private let selectedDeviceKey = "IOSSimMac.selectedDeviceIdentifier"
     private let selectedDeviceNameKey = "IOSSimMac.selectedDeviceName"
+    private let selectedTeamKey = "IOSSimMac.selectedPersonalTeam"
+    private let automaticRefreshKey = "IOSSimMac.automaticRefreshEnabled"
+    private var automaticRefreshAttempted = false
 
     public init(engine: any IOSSimSetupEngine) {
         self.engine = engine
         selectedDeviceIdentifier = UserDefaults.standard.string(forKey: selectedDeviceKey)
+        selectedTeamIdentifier = UserDefaults.standard.string(forKey: selectedTeamKey)
     }
 
     public var onboardingCompleted: Bool {
@@ -33,7 +42,9 @@ public final class SetupStore: ObservableObject {
     }
 
     public var selectedDeviceProvisioningReady: Bool {
-        selectedDevice.map { $0.pairingState == "paired" && $0.developerModeStatus == "enabled" } ?? false
+        selectedDevice.map {
+            $0.pairingState == "paired" && $0.developerModeStatus == "enabled" && $0.isLocked != true
+        } ?? false
     }
 
     public var deviceSelectionRequired: Bool {
@@ -53,11 +64,33 @@ public final class SetupStore: ObservableObject {
         return UserDefaults.standard.string(forKey: selectedDeviceNameKey)
     }
 
+    public var selectedTeam: PersonalTeamCandidate? {
+        guard let selectedTeamIdentifier else { return nil }
+        return personalTeams.first { $0.teamIdentifier == selectedTeamIdentifier }
+    }
+
+    public var refreshDueState: RefreshDueState {
+        ConsumerRefreshPolicy.recommended.dueState(expiration: provisioningManifest?.earliestExpiration)
+    }
+
+    public var automaticRefreshEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: automaticRefreshKey) == nil
+                || UserDefaults.standard.bool(forKey: automaticRefreshKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: automaticRefreshKey) }
+    }
+
     public func bootstrap() {
         guard task == nil else { return }
         if onboardingCompleted {
             phase = .checkingMac
             refresh()
+            Task { [weak self] in
+                guard let self else { return }
+                while self.isRunning { try? await Task.sleep(nanoseconds: 50_000_000) }
+                self.runAutomaticRefreshIfDue()
+            }
         }
     }
 
@@ -71,6 +104,8 @@ public final class SetupStore: ObservableObject {
         runCancellable(stage: .checkingMac) { [self] in
             let next = try await engine.doctor()
             status = next
+            applyDeviceSelection(from: next)
+            try await updateConsumerContext()
             routeAfterDoctor(next)
         }
     }
@@ -100,8 +135,9 @@ public final class SetupStore: ObservableObject {
                 logs.append(.init(stage: "setup", result: result))
             }
             applyDeviceSelection(from: next)
+            try await updateConsumerContext()
             if selectedDeviceProvisioningReady {
-                try await runProvisioningBody()
+                try await runProvisioningBody(operation: .repair)
             } else {
                 routeAfterDoctor(next)
             }
@@ -113,6 +149,10 @@ public final class SetupStore: ObservableObject {
         phase = .installing
         completedInstallStages = [.prepare]
         runCritical { [self] in
+            if engine.consumerProvisioningEnabled {
+                try await runProvisioningBody(operation: .refresh)
+                return
+            }
             let buildResult = try await engine.build()
             logs.append(.init(stage: "build", result: buildResult))
             completedInstallStages.insert(.installIOSSim)
@@ -127,6 +167,36 @@ public final class SetupStore: ObservableObject {
         }
     }
 
+    public func runConfirmedFreshInstall() {
+        guard !isRunning else { return }
+        phase = .installing
+        completedInstallStages = [.prepare]
+        runCritical { [self] in
+            try await runProvisioningBody(operation: .install, allowFreshInstall: true)
+        }
+    }
+
+    public func exportSupportBundle() {
+        guard !isRunning else { return }
+        runCancellable(stage: phase) { [self] in
+            lastSupportBundleURL = try await engine.exportSupportBundle()
+        }
+    }
+
+    public func setAutomaticRefreshEnabled(_ enabled: Bool) {
+        automaticRefreshEnabled = enabled
+    }
+
+    private func runAutomaticRefreshIfDue() {
+        guard !automaticRefreshAttempted,
+              automaticRefreshEnabled,
+              [.dueNow, .expired].contains(refreshDueState),
+              selectedDevice != nil,
+              selectedTeam != nil else { return }
+        automaticRefreshAttempted = true
+        runUpdateComponents()
+    }
+
     public func cancelCurrentOperation() {
         guard !isCriticalStage else { return }
         task?.cancel()
@@ -139,6 +209,19 @@ public final class SetupStore: ObservableObject {
         phase = .complete
     }
 
+    public func confirmRuntimeSetup() {
+        guard !isRunning else { return }
+        runCancellable(stage: .verifying) { [self] in
+            if engine.consumerProvisioningEnabled {
+                provisioningManifest = try await engine.confirmRuntimeSetup()
+            }
+            UserDefaults.standard.set(true, forKey: onboardingKey)
+            let next = try await engine.doctor()
+            status = next
+            phase = .complete
+        }
+    }
+
     public func selectDevice(identifier: String) {
         guard let status,
               let device = status.device.devices.first(where: { $0.selectionIdentifier == identifier }) else {
@@ -149,6 +232,15 @@ public final class SetupStore: ObservableObject {
         deviceSelectionReason = .rememberedDeviceConnected
         UserDefaults.standard.set(device.selectionIdentifier, forKey: selectedDeviceKey)
         UserDefaults.standard.set(device.name, forKey: selectedDeviceNameKey)
+    }
+
+    public func selectTeam(identifier: String) {
+        guard personalTeams.contains(where: { $0.teamIdentifier == identifier }) else {
+            selectedTeamIdentifier = nil
+            return
+        }
+        selectedTeamIdentifier = identifier
+        UserDefaults.standard.set(identifier, forKey: selectedTeamKey)
     }
 
     private func runSetup() {
@@ -166,11 +258,38 @@ public final class SetupStore: ObservableObject {
         phase = .installing
         completedInstallStages = [.prepare]
         runCritical { [self] in
-            try await runProvisioningBody()
+            try await runProvisioningBody(operation: .install)
         }
     }
 
-    private func runProvisioningBody() async throws {
+    private func runProvisioningBody(
+        operation: ConsumerProvisioningOperation,
+        allowFreshInstall: Bool = false
+    ) async throws {
+        if engine.consumerProvisioningEnabled {
+            let device = try selectedDeviceIdentifierForOperation()
+            guard let team = selectedTeamIdentifier else {
+                throw ConsumerProvisioningFailure(
+                    code: .teamSelectionRequired,
+                    stage: .waitingForTeamSelection,
+                    userMessage: "Choose an Apple Personal Team.",
+                    remediation: "Select the account IOSSim should use, then continue.",
+                    developerDetail: "No Personal Team selected."
+                )
+            }
+            consumerStage = .preparingIdentities
+            let result = try await engine.consumerProvision(ConsumerProvisioningRequest(
+                operation: operation,
+                selectedDeviceIdentifier: device,
+                selectedTeamIdentifier: team,
+                allowFreshInstallAfterCrossTeamConflict: allowFreshInstall
+            ))
+            provisioningManifest = result.manifest
+            consumerStage = result.finalStage
+            completedInstallStages = Set(InstallStage.allCases)
+            phase = .runtimeSetup
+            return
+        }
         completedInstallStages.insert(.installIOSSim)
         let result = try await engine.provisionDevice(selectedDeviceIdentifier: try selectedDeviceIdentifierForOperation())
         logs.append(.init(stage: "device", result: result))
@@ -183,8 +302,9 @@ public final class SetupStore: ObservableObject {
     }
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
-        applyDeviceSelection(from: status)
-        if (status.mac.ready && selectedDeviceProvisioningReady && status.runtimeActionChecks.isEmpty) || onboardingCompleted {
+        let installationKnown = !engine.consumerProvisioningEnabled || provisioningManifest != nil
+        if (status.mac.ready && selectedDeviceProvisioningReady && status.runtimeActionChecks.isEmpty && installationKnown)
+            || onboardingCompleted {
             phase = .complete
             return
         }
@@ -195,15 +315,41 @@ public final class SetupStore: ObservableObject {
         switch StatusInterpreter.deviceReadiness(from: status) {
         case .noDevice, .multipleDevices:
             phase = .waitingForDevice
-        case .trustRequired, .developerModeRequired:
+        case .trustRequired, .developerModeRequired, .unlockRequired:
             phase = .deviceActionRequired
         case .readyForInstall:
-            phase = .installing
+            if engine.consumerProvisioningEnabled && (personalTeams.isEmpty || selectedTeam == nil) {
+                phase = .appleAccount
+            } else {
+                phase = .installing
+            }
         case .localDevVPNRequired, .pairingRequired:
             phase = .runtimeSetup
         case .complete:
             phase = .complete
             UserDefaults.standard.set(true, forKey: onboardingKey)
+        }
+    }
+
+    private func updateConsumerContext() async throws {
+        guard engine.consumerProvisioningEnabled else { return }
+        provisioningManifest = try await engine.consumerProvisioningStatus()
+        guard let selectedDeviceIdentifier else {
+            personalTeams = []
+            selectedTeamIdentifier = nil
+            return
+        }
+        personalTeams = try await engine.discoverPersonalTeams(selectedDeviceIdentifier: selectedDeviceIdentifier)
+        let remembered = UserDefaults.standard.string(forKey: selectedTeamKey)
+        if let remembered, personalTeams.contains(where: { $0.teamIdentifier == remembered }) {
+            selectedTeamIdentifier = remembered
+        } else if personalTeams.count == 1 {
+            selectTeam(identifier: personalTeams[0].teamIdentifier)
+        } else if let manifest = provisioningManifest,
+                  personalTeams.contains(where: { $0.teamIdentifier == manifest.teamID }) {
+            selectTeam(identifier: manifest.teamID)
+        } else {
+            selectedTeamIdentifier = nil
         }
     }
 
@@ -268,6 +414,14 @@ public final class SetupStore: ObservableObject {
             } catch let failure as ProcessFailure {
                 self.lastError = Self.friendlyError(commandName: failure.commandName, result: failure.result)
                 self.logs.append(.init(stage: failure.commandName, result: failure.result))
+                self.phase = .failed
+            } catch let failure as ConsumerProvisioningFailure {
+                self.lastError = SetupError(
+                    headline: failure.userMessage,
+                    recovery: failure.remediation,
+                    details: "\(failure.code.rawValue): \(failure.developerDetail)"
+                )
+                self.consumerStage = .failed
                 self.phase = .failed
             } catch {
                 self.lastError = SetupError(
