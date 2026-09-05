@@ -22,6 +22,10 @@ See [Consumer Setup Flow](mac-host/CONSUMER_SETUP_FLOW.md) and
 
 Release engineers should use the signed/notarized DMG workflow and physical
 qualification checklist in [Production Release](mac-host/PRODUCTION_RELEASE.md).
+For local packaged-product testing before Developer ID credentials are available,
+use the separately labeled `./iossim release-local` workflow documented there.
+That artifact keeps the production UI but is ad-hoc signed, not notarized, not
+Gatekeeper-qualified, and not for public distribution.
 
 ## Developer Setup
 

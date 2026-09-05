@@ -23,6 +23,7 @@ IOS_DIR = ROOT / "ios"
 MAC_DIR = ROOT / "macos"
 RELEASE_CONFIG_PATH = ROOT / "config" / "release.json"
 RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "release"
+LOCAL_RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "local-release"
 MAC_APP_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSim.entitlements"
 MAC_HELPER_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisioner.entitlements"
 MAC_ICON_SOURCE = MAC_DIR / "Resources" / "IOSSimIcon.png"
@@ -1427,6 +1428,29 @@ def distribution_sign_device_artifacts(runner: Runner, app_dir: Path, identity: 
             )
 
 
+def local_sign_device_artifacts(runner: Runner, app_dir: Path) -> None:
+    """Ad-hoc sign packaged iPhone code solely so the local DMG is structurally complete."""
+    artifacts = app_dir / "Contents" / "Resources" / "DeviceArtifacts"
+    for app in sorted(artifacts.glob("*.app")):
+        signables = [
+            child for child in app.rglob("*")
+            if child.suffix in {".framework", ".xctest", ".dylib"}
+        ]
+        signables.append(app)
+        for target in sorted(signables, key=lambda item: len(item.parts), reverse=True):
+            if not target.exists():
+                continue
+            runner.run(
+                f"local-sign-{safe_name(target.relative_to(app_dir).as_posix())}",
+                [
+                    "/usr/bin/codesign", "--force", "--sign", "-",
+                    "--options", "runtime", "--timestamp=none",
+                    "--preserve-metadata=identifier,requirements",
+                    str(target),
+                ],
+            )
+
+
 def update_device_artifact_hashes(app_dir: Path) -> None:
     resources = app_dir / "Contents" / "Resources"
     manifest_path = resources / "DeviceArtifacts" / "manifest.json"
@@ -1456,6 +1480,33 @@ def distribution_sign_macos_app(runner: Runner, app_dir: Path, identity: Develop
         [
             "/usr/bin/codesign", "--force", "--sign", identity.fingerprint,
             "--options", "runtime", "--timestamp",
+            "--entitlements", str(MAC_APP_ENTITLEMENTS),
+            str(app_dir),
+        ],
+    )
+
+
+def local_sign_macos_app(runner: Runner, app_dir: Path) -> None:
+    """Apply explicit hardened-runtime ad-hoc signatures for local physical testing."""
+    helper = app_dir / "Contents" / "MacOS" / "IOSSimProvisioner"
+    runner.run("strip-IOSSimProvisioner-local", ["/usr/bin/strip", "-x", str(helper)])
+    runner.run(
+        "local-sign-IOSSimProvisioner",
+        [
+            "/usr/bin/codesign", "--force", "--sign", "-",
+            "--identifier", f"{RELEASE_CONFIG.bundle_identifier}.provisioner",
+            "--options", "runtime", "--timestamp=none",
+            "--entitlements", str(MAC_HELPER_ENTITLEMENTS),
+            str(helper),
+        ],
+    )
+    main = app_dir / "Contents" / "MacOS" / "IOSSim"
+    runner.run("strip-IOSSim-local", ["/usr/bin/strip", "-x", str(main)])
+    runner.run(
+        "local-sign-IOSSim-app",
+        [
+            "/usr/bin/codesign", "--force", "--sign", "-",
+            "--options", "runtime", "--timestamp=none",
             "--entitlements", str(MAC_APP_ENTITLEMENTS),
             str(app_dir),
         ],
@@ -1542,6 +1593,57 @@ def audit_release_signatures(app_dir: Path, expected_team_id: str) -> bool:
             if forbidden: reasons.append(f"forbidden entitlements: {', '.join(forbidden)}")
             if unexpected_entitlements: reasons.append("unexpected production entitlements")
             ok &= audit_fail(f"Nested signature {relative}", "; ".join(reasons))
+    return bool(ok)
+
+
+def audit_local_signatures(app_dir: Path) -> bool:
+    """Verify local signatures without implying Developer ID or Gatekeeper qualification."""
+    ok = True
+    verification = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app_dir)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if verification.returncode == 0:
+        ok &= audit_pass("Strict recursive local signature verification")
+    else:
+        ok &= audit_fail("Strict recursive local signature verification", verification.stderr)
+    disallowed_entitlements = {
+        "com.apple.security.cs.disable-library-validation",
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-executable-page-protection",
+        "com.apple.security.get-task-allow",
+    }
+    machos = macho_files(app_dir)
+    ok &= audit_pass("Mach-O inventory", f"{len(machos)} executable code item(s)") if machos else audit_fail("Mach-O inventory", "none found")
+    for path in machos:
+        relative = path.relative_to(app_dir).as_posix()
+        details = codesign_details(path)
+        valid = subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--strict", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        ).returncode == 0
+        ad_hoc_ok = "Signature=adhoc" in details
+        runtime_ok = "runtime" in details
+        authority_absent = "Authority=" not in details
+        entitlements = codesign_entitlements(path)
+        forbidden = sorted(item for item in disallowed_entitlements if item in entitlements)
+        unexpected_entitlements = "<key>" in entitlements
+        item_ok = valid and ad_hoc_ok and runtime_ok and authority_absent and not forbidden and not unexpected_entitlements
+        if item_ok:
+            ok &= audit_pass(f"Local signature {relative}", "ad hoc / hardened runtime / no entitlements")
+        else:
+            reasons = []
+            if not valid: reasons.append("invalid signature")
+            if not ad_hoc_ok: reasons.append("not ad hoc")
+            if not runtime_ok: reasons.append("hardened runtime absent")
+            if not authority_absent: reasons.append("unexpected signing authority")
+            if forbidden: reasons.append(f"forbidden entitlements: {', '.join(forbidden)}")
+            if unexpected_entitlements: reasons.append("unexpected production entitlements")
+            ok &= audit_fail(f"Local signature {relative}", "; ".join(reasons))
     return bool(ok)
 
 
@@ -1702,6 +1804,50 @@ def assess_gatekeeper(runner: Runner, app_dir: Path, dmg_path: Path) -> None:
     )
 
 
+def write_distribution_metadata(app_dir: Path, distribution_class: str) -> None:
+    is_public = distribution_class == "PUBLIC_RELEASE"
+    metadata = {
+        "schemaVersion": 1,
+        "distributionClass": distribution_class,
+        "developerID": is_public,
+        "notarized": is_public,
+        "gatekeeperQualified": is_public,
+        "publicDistribution": is_public,
+        "productionUI": True,
+        "labels": (
+            ["PUBLIC RELEASE", "DEVELOPER ID SIGNED", "NOTARIZED"]
+            if is_public
+            else ["LOCAL TEST BUILD", "NOT NOTARIZED", "NOT FOR PUBLIC DISTRIBUTION"]
+        ),
+    }
+    path = app_dir / "Contents" / "Resources" / "Distribution.json"
+    path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def audit_distribution_metadata(app_dir: Path, distribution_class: str) -> bool:
+    path = app_dir / "Contents" / "Resources" / "Distribution.json"
+    is_public = distribution_class == "PUBLIC_RELEASE"
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        expected_labels = (
+            ["PUBLIC RELEASE", "DEVELOPER ID SIGNED", "NOTARIZED"]
+            if is_public
+            else ["LOCAL TEST BUILD", "NOT NOTARIZED", "NOT FOR PUBLIC DISTRIBUTION"]
+        )
+        valid = (
+            metadata.get("distributionClass") == distribution_class
+            and metadata.get("developerID") is is_public
+            and metadata.get("notarized") is is_public
+            and metadata.get("gatekeeperQualified") is is_public
+            and metadata.get("publicDistribution") is is_public
+            and metadata.get("productionUI") is True
+            and metadata.get("labels") == expected_labels
+        )
+        return audit_pass("Embedded distribution metadata", distribution_class) if valid else audit_fail("Embedded distribution metadata", "classification fields are inconsistent")
+    except Exception as exc:
+        return audit_fail("Embedded distribution metadata", str(exc))
+
+
 def write_release_sidecars(
     dmg_path: Path,
     identity: DeveloperIDIdentity,
@@ -1714,6 +1860,12 @@ def write_release_sidecars(
     report_path = dmg_path.with_suffix(".release.json")
     report = {
         "schemaVersion": 1,
+        "distributionClass": "PUBLIC_RELEASE",
+        "developerID": True,
+        "notarized": True,
+        "gatekeeperQualified": True,
+        "publicDistribution": True,
+        "productionUI": True,
         "product": RELEASE_CONFIG.product_name,
         "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
         "shortVersion": MAC_VERSION,
@@ -1732,6 +1884,45 @@ def write_release_sidecars(
             "dmg": dmg_notarization,
         },
         "stapled": {"app": True, "dmg": True},
+        "artifact": {
+            "fileName": dmg_path.name,
+            "sizeBytes": dmg_path.stat().st_size,
+            "sha256": digest,
+        },
+    }
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return checksum_path, report_path
+
+
+def write_local_release_sidecars(dmg_path: Path) -> tuple[Path, Path]:
+    digest = sha256_file(dmg_path)
+    checksum_path = dmg_path.with_suffix(dmg_path.suffix + ".sha256")
+    checksum_path.write_text(f"{digest}  {dmg_path.name}\n", encoding="utf-8")
+    report_path = dmg_path.with_suffix(".release.json")
+    report = {
+        "schemaVersion": 1,
+        "labels": ["LOCAL TEST BUILD", "NOT NOTARIZED", "NOT FOR PUBLIC DISTRIBUTION"],
+        "distributionClass": "LOCAL_TEST_ONLY",
+        "developerID": False,
+        "notarized": False,
+        "gatekeeperQualified": False,
+        "publicDistribution": False,
+        "productionUI": True,
+        "product": RELEASE_CONFIG.product_name,
+        "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
+        "shortVersion": MAC_VERSION,
+        "buildNumber": MAC_BUILD_NUMBER,
+        "sourceCommit": source_commit(),
+        "sourceDirty": source_dirty(),
+        "buildTimestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "variant": RELEASE_CONFIG.variant,
+        "architectures": list(RELEASE_CONFIG.architectures),
+        "signing": {
+            "type": "Ad Hoc",
+            "teamID": None,
+            "hardenedRuntime": True,
+        },
+        "stapled": {"app": False, "dmg": False},
         "artifact": {
             "fileName": dmg_path.name,
             "sizeBytes": dmg_path.stat().st_size,
@@ -1776,9 +1967,12 @@ def command_release(args: argparse.Namespace) -> int:
         app_dir = assemble_self_contained_app(runner, ios_configuration="Release", macos_products_path=mac_products)
         distribution_sign_device_artifacts(runner, app_dir, identity)
         update_device_artifact_hashes(app_dir)
+        write_distribution_metadata(app_dir, "PUBLIC_RELEASE")
         distribution_sign_macos_app(runner, app_dir, identity)
         if not audit_app(app_dir, verbose=args.verbose):
             raise RuntimeError("production package content audit failed")
+        if not audit_distribution_metadata(app_dir, "PUBLIC_RELEASE"):
+            raise RuntimeError("public distribution metadata audit failed")
         if not audit_release_signatures(app_dir, identity.team_id):
             raise RuntimeError("production signature audit failed")
 
@@ -1817,6 +2011,67 @@ def command_release(args: argparse.Namespace) -> int:
     print_step("PASS", "SHA-256", sha256_file(dmg_path))
     print_step("PASS", "Release metadata", str(report_path))
     print_step("PASS", "Checksum file", str(checksum_path))
+    return 0
+
+
+def command_release_local(args: argparse.Namespace) -> int:
+    print("IOSSim Local Release Candidate")
+    print("LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION")
+    print("")
+    if source_dirty():
+        print_step("FAIL", "Repository state", "commit or remove all changes before creating a local release candidate")
+        return 1
+    try:
+        validate_release_inputs()
+    except Exception as exc:
+        print_step("FAIL", "Local release inputs", str(exc))
+        return 1
+    print_step("PASS", "Distribution class", "LOCAL_TEST_ONLY")
+    print_step("PASS", "Repository state", source_commit())
+    print_step("INFO", "Developer ID", "NO")
+    print_step("INFO", "Notarized", "NO")
+    print_step("INFO", "Gatekeeper qualified", "NO")
+    print_step("INFO", "Public distribution", "NO")
+    print_step("PASS", "Production UI", "YES")
+    runner = Runner(verbose=args.verbose)
+    LOCAL_RELEASE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ok = check_bundle_identifiers(runner)
+    ok &= build_idevice(runner)
+    ok &= verify_idevice(runner)
+    ok &= build_ios(runner, configuration="Release", packaged=True)
+    if not ok:
+        print_step("FAIL", "Local release prerequisites", "build did not complete")
+        return 1
+    try:
+        mac_products = build_universal_macos_products(runner)
+        app_dir = assemble_self_contained_app(runner, ios_configuration="Release", macos_products_path=mac_products)
+        local_sign_device_artifacts(runner, app_dir)
+        update_device_artifact_hashes(app_dir)
+        write_distribution_metadata(app_dir, "LOCAL_TEST_ONLY")
+        local_sign_macos_app(runner, app_dir)
+        if not audit_app(app_dir, verbose=args.verbose):
+            raise RuntimeError("local package content audit failed")
+        if not audit_distribution_metadata(app_dir, "LOCAL_TEST_ONLY"):
+            raise RuntimeError("local distribution metadata audit failed")
+        if not audit_local_signatures(app_dir):
+            raise RuntimeError("local structural signature audit failed")
+
+        dmg_path = LOCAL_RELEASE_OUTPUT_DIR / f"IOSSim-{MAC_VERSION}-local.dmg"
+        create_release_dmg(runner, app_dir, dmg_path)
+        checksum_path, report_path = write_local_release_sidecars(dmg_path)
+        if not local_release_audit(dmg_path, verbose=args.verbose):
+            raise RuntimeError("final local release audit failed")
+    except (CommandError, RuntimeError, OSError) as exc:
+        detail = str(exc)
+        if isinstance(exc, CommandError):
+            detail = f"{exc.name} failed; see {exc.result.log_path}"
+        print_step("FAIL", "Local release candidate", redact(detail))
+        return 1
+    print_step("PASS", "Local release candidate", str(dmg_path))
+    print_step("PASS", "SHA-256", sha256_file(dmg_path))
+    print_step("PASS", "Local release metadata", str(report_path))
+    print_step("PASS", "Checksum file", str(checksum_path))
+    print_step("INFO", "Public distribution", "NO — use ./iossim release after Developer ID and notarization are configured")
     return 0
 
 
@@ -2024,7 +2279,13 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
         metadata_ok = (
-            report.get("shortVersion") == MAC_VERSION
+            report.get("distributionClass") == "PUBLIC_RELEASE"
+            and report.get("developerID") is True
+            and report.get("notarized") is True
+            and report.get("gatekeeperQualified") is True
+            and report.get("publicDistribution") is True
+            and report.get("productionUI") is True
+            and report.get("shortVersion") == MAC_VERSION
             and str(report.get("buildNumber")) == MAC_BUILD_NUMBER
             and report.get("variant") == RELEASE_CONFIG.variant
             and report.get("bundleIdentifier") == RELEASE_CONFIG.bundle_identifier
@@ -2074,6 +2335,7 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
             ok &= audit_pass("Applications shortcut") if applications.is_symlink() and os.readlink(applications) == "/Applications" else audit_fail("Applications shortcut")
             app_dir = mount / "IOSSim.app"
             ok &= audit_app(app_dir, verbose=verbose)
+            ok &= audit_distribution_metadata(app_dir, "PUBLIC_RELEASE")
             try:
                 with (app_dir / "Contents" / "Info.plist").open("rb") as info_file:
                     info = plistlib.load(info_file)
@@ -2145,6 +2407,117 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
     return bool(ok)
 
 
+def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
+    """Audit a local-only DMG without performing or claiming public distribution gates."""
+    ok = True
+    if not dmg_path.is_file():
+        return audit_fail("Local DMG exists", str(dmg_path))
+    ok &= audit_pass("Local DMG exists", dmg_path.name)
+    verify = subprocess.run(
+        ["/usr/bin/hdiutil", "verify", str(dmg_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    ok &= audit_pass("DMG integrity") if verify.returncode == 0 else audit_fail("DMG integrity", verify.stderr)
+
+    checksum_path = dmg_path.with_suffix(dmg_path.suffix + ".sha256")
+    expected_digest = ""
+    if checksum_path.is_file():
+        parts = checksum_path.read_text(encoding="utf-8", errors="replace").strip().split()
+        expected_digest = parts[0] if len(parts) >= 2 and parts[-1] == dmg_path.name else ""
+    actual_digest = sha256_file(dmg_path)
+    ok &= audit_pass("DMG checksum", actual_digest) if expected_digest == actual_digest else audit_fail("DMG checksum", "missing or mismatched checksum sidecar")
+
+    report_path = dmg_path.with_suffix(".release.json")
+    report: dict[str, Any] = {}
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        metadata_ok = (
+            report.get("distributionClass") == "LOCAL_TEST_ONLY"
+            and report.get("developerID") is False
+            and report.get("notarized") is False
+            and report.get("gatekeeperQualified") is False
+            and report.get("publicDistribution") is False
+            and report.get("productionUI") is True
+            and report.get("labels") == ["LOCAL TEST BUILD", "NOT NOTARIZED", "NOT FOR PUBLIC DISTRIBUTION"]
+            and report.get("shortVersion") == MAC_VERSION
+            and str(report.get("buildNumber")) == MAC_BUILD_NUMBER
+            and report.get("variant") == "PRODUCTION"
+            and report.get("bundleIdentifier") == RELEASE_CONFIG.bundle_identifier
+            and report.get("sourceDirty") is False
+            and report.get("signing", {}).get("type") == "Ad Hoc"
+            and report.get("signing", {}).get("teamID") is None
+            and report.get("artifact", {}).get("sha256") == actual_digest
+        )
+        ok &= audit_pass("Local release metadata", "LOCAL_TEST_ONLY") if metadata_ok else audit_fail("Local release metadata", "local-only classification, provenance, or hash is invalid")
+    except Exception as exc:
+        ok &= audit_fail("Local release metadata", str(exc))
+
+    print_step("INFO", "Developer ID", "NO")
+    print_step("INFO", "Notarization", "NO — intentionally not attempted")
+    print_step("INFO", "Stapling", "NO — no notarization ticket exists")
+    print_step("INFO", "Gatekeeper qualification", "NO — intentionally not claimed")
+    print_step("INFO", "Public distribution", "NO")
+
+    with tempfile.TemporaryDirectory(prefix="iossim-local-release-audit-") as temporary:
+        mount = Path(temporary) / "mount"
+        mount.mkdir()
+        attach = subprocess.run(
+            ["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", str(mount), str(dmg_path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if attach.returncode != 0:
+            ok &= audit_fail("DMG mount", attach.stderr)
+            return bool(ok)
+        try:
+            visible = sorted(path.name for path in mount.iterdir() if not path.name.startswith("."))
+            ok &= audit_pass("DMG contents", ", ".join(visible)) if visible == ["Applications", "IOSSim.app"] else audit_fail("DMG contents", ", ".join(visible))
+            applications = mount / "Applications"
+            ok &= audit_pass("Applications shortcut") if applications.is_symlink() and os.readlink(applications) == "/Applications" else audit_fail("Applications shortcut")
+            app_dir = mount / "IOSSim.app"
+            ok &= audit_app(app_dir, verbose=verbose)
+            ok &= audit_distribution_metadata(app_dir, "LOCAL_TEST_ONLY")
+            ok &= audit_local_signatures(app_dir)
+            try:
+                manifest = json.loads((app_dir / "Contents" / "Resources" / "DeviceArtifacts" / "manifest.json").read_text(encoding="utf-8"))
+                release = manifest.get("release", {})
+                provenance_ok = (
+                    release.get("variant") == "PRODUCTION"
+                    and release.get("macVersion") == MAC_VERSION
+                    and str(release.get("buildNumber")) == MAC_BUILD_NUMBER
+                    and release.get("sourceDirty") is False
+                    and release.get("sourceCommit") == report.get("sourceCommit")
+                )
+                ok &= audit_pass("Bundled production provenance") if provenance_ok else audit_fail("Bundled production provenance")
+            except Exception as exc:
+                ok &= audit_fail("Bundled production provenance", str(exc))
+            for executable in [app_dir / "Contents/MacOS/IOSSim", app_dir / "Contents/MacOS/IOSSimProvisioner"]:
+                arch_result = subprocess.run(
+                    ["/usr/bin/lipo", "-archs", str(executable)],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                actual_architectures = set(arch_result.stdout.split())
+                expected_architectures = set(RELEASE_CONFIG.architectures)
+                arch_ok = arch_result.returncode == 0 and actual_architectures == expected_architectures
+                ok &= audit_pass(f"Architectures {executable.name}", " ".join(sorted(actual_architectures))) if arch_ok else audit_fail(f"Architectures {executable.name}", arch_result.stderr or arch_result.stdout)
+        finally:
+            subprocess.run(
+                ["/usr/bin/hdiutil", "detach", str(mount)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    if not source_dirty() and report.get("sourceCommit") == source_commit():
+        ok &= audit_pass("Source provenance", source_commit())
+    else:
+        ok &= audit_fail("Source provenance", "working tree is dirty or HEAD differs from local release metadata")
+    return bool(ok)
+
+
 def command_release_audit(args: argparse.Namespace) -> int:
     artifact = Path(args.artifact).expanduser().resolve()
     print("IOSSim Production Release Audit")
@@ -2152,6 +2525,17 @@ def command_release_audit(args: argparse.Namespace) -> int:
     ok = release_audit(artifact, verbose=args.verbose)
     print("")
     print(f"Overall: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+def command_local_release_audit(args: argparse.Namespace) -> int:
+    artifact = Path(args.artifact).expanduser().resolve()
+    print("IOSSim Local Release Candidate Audit")
+    print("LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION")
+    print("")
+    ok = local_release_audit(artifact, verbose=args.verbose)
+    print("")
+    print(f"Overall: {'PASS' if ok else 'FAIL'} (LOCAL_TEST_ONLY; public gates not assessed)")
     return 0 if ok else 1
 
 
@@ -2273,6 +2657,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("audit-app", "audit a self-contained IOSSim.app bundle"),
         ("release", "build, sign, notarize, staple, and audit a production DMG"),
         ("release-audit", "verify a signed and notarized production DMG"),
+        ("release-local", "build and audit an ad-hoc signed local-test-only DMG"),
+        ("release-local-audit", "verify a local-test-only DMG without public release claims"),
         ("test", "run current main validation suite"),
         ("device", "build and install internal device-side components"),
         ("info", "print dependency matrix"),
@@ -2286,7 +2672,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--device", help="target a ready iPhone by redacted identifier or exact device name")
         if name == "audit-app":
             p.add_argument("app", help="path to IOSSim.app")
-        if name == "release-audit":
+        if name in {"release-audit", "release-local-audit"}:
             p.add_argument("artifact", help="path to IOSSim-<version>.dmg")
         if name == "clean":
             p.add_argument("--generated", action="store_true", help="remove CLI-owned generated state")
@@ -2314,6 +2700,10 @@ def main(argv: list[str] | None = None) -> int:
         return command_release(args)
     if args.command == "release-audit":
         return command_release_audit(args)
+    if args.command == "release-local":
+        return command_release_local(args)
+    if args.command == "release-local-audit":
+        return command_local_release_audit(args)
     if args.command == "test":
         return command_test(args)
     if args.command == "device":

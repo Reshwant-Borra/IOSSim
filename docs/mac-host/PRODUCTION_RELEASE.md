@@ -8,6 +8,15 @@ The production release is a manually installed, Developer ID signed and Apple-no
 
 The release does not change the iPhone runtime, install Witness, depend on a repository checkout, or add an updater.
 
+Two deliberately separate packaging classes use that same production code and UI:
+
+| Command | Distribution class | Developer ID | Notarized | Gatekeeper qualified | Public distribution | Production UI |
+| --- | --- | --- | --- | --- | --- | --- |
+| `./iossim release` | `PUBLIC_RELEASE` | yes | yes | yes | yes | yes |
+| `./iossim release-local` | `LOCAL_TEST_ONLY` | no (ad hoc) | no | no | no | yes |
+
+`release-local` is a development and physical-test artifact, not a production release. It never substitutes for, weakens, or falls back from `release`. A missing Developer ID Application identity or notarization profile still makes `release` fail before it builds.
+
 ## Customer Prerequisites
 
 The current Personal Team flow still requires:
@@ -100,6 +109,45 @@ Re-run the final checks with:
 ```
 
 The audit requires accepted app and DMG notarization records, valid app and DMG staples, Gatekeeper acceptance, correct version/bundle/provenance, a clean matching source commit, exact DMG contents, a valid checksum, no forbidden package material, correct universal architectures, and valid nested Developer ID signatures.
+
+## Local Test Release Candidate
+
+From a clean committed worktree, build the same self-contained production UI for local functional testing:
+
+```bash
+./iossim release-local
+```
+
+The command uses explicit hardened-runtime ad-hoc signatures for every nested code item. It mechanically verifies those signatures, runs the production package/content audit, creates and mounts the DMG, checks its exact contents and `/Applications` shortcut, and writes a SHA-256 checksum. It does not look for Developer ID or notarization credentials, contact Apple notarization, staple a ticket, run Gatekeeper as a passing release gate, or claim public qualification.
+
+Outputs are under `.build/iossim/local-release/`:
+
+- `IOSSim-<version>-local.dmg`;
+- `IOSSim-<version>-local.dmg.sha256`;
+- `IOSSim-<version>-local.release.json`.
+
+The JSON report carries the labels `LOCAL TEST BUILD`, `NOT NOTARIZED`, and `NOT FOR PUBLIC DISTRIBUTION`, plus explicit false values for Developer ID, notarization, Gatekeeper qualification, and public distribution. Re-run its distinct audit with:
+
+```bash
+./iossim release-local-audit .build/iossim/local-release/IOSSim-<version>-local.dmg
+```
+
+An ad-hoc/not-notarized app may require the normal manual macOS approval available for locally obtained software. Record that as expected for `LOCAL_TEST_ONLY`; never record it as Gatekeeper qualification, and never use quarantine removal or Gatekeeper disabling as public-release evidence. The installed app otherwise exercises the same flow: DMG to Applications, production Mac Check, device and Personal Team selection, provisioning, iPhone setup, Ready, Spoof, and Rich Drive.
+
+Current release-candidate status:
+
+| Gate | Status |
+| --- | --- |
+| Release engineering | PASS |
+| Local RC packaging | PASS |
+| Clean-Mac functional qualification | PENDING |
+| Developer ID signing | DEFERRED |
+| Notarization | DEFERRED |
+| Stapling | DEFERRED |
+| Public Gatekeeper qualification | DEFERRED |
+| True newly-issued Personal Team profile renewal | PENDING |
+
+Deferred public credentials are not a product regression. When they are available, configure the identity and notary Keychain profile and run `./iossim release`; no packaging or runtime architecture change is required.
 
 ## Clean-Mac Physical Qualification
 
