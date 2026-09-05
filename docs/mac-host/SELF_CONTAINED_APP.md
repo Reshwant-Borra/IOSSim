@@ -29,7 +29,6 @@ The self-contained app includes:
 - `Contents/MacOS/IOSSimProvisioner`
 - `Contents/Resources/DeviceArtifacts/manifest.json`
 - `Contents/Resources/DeviceArtifacts/IOSSim DVT POC.app`
-- `Contents/Resources/DeviceArtifacts/IOSSimLocationWitness.app`
 - `Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app`
 
 It must not include repository source, `.git`, the Python bootstrap, Node modules, Rust source, Swift source, frontend/backend source, dSYM bundles, pairing records, private keys, PSKs, `.p12` files, logs, or absolute developer-machine paths.
@@ -45,12 +44,12 @@ It must not include repository source, `.git`, the Python bootstrap, Node module
 | Node/npm | frontend engineering UI/tests | Yes | No | Yes from runtime | N/A | No | No | No for packaged app | Avoids frontend source/runtime exposure |
 | Rust/cargo/rustup | build idevice FFI static archive | Yes | No | Yes from runtime | Yes | No | No | No for packaged app | Rust paths are remapped before packaging |
 | Swift compiler | build Mac/helper/iOS apps | Yes | No | Yes from runtime | Yes | No | Xcode-provided | No for packaged app | No source shipped |
-| Xcode/xcodebuild | build/sign iPhone artifacts and XCTest runner | Yes | No during helper doctor/install | Partially later | Yes | No | Full Xcode | Build machine only | Signing profiles remain device-limited |
+| Xcode/xcodebuild | build profile-free artifacts at package time; generate temporary signing shells at consumer install time | Yes | Yes for Personal Team provisioning | No in current proven path | Yes | No | Full Xcode | Sign in through Xcode | Account credentials remain Xcode-managed |
 | xcrun/devicectl | discover devices and install bundled apps | Yes | Yes | Not yet | No | No | Xcode/Apple developer tools | Install/select Apple developer tools | Current proven install path |
-| codesign/security | sign and inspect artifacts | Yes | No normal runtime | Yes from runtime | N/A | No | macOS/Xcode | Build machine only | No private key material packaged |
+| codesign/security | prepare profile-free artifacts; sign and inspect selected-team artifacts | Yes | Yes during provisioning | No | N/A | No | macOS/Xcode | Xcode-managed signing identity required | No private key material packaged |
 | DeveloperDiskImage/developer services | CoreDevice install/XCTest support | Yes via Xcode | Yes indirectly through devicectl/XCTest runner | Not yet proven | No | No | Xcode/private Apple stack | Apple tools required | Apple-controlled boundary |
 | IOSSim iPhone app | owned runtime app | Yes | Installed from bundle | No | Yes | Yes | No | Device must accept profile | Development profile limits devices |
-| Witness app | owned validation/runtime witness | Yes | Bundled for parity with current install path | Later if proven diagnostic-only | Yes | Temporarily yes | No | Device must accept profile | No pairing material |
+| Witness app | developer validation only | Yes | No | Yes from consumer package | Yes | No | No | None for consumers | Retained in source and development workflows |
 | XCTest runner app | rich XCUILocation runtime path | Yes | Installed from bundle | No | Yes | Yes | Includes copied XCTest frameworks | Device must accept profile | Preserves long-lived runner architecture |
 | LocalDevVPN | Apple-approved local VPN path on iPhone | No | Required externally | No | Not project-owned here | No | No | Install/approve on iPhone | User approval required |
 | RPPairing | pairing material stored/imported on iPhone | No | Required on iPhone | No | No | Never | No | Import in iPhone app | Must never be bundled or logged |
@@ -58,12 +57,20 @@ It must not include repository source, `.git`, the Python bootstrap, Node module
 
 ## Xcode Boundary
 
-At this milestone Xcode remains required on the build machine. The packaged helper still uses `/usr/bin/xcrun devicectl` at runtime for device discovery and installation because that is the current proven Apple/CoreDevice path. The packaged helper does not call `xcodebuild`, `codesign`, `security`, Git, Python, Node, npm, cargo, rustup, or repository scripts at runtime.
+Xcode remains required on the consumer Mac. The packaged helper uses
+`xcodebuild` to obtain Xcode-managed Personal Team profiles and uses
+`codesign`, `security`, and `/usr/bin/xcrun devicectl` to prepare, verify, and
+install the two artifacts. It does not call Git, Python, Node, npm, cargo,
+rustup, repository scripts, or an IOSSim source project at runtime.
 
 Removing `xcrun devicectl` should be handled as a later focused milestone behind an Apple tooling adapter or a direct compiled idevice/CoreDevice integration.
 
 ## Signing Model
 
-The bundled iPhone artifacts are Apple Development signed with embedded development provisioning profiles. They are not universal customer artifacts. Installation is expected to work only on devices included in those profiles or otherwise accepted by Apple's development provisioning flow.
+The bundled iPhone artifacts are profile-free and re-signable. At installation,
+the helper derives stable Personal Team runner identities, asks Xcode to create
+or reuse matching profiles, signs the nested runner graph and main app, verifies
+the selected device is included, and installs both. Developer-machine profiles
+are not shipped.
 
 No private keys, developer account credentials, pairing records, or RPPairing material are packaged.
