@@ -20,6 +20,9 @@ installs only IOSSim plus its deterministic XCTest runner; Witness is excluded.
 See [Consumer Setup Flow](mac-host/CONSUMER_SETUP_FLOW.md) and
 [Consumer Provisioning Architecture](mac-host/CONSUMER_PROVISIONING_ARCHITECTURE.md).
 
+Release engineers should use the signed/notarized DMG workflow and physical
+qualification checklist in [Production Release](mac-host/PRODUCTION_RELEASE.md).
+
 ## Developer Setup
 
 This setup path is for the current iPhone/on-device IOSSim architecture on
