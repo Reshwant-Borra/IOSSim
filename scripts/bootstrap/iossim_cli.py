@@ -1590,6 +1590,24 @@ def notarization_profile_name() -> str:
     return profile
 
 
+def validate_notarization_credentials(profile: str) -> None:
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun", "notarytool", "history",
+            "--keychain-profile", profile,
+            "--output-format", "json",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "the configured notarytool Keychain profile could not authenticate. "
+            "Refresh the local Keychain profile and verify network access."
+        )
+
+
 def sanitized_json_text(text: str) -> str:
     sanitized = text.replace(str(ROOT), "IOSSimSourceRoot")
     sanitized = sanitized.replace(str(Path.home()), "IOSSimHome")
@@ -1734,6 +1752,7 @@ def command_release(args: argparse.Namespace) -> int:
         validate_release_inputs()
         identity = resolve_developer_id_identity()
         profile = notarization_profile_name()
+        validate_notarization_credentials(profile)
     except Exception as exc:
         print_step("FAIL", "Release credentials", str(exc))
         return 1
