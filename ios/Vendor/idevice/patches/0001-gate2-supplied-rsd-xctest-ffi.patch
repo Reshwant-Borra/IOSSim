@@ -632,10 +632,10 @@ index 3705645..250824f 100644
 
          // When a target app is specified, targetApplicationEnvironment must be at
          // least an empty dict (not null) — mirrors Python's `self.target_app_env or {}`
-@@ -434,6 +429,91 @@ pub(super) struct TestManagerConnections {
+@@ -434,6 +429,92 @@ pub(super) struct TestManagerConnections {
      rsd_handles: Vec<crate::tcp::handle::AdapterHandle>,
  }
-
+-
 +/// Startup milestones reached while an XCTest runner is being orchestrated.
 +#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 +pub enum XCUITestStartupStage {
@@ -714,8 +714,10 @@ index 3705645..250824f 100644
 +        "com.apple.instruments.dtservicehub",
 +    ] {
 +        if !handshake.services.contains_key(service_name) {
-+            warn!("RSD service not found: {}", service_name);
-+            return Err(IdeviceError::ServiceNotFound);
++            return Err(IdeviceError::UnknownErrorType(format!(
++                "RSD service not found: {}",
++                service_name
++            )));
 +        }
 +    }
 +    Ok(())

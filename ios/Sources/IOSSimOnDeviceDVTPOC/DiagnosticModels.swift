@@ -60,6 +60,17 @@ public struct POCError: Error, Codable, Equatable, Sendable {
         self.message = message
         self.stage = stage
     }
+
+    public var likelyStaleRSDTestManagerState: Bool {
+        guard code == .xctestRunnerFailed else { return false }
+        let lowercasedMessage = message.lowercased()
+        return lowercasedMessage.contains("servicenotfound")
+            || lowercasedMessage.contains("service not found")
+            || lowercasedMessage.contains("testmanagerd")
+            || lowercasedMessage.contains("dtservicehub")
+            || lowercasedMessage.contains("rsd service")
+            || lowercasedMessage.contains("retained rsd")
+    }
 }
 
 public struct POCStageRecord: Codable, Equatable, Sendable {

@@ -54,6 +54,7 @@ struct POCUnitChecks {
     try await staleWriterCannotSendAfterOwnershipChanges()
     try await staleGenerationCallbackCannotAffectCurrentConnection()
     try await reconnectRestoresCurrentDrivePosition()
+    try await runtimeSessionRebuildPreservesWriterAndRestoresPosition()
     try await stopPreventsDelayedWrites()
     try await schedulerStopWaitsForBlockedTransportSet()
     try await cancelledSchedulerSetDoesNotReconnect()
@@ -65,6 +66,7 @@ struct POCUnitChecks {
     try appleLocationControlMetricCalculations()
     try gate3RunnerBundleIdentifierResolverDefaultsToSourceID()
     try gate3RunnerBundleIdentifierResolverUsesConfiguredInstalledID()
+    try gate3RunnerBundleIdentifierResolverSurvivesRefreshWithoutBundledConfig()
     try gate3RunnerBundleIdentifierResolverRejectsMalformedConfig()
     try locationWitnessMetricsCalculations()
     try locationWitnessMetricsSimulatedOnlyFiltering()
@@ -76,6 +78,7 @@ struct POCUnitChecks {
     try passiveAppleLocationRecorderPreservesRawCallbacks()
     try appleLocationControlComparisonReportGeneration()
     try coreLocationVerifierRawCallbacksAreNotPublicationFiltered()
+    try staleRSDTestManagerErrorDetection()
     try await driveDiagnosticsTraceSerializationAndSummary()
     try await driveDiagnosticsDetectorEvents()
     try await sessionRecorderBatchesAndTransitions()
@@ -1038,6 +1041,42 @@ struct POCUnitChecks {
     )
   }
 
+  static func runtimeSessionRebuildPreservesWriterAndRestoresPosition() async throws {
+    let tunnel = MockTunnelClient()
+    let coordinator = LocationCoordinator(
+      pairingStore: InMemoryRPPairingStore(data: try makePairingPlist()),
+      tunnelClient: tunnel,
+      recorder: testRecorder()
+    )
+    let controller = DriveSessionController()
+    controller.prepareRoute(try driveRoute(), speedMPH: 35)
+    try controller.startDrive(now: 0)
+    try await coordinator.startSimulation(
+      writerID: controller.writerID, mode: .drive(sessionID: controller.sessionID, current: nil))
+    let firstGeneration = await coordinator.currentConnectionGeneration()
+    await coordinator.setReconnectRestoreProvider(writerID: controller.writerID) {
+      SimulatedCoordinate(controller.expectedPosition(now: 15)!.coordinate)
+    }
+    try await coordinator.rebuildRuntimeSession(reason: "unit stale XCTest service state")
+    let snapshot = await coordinator.snapshot()
+    let secondGeneration = await coordinator.currentConnectionGeneration()
+    let restored = controller.expectedPosition(now: 15)!.coordinate
+    let set = try requireValue(await tunnel.sets.last, "runtime rebuild restored set exists")
+    let connectCount = await tunnel.totalConnectCount()
+    let disconnectCount = await tunnel.totalDisconnectCount()
+    try require(snapshot.activeWriterID == controller.writerID, "runtime rebuild keeps active writer")
+    try require(snapshot.connectionState == .connected, "runtime rebuild leaves coordinator connected")
+    try require(secondGeneration > firstGeneration, "runtime rebuild increments generation")
+    try require(connectCount == 2, "runtime rebuild reconnects through existing setup path")
+    try require(disconnectCount == 1, "runtime rebuild tears down stale handles once")
+    try require(
+      abs(set.latitude - restored.latitude) < 0.0001,
+      "runtime rebuild restores current route latitude")
+    try require(
+      abs(set.longitude - restored.longitude) < 0.0001,
+      "runtime rebuild restores current route longitude")
+  }
+
   static func stopPreventsDelayedWrites() async throws {
     let tunnel = MockTunnelClient()
     let coordinator = LocationCoordinator(
@@ -1433,7 +1472,7 @@ struct POCUnitChecks {
     let resolved = resolver.resolvedInstalledRunnerBundleID(
       environment: [:],
       infoDictionary: [:],
-      userDefaults: UserDefaults(suiteName: "POCUnitChecks.empty")!
+      userDefaults: try isolatedDefaults()
     )
 
     try require(
@@ -1448,25 +1487,52 @@ struct POCUnitChecks {
     let resolver = Gate3XCTestRunnerBundleIdentifierResolver()
     let configured =
       "com.personalteam.iossim.t0123456789ab.location-control-uitests.xctrunner"
+    let infoDefaults = try isolatedDefaults()
 
     let environmentResolved = resolver.resolvedInstalledRunnerBundleID(
       environment: [Gate3XCTestRunnerBundleIdentifierResolver.environmentKey: configured],
       infoDictionary: [:],
-      userDefaults: UserDefaults(suiteName: "POCUnitChecks.environment")!
+      userDefaults: try isolatedDefaults()
     )
     let infoResolved = resolver.resolvedInstalledRunnerBundleID(
       environment: [:],
       infoDictionary: [Gate3XCTestRunnerBundleIdentifierResolver.infoDictionaryKey: configured],
-      userDefaults: UserDefaults(suiteName: "POCUnitChecks.info")!
+      userDefaults: infoDefaults
     )
 
     try require(environmentResolved == configured, "environment Gate 3 runner config should win")
     try require(infoResolved == configured, "Info.plist Gate 3 runner config should be accepted")
+    try require(
+      infoDefaults.string(forKey: Gate3XCTestRunnerBundleIdentifierResolver.userDefaultsKey)
+        == configured,
+      "Info.plist Gate 3 runner config should persist for later app refreshes")
+  }
+
+  static func gate3RunnerBundleIdentifierResolverSurvivesRefreshWithoutBundledConfig() throws {
+    let resolver = Gate3XCTestRunnerBundleIdentifierResolver()
+    let defaults = try isolatedDefaults()
+    let configured =
+      "com.personalteam.iossim.t0123456789ab.location-control-uitests.xctrunner"
+
+    _ = resolver.resolvedInstalledRunnerBundleID(
+      environment: [:],
+      infoDictionary: [Gate3XCTestRunnerBundleIdentifierResolver.infoDictionaryKey: configured],
+      userDefaults: defaults
+    )
+    let resolvedAfterRefresh = resolver.resolvedInstalledRunnerBundleID(
+      environment: [:],
+      infoDictionary: [Gate3XCTestRunnerBundleIdentifierResolver.infoDictionaryKey: ""],
+      userDefaults: defaults
+    )
+
+    try require(
+      resolvedAfterRefresh == configured,
+      "persisted Personal Team runner config should survive app refresh without bundled config")
   }
 
   static func gate3RunnerBundleIdentifierResolverRejectsMalformedConfig() throws {
     let resolver = Gate3XCTestRunnerBundleIdentifierResolver()
-    let defaults = UserDefaults(suiteName: "POCUnitChecks.malformed")!
+    let defaults = try isolatedDefaults()
     defaults.removeObject(forKey: Gate3XCTestRunnerBundleIdentifierResolver.userDefaultsKey)
 
     for malformed in [
@@ -1798,6 +1864,28 @@ struct POCUnitChecks {
         previous: firstObservation, observation: secondObservation),
       "500 ms and 7.82 m falls below the existing publication thresholds"
     )
+  }
+
+  static func staleRSDTestManagerErrorDetection() throws {
+    let genericServiceError = POCError(.xctestRunnerFailed, "ServiceNotFound")
+    let exactServiceError = POCError(
+      .xctestRunnerFailed,
+      "RSD service not found: \(XCTestRSDServiceDiagnostics.testmanagerd)"
+    )
+    let ordinaryRunnerError = POCError(.xctestRunnerFailed, "runner bundle metadata is incomplete")
+    try require(
+      genericServiceError.likelyStaleRSDTestManagerState,
+      "generic service-not-found XCTest error triggers runtime recovery")
+    try require(
+      exactServiceError.likelyStaleRSDTestManagerState,
+      "exact missing RSD service XCTest error triggers runtime recovery")
+    try require(
+      XCTestRSDServiceDiagnostics.requiredServiceSummary.contains(
+        XCTestRSDServiceDiagnostics.dtservicehub),
+      "diagnostic summary names dtservicehub")
+    try require(
+      !ordinaryRunnerError.likelyStaleRSDTestManagerState,
+      "ordinary runner metadata errors do not trigger stale-session recovery")
   }
 
   static func driveDiagnosticsTraceSerializationAndSummary() async throws {
@@ -2504,6 +2592,7 @@ private actor MockTunnelClient: OnDeviceTunnelClient {
   private(set) var sets: [(latitude: Double, longitude: Double)] = []
   private(set) var clearCount = 0
   private var connectCount = 0
+  private var disconnectCount = 0
 
   func connect(pairingData: Data, endpoint: DeveloperEndpoint) async throws {
     connectCount += 1
@@ -2524,6 +2613,7 @@ private actor MockTunnelClient: OnDeviceTunnelClient {
   }
 
   func disconnect() async {
+    disconnectCount += 1
     state = .disconnected
   }
 
@@ -2547,5 +2637,13 @@ private actor MockTunnelClient: OnDeviceTunnelClient {
 
   func totalClearCount() -> Int {
     clearCount
+  }
+
+  func totalConnectCount() -> Int {
+    connectCount
+  }
+
+  func totalDisconnectCount() -> Int {
+    disconnectCount
   }
 }

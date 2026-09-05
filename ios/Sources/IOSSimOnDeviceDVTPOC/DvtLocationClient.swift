@@ -146,6 +146,7 @@ public struct Gate3XCTestRunnerBundleIdentifierResolver: Sendable {
     if let configured = Self.validConfiguredRunnerBundleID(
       infoDictionary?[Self.infoDictionaryKey] as? String
     ) {
+      userDefaults.set(configured, forKey: Self.userDefaultsKey)
       return configured
     }
     if let configured = Self.validConfiguredRunnerBundleID(
@@ -176,6 +177,15 @@ public struct Gate3XCTestRunnerBundleIdentifierResolver: Sendable {
       guard let first = component.first else { return false }
       return first.isLetter || first.isNumber
     }
+  }
+}
+
+public enum XCTestRSDServiceDiagnostics {
+  public static let testmanagerd = "com.apple.dt.testmanagerd.remote"
+  public static let dtservicehub = "com.apple.instruments.dtservicehub"
+
+  public static var requiredServiceSummary: String {
+    "\(testmanagerd), \(dtservicehub)"
   }
 }
 
@@ -474,11 +484,37 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
         component: "XCTestRunner",
         previousState: currentState.rawValue,
         newState: "starting",
-        message: startReason
+        message: startReason,
+        metadata: ["requested_runner_bundle_id": gate3RunnerBundleID]
       )
 
-      let metadata = try lookupGate3RunnerMetadata(adapter: adapter, handshake: handshake)
+      let metadata: Gate3XCTestRunnerMetadata
+      do {
+        metadata = try lookupGate3RunnerMetadata(adapter: adapter, handshake: handshake)
+      } catch let error as POCError {
+        await recorder?.record(
+          category: "GATE3_XCTEST",
+          component: "XCTestRunner",
+          previousState: "starting",
+          newState: "metadata_lookup_failed",
+          errorCode: error.code.rawValue,
+          message: error.message,
+          metadata: ["requested_runner_bundle_id": gate3RunnerBundleID]
+        )
+        throw error
+      }
       updateGate3Metadata(metadata.summary)
+      await recorder?.record(
+        category: "GATE3_XCTEST",
+        component: "XCTestRunner",
+        previousState: "starting",
+        newState: "metadata_resolved",
+        message: "Gate 3 runner metadata resolved",
+        metadata: [
+          "requested_runner_bundle_id": gate3RunnerBundleID,
+          "resolved_runner_bundle_id": metadata.runnerBundleID,
+        ]
+      )
 
       let context = Unmanaged.passRetained(Gate3XCTestCallbackContext(client: self)).toOpaque()
       var runner: OpaquePointer?
@@ -496,7 +532,8 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
         defer { idevice_error_free(err) }
         Unmanaged<Gate3XCTestCallbackContext>.fromOpaque(context).release()
         let error = POCError(
-          .xctestRunnerFailed, ffiMessage(err) ?? "xctest_runner_new_from_rsd failed.")
+          .xctestRunnerFailed,
+          xctestFailureMessage(err, operation: "xctest_runner_new_from_rsd"))
         recordGate3Failure(error, firstStage: .rsdReady)
         throw error
       }
@@ -539,7 +576,8 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
                   if let err = xctest_runner_start(runner, &config, timeoutSeconds) {
                     defer { idevice_error_free(err) }
                     let error = POCError(
-                      .xctestRunnerFailed, ffiMessage(err) ?? "xctest_runner_start failed.")
+                      .xctestRunnerFailed,
+                      xctestFailureMessage(err, operation: "xctest_runner_start"))
                     recordGate3Failure(error, firstStage: .testmanagerControlReady)
                     stopGate3XCTestLocked()
                     throw error
@@ -870,7 +908,8 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
       }) {
         defer { idevice_error_free(err) }
         throw POCError(
-          .xctestRunnerFailed, ffiMessage(err) ?? "xctest_runner_copy_metadata_from_rsd failed.")
+          .xctestRunnerFailed,
+          xctestFailureMessage(err, operation: "xctest_runner_copy_metadata_from_rsd"))
       }
       guard let metadataPointer else {
         throw POCError(
@@ -939,6 +978,21 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
         return String(cString: message)
       }
       return "idevice error code=\(err.pointee.code) sub_code=\(err.pointee.sub_code)"
+    }
+
+    private func xctestFailureMessage(
+      _ err: UnsafeMutablePointer<IdeviceFfiError>?,
+      operation: String
+    ) -> String {
+      let base = ffiMessage(err) ?? "\(operation) failed."
+      let lowercasedBase = base.lowercased()
+      guard lowercasedBase.contains("servicenotfound")
+        || lowercasedBase.contains("service not found")
+      else {
+        return base
+      }
+      return
+        "\(base) Missing RSD service while starting XCTest via retained RSD. Required services: \(XCTestRSDServiceDiagnostics.requiredServiceSummary)."
     }
   #endif
 

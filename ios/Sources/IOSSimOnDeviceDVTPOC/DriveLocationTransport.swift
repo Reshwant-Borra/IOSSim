@@ -468,8 +468,7 @@ public final class XCTestRichDriveLocationTransport: TerminalDriveLocationTransp
       mode: .drive(
         sessionID: context.sessionID, current: SimulatedCoordinate(context.initialCoordinate))
     )
-    try await runnerClient.startRichDriveOnDeviceXCTest(
-      port: port, timeoutSeconds: runnerTimeoutSeconds)
+    try await startRichDriveRunnerWithAutomaticRuntimeRecovery()
     try await tcpClient.connect(timeoutSeconds: 8)
     _ = try await tcpClient.send(
       RichDriveIPCMessage(
@@ -530,8 +529,7 @@ public final class XCTestRichDriveLocationTransport: TerminalDriveLocationTransp
     await coordinator.reconnectIfNeeded()
     guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
     do {
-      try await runnerClient.startRichDriveOnDeviceXCTest(
-        port: port, timeoutSeconds: runnerTimeoutSeconds)
+      try await startRichDriveRunnerWithAutomaticRuntimeRecovery()
       guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
       try await tcpClient.connect(timeoutSeconds: 8)
       guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
@@ -552,6 +550,19 @@ public final class XCTestRichDriveLocationTransport: TerminalDriveLocationTransp
 
   public func currentConnectionGeneration() async -> Int {
     await coordinator.currentConnectionGeneration()
+  }
+
+  private func startRichDriveRunnerWithAutomaticRuntimeRecovery() async throws {
+    do {
+      try await runnerClient.startRichDriveOnDeviceXCTest(
+        port: port, timeoutSeconds: runnerTimeoutSeconds)
+    } catch let error as POCError where error.likelyStaleRSDTestManagerState {
+      try await coordinator.rebuildRuntimeSession(
+        reason: "Rich Drive XCTest launch reported stale RSD/TestManager service state: \(error.message)"
+      )
+      try await runnerClient.startRichDriveOnDeviceXCTest(
+        port: port, timeoutSeconds: runnerTimeoutSeconds)
+    }
   }
 
   public func setReconnectRestoreProvider(

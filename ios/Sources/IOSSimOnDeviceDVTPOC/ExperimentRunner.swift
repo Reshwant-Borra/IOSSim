@@ -240,6 +240,32 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
         await recorder.endSession(reason: "disconnect")
     }
 
+    public func rebuildRuntimeSession(reason: String) async throws {
+        startMonitors()
+        await recorder.record(
+            category: "RUNTIME_SESSION_REBUILD_REQUESTED",
+            component: "DeveloperTunnel",
+            previousState: nil,
+            newState: "requested",
+            message: reason
+        )
+        let snapshot = await locationCoordinator.snapshot()
+        if snapshot.activeWriterID == nil {
+            try await connect()
+        } else {
+            try await locationCoordinator.rebuildRuntimeSession(reason: reason)
+        }
+        let status = await locationCoordinator.bridgeStatus()
+        await diagnostics.setBridgeState(status.state)
+        if status.state == .locationSimulationConnected || status.state == .simulating {
+            await diagnostics.succeed(.tunnelEstablished)
+            await diagnostics.succeed(.rsdConnected)
+            await diagnostics.succeed(.dvtConnected)
+            await diagnostics.succeed(.deviceInfoWarmup)
+            await diagnostics.succeed(.locationSimulationConnected)
+        }
+    }
+
     public func setTestLocationAndVerify(timeout: TimeInterval = 8) async throws -> LocationObservation {
         try await setAndVerify(
             latitude: Self.testCoordinate.latitude,

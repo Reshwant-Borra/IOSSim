@@ -89,7 +89,7 @@ final class AppleLocationControlsViewModel: ObservableObject {
         gate3ActionStatus = "Starting"
         Task {
             do {
-                try await tunnelClient.startGate3OnDeviceXCTest(iosMajorVersion: currentIOSMajorVersion())
+                try await startGate3WithAutomaticRuntimeRecovery()
                 refreshGate3Status()
                 gate3ActionStatus = "Started"
                 startGate3Poll()
@@ -157,6 +157,18 @@ final class AppleLocationControlsViewModel: ObservableObject {
 
     func refreshGate3Status() {
         gate3Status = tunnelClient.gate3XCTestStatus()
+    }
+
+    private func startGate3WithAutomaticRuntimeRecovery() async throws {
+        do {
+            try await tunnelClient.startGate3OnDeviceXCTest(iosMajorVersion: currentIOSMajorVersion())
+        } catch let error as POCError where error.likelyStaleRSDTestManagerState {
+            gate3ActionStatus = "Rebuilding runtime session"
+            try await POCAppDependencies.runner.rebuildRuntimeSession(
+                reason: "Gate 3 XCTest launch reported stale RSD/TestManager service state: \(error.message)"
+            )
+            try await tunnelClient.startGate3OnDeviceXCTest(iosMajorVersion: currentIOSMajorVersion())
+        }
     }
 
     func startGate3Poll() {

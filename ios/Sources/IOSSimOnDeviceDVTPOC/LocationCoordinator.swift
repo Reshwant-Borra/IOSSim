@@ -369,6 +369,112 @@ public actor LocationCoordinator {
         reconnectTaskGeneration = nil
     }
 
+    public func rebuildRuntimeSession(reason: String) async throws {
+        guard let rebuildWriterID = activeWriterID else {
+            throw POCError(
+                .disconnected,
+                "Cannot rebuild developer runtime session without an active simulation writer."
+            )
+        }
+        reconnectTaskGeneration = nil
+        let rebuildBegin = ProcessInfo.processInfo.systemUptime
+        await recorder.record(
+            category: "RUNTIME_SESSION_REBUILD",
+            component: "LocationCoordinator",
+            previousState: connectionState.rawValue,
+            newState: "started",
+            message: reason,
+            metadata: [
+                "connection_generation": "\(connectionGeneration)",
+                "writer_id": rebuildWriterID,
+                "mode": mode.description,
+                "monotonic_timestamp": String(format: "%.3f", rebuildBegin)
+            ]
+        )
+
+        await tunnelClient.disconnect()
+        guard activeWriterID == rebuildWriterID else {
+            await recorder.record(
+                category: "RUNTIME_SESSION_REBUILD",
+                component: "LocationCoordinator",
+                previousState: "started",
+                newState: "cancelled",
+                message: "rebuild cancelled because writer ownership changed",
+                metadata: ["writer_id": rebuildWriterID]
+            )
+            throw POCError(.staleWriter, "Runtime rebuild cancelled for stale writer \(rebuildWriterID).")
+        }
+
+        connectionState = .reconnecting
+        do {
+            try await ensureConnected(reconnecting: true)
+            guard activeWriterID == rebuildWriterID else {
+                await tunnelClient.disconnect()
+                await recorder.record(
+                    category: "RUNTIME_SESSION_REBUILD",
+                    component: "LocationCoordinator",
+                    previousState: "connected",
+                    newState: "cancelled",
+                    message: "rebuild result discarded because writer ownership changed",
+                    metadata: ["writer_id": rebuildWriterID]
+                )
+                throw POCError(.staleWriter, "Runtime rebuild completed for stale writer \(rebuildWriterID).")
+            }
+            if let coordinate = await currentRestoreCoordinate() {
+                desiredCoordinate = coordinate
+                try await tunnelClient.set(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                await recorder.record(
+                    category: "CURRENT_POSITION_RESTORED",
+                    component: "LocationCoordinator",
+                    previousState: "connected",
+                    newState: "restored",
+                    message: "current desired position restored after runtime rebuild",
+                    metadata: [
+                        "connection_generation": "\(connectionGeneration)",
+                        "latitude": String(format: "%.6f", coordinate.latitude),
+                        "longitude": String(format: "%.6f", coordinate.longitude)
+                    ]
+                )
+            }
+            await recorder.record(
+                category: "RUNTIME_SESSION_REBUILD",
+                component: "LocationCoordinator",
+                previousState: "started",
+                newState: "succeeded",
+                message: "runtime session rebuild succeeded",
+                metadata: [
+                    "connection_generation": "\(connectionGeneration)",
+                    "total_rebuild_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - rebuildBegin) * 1000)
+                ]
+            )
+        } catch let error as POCError {
+            connectionState = .failed
+            await recorder.record(
+                category: "RUNTIME_SESSION_REBUILD",
+                component: "LocationCoordinator",
+                previousState: "started",
+                newState: "failed",
+                errorCode: error.code.rawValue,
+                message: error.message,
+                metadata: ["connection_generation": "\(connectionGeneration)"]
+            )
+            throw error
+        } catch {
+            connectionState = .failed
+            let pocError = POCError(.unknown, String(describing: error))
+            await recorder.record(
+                category: "RUNTIME_SESSION_REBUILD",
+                component: "LocationCoordinator",
+                previousState: "started",
+                newState: "failed",
+                errorCode: pocError.code.rawValue,
+                message: pocError.message,
+                metadata: ["connection_generation": "\(connectionGeneration)"]
+            )
+            throw pocError
+        }
+    }
+
     public func handleConnectionLost(generation: Int, reason: String) async {
         guard generation == connectionGeneration else {
             await recorder.record(
