@@ -22,7 +22,8 @@ public final class ProcessRunner: @unchecked Sendable {
         executableURL: URL,
         arguments: [String],
         workingDirectory: URL,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        redactOutput: Bool = true
     ) async throws -> ProcessResult {
         let process = Process()
         process.executableURL = executableURL
@@ -48,8 +49,8 @@ public final class ProcessRunner: @unchecked Sendable {
                         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
                         continuation.resume(returning: ProcessResult(
                             exitCode: proc.terminationStatus,
-                            stdout: Redactor.redact(stdout),
-                            stderr: Redactor.redact(stderr)
+                            stdout: redactOutput ? Redactor.redact(stdout) : stdout,
+                            stderr: redactOutput ? Redactor.redact(stderr) : stderr
                         ))
                     }
                 }

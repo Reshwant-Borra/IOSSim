@@ -24,4 +24,16 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertEqual(result.stdout.count, 200_000)
         XCTAssertEqual(result.stderr.count, 200_000)
     }
+
+    func testTrustedMachineReadableOutputCanBypassTransportRedaction() async throws {
+        let identifier = "123E4567-E89B-12D3-A456-426614174000"
+        let result = try await ProcessRunner().run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+            arguments: [identifier],
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            redactOutput: false
+        )
+
+        XCTAssertEqual(result.stdout, identifier)
+    }
 }

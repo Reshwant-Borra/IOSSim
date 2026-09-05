@@ -303,8 +303,10 @@ public final class SetupStore: ObservableObject {
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
         let installationKnown = !engine.consumerProvisioningEnabled || provisioningManifest != nil
+        let consumerRuntimeReady = !engine.consumerProvisioningEnabled
+            || provisioningManifest?.runtimeSetupStatus == .ready
         if (status.mac.ready && selectedDeviceProvisioningReady && status.runtimeActionChecks.isEmpty && installationKnown)
-            || onboardingCompleted {
+            || (onboardingCompleted && consumerRuntimeReady) {
             phase = .complete
             return
         }

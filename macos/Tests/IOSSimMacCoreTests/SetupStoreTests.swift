@@ -234,6 +234,23 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertTrue(store.onboardingCompleted)
     }
 
+    func testConsumerBootstrapResumesPendingRuntimeSetupAfterPriorOnboarding() async throws {
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
+        let initialStore = SetupStore(engine: engine)
+        initialStore.getStarted()
+        try await waitUntilIdle(initialStore)
+        initialStore.continueFromCurrentStatus()
+        try await waitUntilIdle(initialStore)
+        XCTAssertEqual(initialStore.phase, .runtimeSetup)
+
+        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        let resumedStore = SetupStore(engine: engine)
+        resumedStore.bootstrap()
+        try await waitUntilIdle(resumedStore)
+
+        XCTAssertEqual(resumedStore.phase, .runtimeSetup)
+    }
+
     func testConsumerRefreshAndRepairUseTypedOperations() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
         let store = SetupStore(engine: engine)
@@ -360,6 +377,16 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
             tunnelState: "connected"
         )
         checks.append(.init(state: .pass, component: "Device", name: "iPhone detected", detail: device.name, requiredFor: "device"))
+        if manifest?.runtimeSetupStatus == .userActionRequired {
+            checks.append(.init(
+                state: .action,
+                component: "Runtime",
+                name: "PAIRING MATERIAL",
+                detail: "stored on iPhone",
+                action: "Open IOSSim on your iPhone and complete the pairing import.",
+                requiredFor: "device"
+            ))
+        }
         return DoctorStatus(
             ready: false,
             mac: MacSummary(ready: true),
