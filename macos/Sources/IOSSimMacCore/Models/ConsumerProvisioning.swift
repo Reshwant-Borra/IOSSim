@@ -1,0 +1,497 @@
+import Foundation
+
+public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable, Sendable {
+    case idle = "IDLE"
+    case checkingMac = "CHECKING_MAC"
+    case checkingXcodeSupport = "CHECKING_XCODE_SUPPORT"
+    case discoveringDevices = "DISCOVERING_DEVICES"
+    case waitingForDeviceSelection = "WAITING_FOR_DEVICE_SELECTION"
+    case checkingDevice = "CHECKING_DEVICE"
+    case checkingDeveloperMode = "CHECKING_DEVELOPER_MODE"
+    case discoveringAppleAccounts = "DISCOVERING_APPLE_ACCOUNTS"
+    case waitingForTeamSelection = "WAITING_FOR_TEAM_SELECTION"
+    case validatingTeam = "VALIDATING_TEAM"
+    case preparingIdentities = "PREPARING_IDENTITIES"
+    case preparingArtifacts = "PREPARING_ARTIFACTS"
+    case signingMain = "SIGNING_MAIN"
+    case signingRunner = "SIGNING_RUNNER"
+    case verifyingSignatures = "VERIFYING_SIGNATURES"
+    case installingMain = "INSTALLING_MAIN"
+    case installingRunner = "INSTALLING_RUNNER"
+    case verifyingInstallation = "VERIFYING_INSTALLATION"
+    case writingRuntimeConfiguration = "WRITING_RUNTIME_CONFIGURATION"
+    case verifyingRuntimeConfiguration = "VERIFYING_RUNTIME_CONFIGURATION"
+    case checkingProfileExpiration = "CHECKING_PROFILE_EXPIRATION"
+    case waitingForIPhoneSetup = "WAITING_FOR_IPHONE_SETUP"
+    case verifyingRuntimeReadiness = "VERIFYING_RUNTIME_READINESS"
+    case complete = "COMPLETE"
+    case failed = "FAILED"
+
+    public var userTitle: String {
+        switch self {
+        case .idle: return "Ready to begin"
+        case .checkingMac, .checkingXcodeSupport: return "Checking this Mac"
+        case .discoveringDevices, .waitingForDeviceSelection: return "Finding your iPhone"
+        case .checkingDevice, .checkingDeveloperMode: return "Preparing your iPhone"
+        case .discoveringAppleAccounts, .waitingForTeamSelection, .validatingTeam: return "Checking Apple signing"
+        case .preparingIdentities, .preparingArtifacts: return "Preparing IOSSim"
+        case .signingMain, .signingRunner: return "Signing IOSSim"
+        case .verifyingSignatures: return "Verifying signed components"
+        case .installingMain: return "Installing IOSSim"
+        case .installingRunner: return "Installing support components"
+        case .verifyingInstallation, .writingRuntimeConfiguration, .verifyingRuntimeConfiguration:
+            return "Verifying installation"
+        case .checkingProfileExpiration: return "Checking refresh schedule"
+        case .waitingForIPhoneSetup: return "Finish setup on your iPhone"
+        case .verifyingRuntimeReadiness: return "Checking IOSSim readiness"
+        case .complete: return "IOSSim is ready"
+        case .failed: return "Setup needs attention"
+        }
+    }
+}
+
+public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equatable, Sendable {
+    case xcodeMissing = "XCODE_MISSING"
+    case developerToolsUnavailable = "DEVELOPER_TOOLS_UNAVAILABLE"
+    case noIPhoneFound = "NO_IPHONE_FOUND"
+    case deviceSelectionRequired = "DEVICE_SELECTION_REQUIRED"
+    case deviceUnavailable = "DEVICE_UNAVAILABLE"
+    case developerModeOff = "DEVELOPER_MODE_OFF"
+    case appleAccountMissing = "APPLE_ACCOUNT_MISSING"
+    case personalTeamUnavailable = "PERSONAL_TEAM_UNAVAILABLE"
+    case teamSelectionRequired = "TEAM_SELECTION_REQUIRED"
+    case signingIdentityMissing = "SIGNING_IDENTITY_MISSING"
+    case accountTeamMismatch = "ACCOUNT_TEAM_MISMATCH"
+    case profileUnavailable = "PROFILE_UNAVAILABLE"
+    case bundleIDRegistrationFailure = "BUNDLE_ID_REGISTRATION_FAILURE"
+    case crossTeamUpgradeBlocked = "CROSS_TEAM_UPGRADE_BLOCKED"
+    case mainSigningFailure = "MAIN_SIGNING_FAILURE"
+    case runnerSigningFailure = "RUNNER_SIGNING_FAILURE"
+    case runnerNestedSignatureFailure = "RUNNER_NESTED_SIGNATURE_FAILURE"
+    case mainInstallFailure = "MAIN_INSTALL_FAILURE"
+    case runnerInstallFailure = "RUNNER_INSTALL_FAILURE"
+    case runnerMappingMissing = "RUNNER_MAPPING_MISSING"
+    case runnerNotInstalled = "RUNNER_NOT_INSTALLED"
+    case duplicateRunner = "DUPLICATE_RUNNER"
+    case staleRuntimeSession = "STALE_RUNTIME_SESSION"
+    case profileExpired = "PROFILE_EXPIRED"
+    case profileNearExpiry = "PROFILE_NEAR_EXPIRY"
+    case deviceNotIncluded = "DEVICE_NOT_INCLUDED"
+    case runtimeVerificationFailed = "RUNTIME_VERIFICATION_FAILED"
+    case artifactInvalid = "ARTIFACT_INVALID"
+    case manifestCorrupt = "MANIFEST_CORRUPT"
+    case operationInProgress = "OPERATION_IN_PROGRESS"
+    case unsupported = "UNSUPPORTED"
+    case unknown = "UNKNOWN"
+}
+
+public struct ConsumerProvisioningFailure: Error, Codable, Equatable, Sendable, CustomStringConvertible {
+    public let code: ConsumerProvisioningErrorCode
+    public let stage: ConsumerProvisioningStage
+    public let userMessage: String
+    public let remediation: String
+    public let developerDetail: String
+
+    public init(
+        code: ConsumerProvisioningErrorCode,
+        stage: ConsumerProvisioningStage,
+        userMessage: String,
+        remediation: String,
+        developerDetail: String
+    ) {
+        self.code = code
+        self.stage = stage
+        self.userMessage = userMessage
+        self.remediation = remediation
+        self.developerDetail = Redactor.redact(developerDetail)
+    }
+
+    public var description: String {
+        "\(code.rawValue): \(developerDetail)"
+    }
+}
+
+public struct PersonalTeamCandidate: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { teamIdentifier }
+    public let teamIdentifier: String
+    public let accountDisplayName: String?
+    public let teamDisplayName: String?
+    public let signingIdentityCommonName: String
+    public let signingIdentityFingerprint: String
+    public let certificateSubjectTeamIdentifier: String
+    public let profileTeamIdentifiers: [String]
+    public let matchingProfileCount: Int
+    public let selectedDeviceIncluded: Bool?
+    public let personalTeam: Bool
+
+    public init(
+        teamIdentifier: String,
+        accountDisplayName: String? = nil,
+        teamDisplayName: String? = nil,
+        signingIdentityCommonName: String,
+        signingIdentityFingerprint: String,
+        certificateSubjectTeamIdentifier: String,
+        profileTeamIdentifiers: [String] = [],
+        matchingProfileCount: Int = 0,
+        selectedDeviceIncluded: Bool? = nil,
+        personalTeam: Bool
+    ) {
+        self.teamIdentifier = teamIdentifier
+        self.accountDisplayName = accountDisplayName
+        self.teamDisplayName = teamDisplayName
+        self.signingIdentityCommonName = signingIdentityCommonName
+        self.signingIdentityFingerprint = signingIdentityFingerprint
+        self.certificateSubjectTeamIdentifier = certificateSubjectTeamIdentifier
+        self.profileTeamIdentifiers = profileTeamIdentifiers.sorted()
+        self.matchingProfileCount = matchingProfileCount
+        self.selectedDeviceIncluded = selectedDeviceIncluded
+        self.personalTeam = personalTeam
+    }
+
+    public var userDisplayName: String {
+        teamDisplayName ?? accountDisplayName ?? "Personal Team"
+    }
+}
+
+public enum ConsumerProvisioningOperation: String, Codable, Equatable, Sendable {
+    case install = "INSTALL"
+    case refresh = "REFRESH"
+    case repair = "REPAIR"
+}
+
+enum ConsumerInstalledIdentityPolicy {
+    static func isIOSSimOwnedRunner(_ bundleIdentifier: String) -> Bool {
+        if bundleIdentifier == ProtectedSourceBundleIdentifiers.default.runner { return true }
+        let prefix = "com.personalteam.iossim.t"
+        let suffix = ".location-control-uitests.xctrunner"
+        guard bundleIdentifier.hasPrefix(prefix), bundleIdentifier.hasSuffix(suffix) else { return false }
+        let start = bundleIdentifier.index(bundleIdentifier.startIndex, offsetBy: prefix.count)
+        let end = bundleIdentifier.index(bundleIdentifier.endIndex, offsetBy: -suffix.count)
+        let hash = bundleIdentifier[start..<end]
+        return hash.count == 12 && hash.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+}
+
+public struct ConsumerProvisioningRequest: Codable, Equatable, Sendable {
+    public let operation: ConsumerProvisioningOperation
+    public let selectedDeviceIdentifier: String
+    public let selectedTeamIdentifier: String
+    public let allowFreshInstallAfterCrossTeamConflict: Bool
+
+    public init(
+        operation: ConsumerProvisioningOperation,
+        selectedDeviceIdentifier: String,
+        selectedTeamIdentifier: String,
+        allowFreshInstallAfterCrossTeamConflict: Bool = false
+    ) {
+        self.operation = operation
+        self.selectedDeviceIdentifier = selectedDeviceIdentifier
+        self.selectedTeamIdentifier = selectedTeamIdentifier
+        self.allowFreshInstallAfterCrossTeamConflict = allowFreshInstallAfterCrossTeamConflict
+    }
+}
+
+public struct ConsumerProfileState: Codable, Equatable, Sendable {
+    public let artifact: String
+    public let teamIdentifier: String
+    public let bundleIdentifier: String
+    public let creationDate: Date?
+    public let expirationDate: Date?
+    public let remainingValidity: TimeInterval?
+    public let selectedDeviceIncluded: Bool
+    public let personalTeam: Bool
+    public let profileIdentifier: String?
+    public let profileFingerprint: String?
+    public let refreshRecommended: Bool
+
+    public init(
+        artifact: String,
+        teamIdentifier: String,
+        bundleIdentifier: String,
+        creationDate: Date?,
+        expirationDate: Date?,
+        remainingValidity: TimeInterval?,
+        selectedDeviceIncluded: Bool,
+        personalTeam: Bool,
+        profileIdentifier: String?,
+        profileFingerprint: String?,
+        refreshRecommended: Bool
+    ) {
+        self.artifact = artifact
+        self.teamIdentifier = teamIdentifier
+        self.bundleIdentifier = bundleIdentifier
+        self.creationDate = creationDate
+        self.expirationDate = expirationDate
+        self.remainingValidity = remainingValidity
+        self.selectedDeviceIncluded = selectedDeviceIncluded
+        self.personalTeam = personalTeam
+        self.profileIdentifier = profileIdentifier
+        self.profileFingerprint = profileFingerprint
+        self.refreshRecommended = refreshRecommended
+    }
+}
+
+public enum RuntimeSetupStatus: String, Codable, Equatable, Sendable {
+    case unknown = "UNKNOWN"
+    case userActionRequired = "USER_ACTION_REQUIRED"
+    case ready = "READY"
+    case needsAttention = "NEEDS_ATTENTION"
+}
+
+public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public let schemaVersion: Int
+    public let deviceIdentifierSafe: String
+    public let deviceIdentifierHash: String
+    public let deviceName: String?
+    public let deviceModel: String?
+    public let deviceOSVersion: String?
+    public let teamID: String
+    public let sourceMainBundleID: String
+    public let installedMainBundleID: String
+    public let sourceUITestBundleID: String
+    public let installedUITestBundleID: String
+    public let sourceRunnerBundleID: String
+    public let installedRunnerBundleID: String
+    public let mainProfile: ConsumerProfileState
+    public let runnerProfile: ConsumerProfileState
+    public let lastInstallDate: Date
+    public let lastRefreshAttempt: Date?
+    public let lastRefreshSuccess: Date?
+    public let runtimeSetupStatus: RuntimeSetupStatus
+    public let lastRuntimeHealthCheck: Date?
+    public let appVersion: String
+    public let provisionerVersion: String
+    public let trueRenewalPhysicallyValidated: Bool
+
+    public init(
+        schemaVersion: Int = currentSchemaVersion,
+        deviceIdentifierSafe: String,
+        deviceIdentifierHash: String,
+        deviceName: String? = nil,
+        deviceModel: String? = nil,
+        deviceOSVersion: String? = nil,
+        teamID: String,
+        sourceMainBundleID: String,
+        installedMainBundleID: String,
+        sourceUITestBundleID: String,
+        installedUITestBundleID: String,
+        sourceRunnerBundleID: String,
+        installedRunnerBundleID: String,
+        mainProfile: ConsumerProfileState,
+        runnerProfile: ConsumerProfileState,
+        lastInstallDate: Date,
+        lastRefreshAttempt: Date? = nil,
+        lastRefreshSuccess: Date? = nil,
+        runtimeSetupStatus: RuntimeSetupStatus = .userActionRequired,
+        lastRuntimeHealthCheck: Date? = nil,
+        appVersion: String,
+        provisionerVersion: String,
+        trueRenewalPhysicallyValidated: Bool = false
+    ) {
+        self.schemaVersion = schemaVersion
+        self.deviceIdentifierSafe = deviceIdentifierSafe
+        self.deviceIdentifierHash = deviceIdentifierHash
+        self.deviceName = deviceName
+        self.deviceModel = deviceModel
+        self.deviceOSVersion = deviceOSVersion
+        self.teamID = teamID
+        self.sourceMainBundleID = sourceMainBundleID
+        self.installedMainBundleID = installedMainBundleID
+        self.sourceUITestBundleID = sourceUITestBundleID
+        self.installedUITestBundleID = installedUITestBundleID
+        self.sourceRunnerBundleID = sourceRunnerBundleID
+        self.installedRunnerBundleID = installedRunnerBundleID
+        self.mainProfile = mainProfile
+        self.runnerProfile = runnerProfile
+        self.lastInstallDate = lastInstallDate
+        self.lastRefreshAttempt = lastRefreshAttempt
+        self.lastRefreshSuccess = lastRefreshSuccess
+        self.runtimeSetupStatus = runtimeSetupStatus
+        self.lastRuntimeHealthCheck = lastRuntimeHealthCheck
+        self.appVersion = appVersion
+        self.provisionerVersion = provisionerVersion
+        self.trueRenewalPhysicallyValidated = trueRenewalPhysicallyValidated
+    }
+
+    public var earliestExpiration: Date? {
+        [mainProfile.expirationDate, runnerProfile.expirationDate].compactMap { $0 }.min()
+    }
+
+    public func updatingRuntimeSetupStatus(
+        _ status: RuntimeSetupStatus,
+        checkedAt: Date = Date()
+    ) -> ConsumerProvisioningManifest {
+        ConsumerProvisioningManifest(
+            schemaVersion: schemaVersion,
+            deviceIdentifierSafe: deviceIdentifierSafe,
+            deviceIdentifierHash: deviceIdentifierHash,
+            deviceName: deviceName,
+            deviceModel: deviceModel,
+            deviceOSVersion: deviceOSVersion,
+            teamID: teamID,
+            sourceMainBundleID: sourceMainBundleID,
+            installedMainBundleID: installedMainBundleID,
+            sourceUITestBundleID: sourceUITestBundleID,
+            installedUITestBundleID: installedUITestBundleID,
+            sourceRunnerBundleID: sourceRunnerBundleID,
+            installedRunnerBundleID: installedRunnerBundleID,
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: lastInstallDate,
+            lastRefreshAttempt: lastRefreshAttempt,
+            lastRefreshSuccess: lastRefreshSuccess,
+            runtimeSetupStatus: status,
+            lastRuntimeHealthCheck: checkedAt,
+            appVersion: appVersion,
+            provisionerVersion: provisionerVersion,
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated
+        )
+    }
+
+    public func recordingRefreshAttempt(at date: Date) -> ConsumerProvisioningManifest {
+        ConsumerProvisioningManifest(
+            schemaVersion: schemaVersion,
+            deviceIdentifierSafe: deviceIdentifierSafe,
+            deviceIdentifierHash: deviceIdentifierHash,
+            deviceName: deviceName,
+            deviceModel: deviceModel,
+            deviceOSVersion: deviceOSVersion,
+            teamID: teamID,
+            sourceMainBundleID: sourceMainBundleID,
+            installedMainBundleID: installedMainBundleID,
+            sourceUITestBundleID: sourceUITestBundleID,
+            installedUITestBundleID: installedUITestBundleID,
+            sourceRunnerBundleID: sourceRunnerBundleID,
+            installedRunnerBundleID: installedRunnerBundleID,
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: lastInstallDate,
+            lastRefreshAttempt: date,
+            lastRefreshSuccess: lastRefreshSuccess,
+            runtimeSetupStatus: runtimeSetupStatus,
+            lastRuntimeHealthCheck: lastRuntimeHealthCheck,
+            appVersion: appVersion,
+            provisionerVersion: provisionerVersion,
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated
+        )
+    }
+}
+
+public struct ConsumerProvisioningResult: Codable, Equatable, Sendable {
+    public let operation: ConsumerProvisioningOperation
+    public let finalStage: ConsumerProvisioningStage
+    public let manifest: ConsumerProvisioningManifest
+    public let installedBundleIdentifiers: [String]
+    public let runtimeRecoveryRecommended: Bool
+
+    public init(
+        operation: ConsumerProvisioningOperation,
+        finalStage: ConsumerProvisioningStage,
+        manifest: ConsumerProvisioningManifest,
+        installedBundleIdentifiers: [String],
+        runtimeRecoveryRecommended: Bool
+    ) {
+        self.operation = operation
+        self.finalStage = finalStage
+        self.manifest = manifest
+        self.installedBundleIdentifiers = installedBundleIdentifiers.sorted()
+        self.runtimeRecoveryRecommended = runtimeRecoveryRecommended
+    }
+}
+
+public enum RefreshDueState: String, Codable, Equatable, Sendable {
+    case current = "CURRENT"
+    case dueSoon = "DUE_SOON"
+    case dueNow = "DUE_NOW"
+    case expired = "EXPIRED"
+    case unavailable = "UNAVAILABLE"
+}
+
+public struct ConsumerRefreshPolicy: Codable, Equatable, Sendable {
+    public static let recommended = ConsumerRefreshPolicy(recommendedThreshold: 48 * 60 * 60)
+    public let recommendedThreshold: TimeInterval
+
+    public init(recommendedThreshold: TimeInterval) {
+        self.recommendedThreshold = recommendedThreshold
+    }
+
+    public func dueState(expiration: Date?, now: Date = Date()) -> RefreshDueState {
+        guard let expiration else { return .unavailable }
+        let remaining = expiration.timeIntervalSince(now)
+        if remaining <= 0 { return .expired }
+        if remaining <= recommendedThreshold { return .dueNow }
+        if remaining <= recommendedThreshold * 2 { return .dueSoon }
+        return .current
+    }
+}
+
+public enum ProvisioningLogResult: String, Codable, Equatable, Sendable {
+    case started = "STARTED"
+    case passed = "PASSED"
+    case failed = "FAILED"
+    case skipped = "SKIPPED"
+}
+
+public struct ProvisioningLogEvent: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let timestamp: Date
+    public let stage: ConsumerProvisioningStage
+    public let artifact: String?
+    public let selectedDevice: String?
+    public let result: ProvisioningLogResult
+    public let errorCode: ConsumerProvisioningErrorCode?
+    public let durationMilliseconds: Int?
+    public let detail: String?
+
+    public init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        stage: ConsumerProvisioningStage,
+        artifact: String? = nil,
+        selectedDevice: String? = nil,
+        result: ProvisioningLogResult,
+        errorCode: ConsumerProvisioningErrorCode? = nil,
+        durationMilliseconds: Int? = nil,
+        detail: String? = nil
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.stage = stage
+        self.artifact = artifact
+        self.selectedDevice = selectedDevice.map(RuntimeProvisioning.shortIdentifier)
+        self.result = result
+        self.errorCode = errorCode
+        self.durationMilliseconds = durationMilliseconds
+        self.detail = detail.map(Redactor.redact)
+    }
+}
+
+public enum ConsumerProvisioningErrorClassifier {
+    public static func installErrorCode(output: String, artifact: String) -> ConsumerProvisioningErrorCode {
+        let lower = output.lowercased()
+        if lower.contains("mismatchedapplicationidentifierentitlement")
+            || lower.contains("application-identifier") && lower.contains("does not match") {
+            return .crossTeamUpgradeBlocked
+        }
+        if lower.contains("device") && lower.contains("not") && lower.contains("profile") {
+            return .deviceNotIncluded
+        }
+        return artifact == "main" ? .mainInstallFailure : .runnerInstallFailure
+    }
+
+    public static func signingErrorCode(output: String) -> ConsumerProvisioningErrorCode {
+        let lower = output.lowercased()
+        if lower.contains("requires a development team") || lower.contains("no accounts") {
+            return .appleAccountMissing
+        }
+        if lower.contains("certificate") || lower.contains("signing identity") {
+            return .signingIdentityMissing
+        }
+        if lower.contains("register") && lower.contains("bundle") {
+            return .bundleIDRegistrationFailure
+        }
+        return .profileUnavailable
+    }
+}

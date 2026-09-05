@@ -61,9 +61,11 @@ public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
     public let selectionIdentifier: String
     public let udidRedacted: String?
     public let osVersion: String?
+    public let model: String?
     public let developerModeStatus: String?
     public let pairingState: String?
     public let tunnelState: String?
+    public let isLocked: Bool?
     public let provisioningEligibilityStatus: ArtifactInstallEligibilityStatus?
     public let provisioningEligibilityDetail: String?
     public let installedProjectBundleIdentifiers: [String]?
@@ -75,9 +77,11 @@ public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
         case selectionIdentifier
         case udidRedacted
         case osVersion
+        case model
         case developerModeStatus
         case pairingState
         case tunnelState
+        case isLocked
         case provisioningEligibilityStatus
         case provisioningEligibilityDetail
         case installedProjectBundleIdentifiers
@@ -90,9 +94,11 @@ public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
         selectionIdentifier: String? = nil,
         udidRedacted: String? = nil,
         osVersion: String? = nil,
+        model: String? = nil,
         developerModeStatus: String? = nil,
         pairingState: String? = nil,
         tunnelState: String? = nil,
+        isLocked: Bool? = nil,
         provisioningEligibilityStatus: ArtifactInstallEligibilityStatus? = nil,
         provisioningEligibilityDetail: String? = nil,
         installedProjectBundleIdentifiers: [String]? = nil,
@@ -103,9 +109,11 @@ public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
         self.selectionIdentifier = selectionIdentifier ?? identifier
         self.udidRedacted = udidRedacted
         self.osVersion = osVersion
+        self.model = model
         self.developerModeStatus = developerModeStatus
         self.pairingState = pairingState
         self.tunnelState = tunnelState
+        self.isLocked = isLocked
         self.provisioningEligibilityStatus = provisioningEligibilityStatus
         self.provisioningEligibilityDetail = provisioningEligibilityDetail
         self.installedProjectBundleIdentifiers = installedProjectBundleIdentifiers
@@ -119,9 +127,11 @@ public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
         selectionIdentifier = try container.decodeIfPresent(String.self, forKey: .selectionIdentifier) ?? identifier
         udidRedacted = try container.decodeIfPresent(String.self, forKey: .udidRedacted)
         osVersion = try container.decodeIfPresent(String.self, forKey: .osVersion)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
         developerModeStatus = try container.decodeIfPresent(String.self, forKey: .developerModeStatus)
         pairingState = try container.decodeIfPresent(String.self, forKey: .pairingState)
         tunnelState = try container.decodeIfPresent(String.self, forKey: .tunnelState)
+        isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked)
         provisioningEligibilityStatus = try container.decodeIfPresent(ArtifactInstallEligibilityStatus.self, forKey: .provisioningEligibilityStatus)
         provisioningEligibilityDetail = try container.decodeIfPresent(String.self, forKey: .provisioningEligibilityDetail)
         installedProjectBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .installedProjectBundleIdentifiers)
@@ -147,11 +157,32 @@ public struct DetectedDevice: Codable, Equatable, Sendable, Identifiable {
             selectionIdentifier: selectionIdentifier,
             udidRedacted: udidRedacted,
             osVersion: osVersion,
+            model: model,
             developerModeStatus: developerModeStatus,
             pairingState: pairingState,
             tunnelState: tunnelState,
+            isLocked: isLocked,
             provisioningEligibilityStatus: status,
             provisioningEligibilityDetail: detail,
+            installedProjectBundleIdentifiers: installedProjectBundleIdentifiers,
+            expectedProjectBundleCount: expectedProjectBundleCount
+        )
+    }
+
+    public func withLockState(_ isLocked: Bool) -> DetectedDevice {
+        DetectedDevice(
+            name: name,
+            identifier: identifier,
+            selectionIdentifier: selectionIdentifier,
+            udidRedacted: udidRedacted,
+            osVersion: osVersion,
+            model: model,
+            developerModeStatus: developerModeStatus,
+            pairingState: pairingState,
+            tunnelState: tunnelState,
+            isLocked: isLocked,
+            provisioningEligibilityStatus: provisioningEligibilityStatus,
+            provisioningEligibilityDetail: provisioningEligibilityDetail,
             installedProjectBundleIdentifiers: installedProjectBundleIdentifiers,
             expectedProjectBundleCount: expectedProjectBundleCount
         )
@@ -276,7 +307,9 @@ public struct DoctorStatus: Codable, Equatable, Sendable {
     }
 
     public var provisioningReady: Bool {
-        device.devices.contains { $0.pairingState == "paired" && $0.developerModeStatus == "enabled" }
+        device.devices.contains {
+            $0.pairingState == "paired" && $0.developerModeStatus == "enabled" && $0.isLocked != true
+        }
     }
 
     public var setupCompleteForDashboard: Bool {
@@ -315,6 +348,7 @@ public struct DoctorStatus: Codable, Equatable, Sendable {
 public enum DeviceReadiness: Equatable, Sendable {
     case noDevice
     case multipleDevices
+    case unlockRequired
     case trustRequired
     case developerModeRequired
     case readyForInstall
@@ -332,6 +366,9 @@ public enum StatusInterpreter {
             return .multipleDevices
         }
         let device = status.device.devices[0]
+        if device.isLocked == true {
+            return .unlockRequired
+        }
         if device.pairingState != "paired" {
             return .trustRequired
         }
@@ -356,6 +393,9 @@ public enum StatusInterpreter {
         }
         if check.name.localizedCaseInsensitiveContains("connected iPhone") {
             return "Connect and unlock an iPhone to continue."
+        }
+        if check.name.localizedCaseInsensitiveContains("unlocked") {
+            return "Unlock the selected iPhone, keep it awake, then return here."
         }
         if check.name.localizedCaseInsensitiveContains("LocalDevVPN") {
             return "Open LocalDevVPN on your iPhone and approve Apple's VPN configuration prompt."

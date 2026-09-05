@@ -28,6 +28,12 @@ struct InstallOutput: Encodable {
     let installed: [InstallComponentOutput]
 }
 
+struct ConsumerFailureOutput: Encodable {
+    let ok: Bool
+    let schemaVersion: Int
+    let error: ConsumerProvisioningFailure
+}
+
 @main
 enum IOSSimProvisioner {
     static func main() async {
@@ -98,6 +104,51 @@ struct ProvisionerTool {
             case "personal-team-poc":
                 let report = await personalTeamPOCReport(arguments: Array(args.dropFirst()), context: context)
                 try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: report))
+                return 0
+            case "consumer-teams":
+                let provisioner = ConsumerArtifactProvisioner(context: context)
+                let teams = await provisioner.availableTeams(
+                    selectedDeviceIdentifier: optionValue("--device", in: Array(args.dropFirst()))
+                )
+                try printJSON(ProvisionerOutput(
+                    ok: true,
+                    schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: teams
+                ))
+                return 0
+            case "consumer-status":
+                let provisioner = ConsumerArtifactProvisioner(context: context)
+                let manifest = try await provisioner.currentManifest()
+                try printJSON(ProvisionerOutput(
+                    ok: true,
+                    schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: manifest
+                ))
+                return 0
+            case "consumer-runtime-ready":
+                let manifest = try await ConsumerProvisioningStateStore().markRuntimeSetupReady()
+                try printJSON(ProvisionerOutput(
+                    ok: true,
+                    schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: manifest
+                ))
+                return 0
+            case "consumer-provision":
+                return await consumerProvision(arguments: Array(args.dropFirst()), context: context)
+            case "support-bundle":
+                guard let output = optionValue("--output", in: Array(args.dropFirst())) else {
+                    fputs("SUPPORT_OUTPUT_REQUIRED: provide --output <path>.\n", stderr)
+                    return 2
+                }
+                let exported = try await SupportBundleExporter.export(
+                    to: URL(fileURLWithPath: output),
+                    runner: context.runner
+                )
+                try printJSON(ProvisionerOutput(
+                    ok: true,
+                    schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: exported
+                ))
                 return 0
             default:
                 printUsage()
@@ -248,7 +299,12 @@ struct ProvisionerTool {
                     selectedDeviceIdentifier: device.selectionIdentifier,
                     runner: context.runner
                 )
-                let aggregate = ArtifactEligibilityEvaluator.aggregateStatus(eligibility)
+                let requiresConsumerSigning = manifestForEligibility.components.allSatisfy {
+                    $0.signingMode == "personalTeamResign"
+                }
+                let aggregate = requiresConsumerSigning
+                    ? ArtifactInstallEligibilityStatus.installable
+                    : ArtifactEligibilityEvaluator.aggregateStatus(eligibility)
                 let installedBundleIdentifiers = await installedProjectBundleIdentifiers(
                     for: device.selectionIdentifier,
                     manifest: manifestForEligibility,
@@ -256,7 +312,7 @@ struct ProvisionerTool {
                 )
                 enrichedDevices.append(device.withProvisioningState(
                     status: aggregate,
-                    detail: uniqueDetails(from: eligibility),
+                    detail: requiresConsumerSigning ? "Prepared during Personal Team install." : uniqueDetails(from: eligibility),
                     installedProjectBundleIdentifiers: installedBundleIdentifiers,
                     expectedProjectBundleCount: manifestForEligibility.components.count
                 ))
@@ -274,7 +330,7 @@ struct ProvisionerTool {
             ))
         } else {
             let hasReadyDevice = devices.contains {
-                $0.pairingState == "paired" && $0.developerModeStatus == "enabled"
+                $0.pairingState == "paired" && $0.developerModeStatus == "enabled" && $0.isLocked != true
             }
             for device in devices {
                 checks.append(DoctorCheck(
@@ -282,6 +338,14 @@ struct ProvisionerTool {
                     component: "Device",
                     name: "iPhone detected",
                     detail: "\(device.name) \(device.osVersion ?? "iOS unknown") id=\(device.identifier)",
+                    requiredFor: "device"
+                ))
+                checks.append(DoctorCheck(
+                    state: device.isLocked == true ? (hasReadyDevice ? .warn : .action) : .pass,
+                    component: "Device",
+                    name: "iPhone unlocked",
+                    detail: device.isLocked == true ? "locked" : "unlocked",
+                    action: device.isLocked == true && !hasReadyDevice ? "Unlock the iPhone and keep it awake." : nil,
                     requiredFor: "device"
                 ))
                 checks.append(DoctorCheck(
@@ -319,22 +383,30 @@ struct ProvisionerTool {
                 }
             }
         }
-        checks.append(DoctorCheck(
-            state: .action,
-            component: "Runtime",
-            name: "PAIRING MATERIAL",
-            detail: "stored on iPhone; never bundled",
-            action: "Open IOSSim on your iPhone and complete the pairing import.",
-            requiredFor: "device"
-        ))
-        checks.append(DoctorCheck(
-            state: .action,
-            component: "Runtime",
-            name: "LocalDevVPN",
-            detail: "external iPhone app required",
-            action: "Install or open LocalDevVPN on your iPhone and approve Apple's VPN prompt.",
-            requiredFor: "device"
-        ))
+        let consumerManifest = try? await ConsumerProvisioningStateStore().loadManifest()
+        let confirmedDeviceConnected = consumerManifest.map { manifest in
+            manifest.runtimeSetupStatus == .ready && devices.contains {
+                PersonalTeamProvisioningPOC.deviceIdentifierHash($0.selectionIdentifier) == manifest.deviceIdentifierHash
+            }
+        } ?? false
+        if !confirmedDeviceConnected {
+            checks.append(DoctorCheck(
+                state: .action,
+                component: "Runtime",
+                name: "PAIRING MATERIAL",
+                detail: "stored on iPhone; never bundled",
+                action: "Open IOSSim on your iPhone and complete the pairing import.",
+                requiredFor: "device"
+            ))
+            checks.append(DoctorCheck(
+                state: .action,
+                component: "Runtime",
+                name: "LocalDevVPN",
+                detail: "external iPhone app required",
+                action: "Install or open LocalDevVPN on your iPhone and approve Apple's VPN prompt.",
+                requiredFor: "device"
+            ))
+        }
         let macReady = !checks.contains { ($0.state == .fail || $0.state == .action) && ["mac", "build"].contains($0.requiredFor) }
         let deviceReady = !checks.contains { ($0.state == .fail || $0.state == .action) && $0.requiredFor == "device" }
         return DoctorStatus(
@@ -357,7 +429,69 @@ struct ProvisionerTool {
           verify-artifacts --json
           info --json
           personal-team-poc --json [--team <team-id>] [--team-kind personal|paid|unknown] [--device <id>]
+          consumer-teams --json [--device <id>]
+          consumer-status --json
+          consumer-runtime-ready --json
+          consumer-provision --operation install|refresh|repair --device <id> --team <team-id>
+          support-bundle --output <zip-path> --json
         """)
+    }
+
+    private func consumerProvision(arguments: [String], context: RuntimeProvisioningContext) async -> Int32 {
+        guard let rawOperation = optionValue("--operation", in: arguments),
+              let operation = ConsumerProvisioningOperation(rawValue: rawOperation.uppercased()),
+              let device = optionValue("--device", in: arguments), !device.isEmpty,
+              let team = optionValue("--team", in: arguments), !team.isEmpty else {
+            let failure = ConsumerProvisioningFailure(
+                code: .deviceSelectionRequired,
+                stage: .waitingForDeviceSelection,
+                userMessage: "Choose an iPhone and Personal Team before installing.",
+                remediation: "Return to setup and make both selections.",
+                developerDetail: "consumer-provision requires --operation, --device, and --team."
+            )
+            try? printJSON(ConsumerFailureOutput(
+                ok: false,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                error: failure
+            ))
+            return 2
+        }
+        do {
+            let request = ConsumerProvisioningRequest(
+                operation: operation,
+                selectedDeviceIdentifier: device,
+                selectedTeamIdentifier: team,
+                allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install")
+            )
+            let result = try await ConsumerArtifactProvisioner(context: context).provision(request)
+            try printJSON(ProvisionerOutput(
+                ok: true,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                data: result
+            ))
+            return 0
+        } catch let failure as ConsumerProvisioningFailure {
+            try? printJSON(ConsumerFailureOutput(
+                ok: false,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                error: failure
+            ))
+            return 1
+        } catch {
+            let failure = ConsumerProvisioningFailure(
+                code: .unknown,
+                stage: .failed,
+                userMessage: "IOSSim could not finish setup.",
+                remediation: "Open Diagnostics for details, then try again.",
+                developerDetail: String(describing: error)
+            )
+            try? printJSON(ConsumerFailureOutput(
+                ok: false,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                error: failure
+            ))
+            return 1
+        }
     }
 }
 

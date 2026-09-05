@@ -13,4 +13,15 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertEqual(result.stdout, "hello")
         XCTAssertEqual(result.stderr, "")
     }
+
+    func testLargeOutputDoesNotDeadlock() async throws {
+        let result = try await ProcessRunner().run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", "import sys; sys.stdout.write('x' * 200000); sys.stderr.write('y' * 200000)"],
+            workingDirectory: FileManager.default.temporaryDirectory
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout.count, 200_000)
+        XCTAssertEqual(result.stderr.count, 200_000)
+    }
 }
