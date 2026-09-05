@@ -213,6 +213,15 @@ public final class SetupStore: ObservableObject {
         guard !isRunning else { return }
         runCancellable(stage: .verifying) { [self] in
             if engine.consumerProvisioningEnabled {
+                guard consumerProvisioningStateSupportsRuntimeSetup else {
+                    throw ConsumerProvisioningFailure(
+                        code: .runnerMappingMissing,
+                        stage: .verifyingRuntimeReadiness,
+                        userMessage: "IOSSim installation information is missing.",
+                        remediation: "Complete IOSSim installation before finishing iPhone setup.",
+                        developerDetail: "Runtime setup requires a valid provisioning manifest and deterministic runner mapping."
+                    )
+                }
                 provisioningManifest = try await engine.confirmRuntimeSetup()
             }
             UserDefaults.standard.set(true, forKey: onboardingKey)
@@ -302,9 +311,9 @@ public final class SetupStore: ObservableObject {
     }
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
-        let installationKnown = !engine.consumerProvisioningEnabled || provisioningManifest != nil
+        let installationKnown = !engine.consumerProvisioningEnabled || consumerProvisioningStateSupportsRuntimeSetup
         let consumerRuntimeReady = !engine.consumerProvisioningEnabled
-            || provisioningManifest?.runtimeSetupStatus == .ready
+            || (consumerProvisioningStateSupportsRuntimeSetup && provisioningManifest?.runtimeSetupStatus == .ready)
         if (status.mac.ready && selectedDeviceProvisioningReady && status.runtimeActionChecks.isEmpty && installationKnown)
             || (onboardingCompleted && consumerRuntimeReady) {
             phase = .complete
@@ -314,22 +323,52 @@ public final class SetupStore: ObservableObject {
             phase = .macActionRequired
             return
         }
+        if engine.consumerProvisioningEnabled,
+           selectedDeviceProvisioningReady,
+           !consumerProvisioningStateSupportsRuntimeSetup {
+            routeToConsumerProvisioning()
+            return
+        }
         switch StatusInterpreter.deviceReadiness(from: status) {
         case .noDevice, .multipleDevices:
             phase = .waitingForDevice
         case .trustRequired, .developerModeRequired, .unlockRequired:
             phase = .deviceActionRequired
         case .readyForInstall:
-            if engine.consumerProvisioningEnabled && (personalTeams.isEmpty || selectedTeam == nil) {
-                phase = .appleAccount
-            } else {
-                phase = .installing
-            }
+            routeToConsumerProvisioning()
         case .localDevVPNRequired, .pairingRequired:
             phase = .runtimeSetup
         case .complete:
             phase = .complete
             UserDefaults.standard.set(true, forKey: onboardingKey)
+        }
+    }
+
+    private var consumerProvisioningStateSupportsRuntimeSetup: Bool {
+        guard let manifest = provisioningManifest,
+              manifest.schemaVersion == ConsumerProvisioningManifest.currentSchemaVersion,
+              !manifest.teamID.isEmpty,
+              let expected = try? PersonalTeamBundleIdentifierSet(teamIdentifier: manifest.teamID) else {
+            return false
+        }
+        let source = ProtectedSourceBundleIdentifiers.default
+        return manifest.sourceMainBundleID == source.main
+            && manifest.installedMainBundleID == expected.main
+            && manifest.sourceUITestBundleID == source.uiTests
+            && manifest.installedUITestBundleID == expected.uiTests
+            && manifest.sourceRunnerBundleID == source.runner
+            && manifest.installedRunnerBundleID == expected.runner
+            && manifest.mainProfile.teamIdentifier == manifest.teamID
+            && manifest.mainProfile.bundleIdentifier == expected.main
+            && manifest.runnerProfile.teamIdentifier == manifest.teamID
+            && manifest.runnerProfile.bundleIdentifier == expected.runner
+    }
+
+    private func routeToConsumerProvisioning() {
+        if engine.consumerProvisioningEnabled && (personalTeams.isEmpty || selectedTeam == nil) {
+            phase = .appleAccount
+        } else {
+            phase = .installing
         }
     }
 

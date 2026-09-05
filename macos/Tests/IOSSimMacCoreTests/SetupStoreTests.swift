@@ -234,6 +234,93 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertTrue(store.onboardingCompleted)
     }
 
+    func testCleanConsumerMacRoutesToProvisioningBeforeRuntimeActions() async throws {
+        let engine = ConsumerSequenceEngine(
+            teams: [.team("TEAM1"), .team("TEAM2")],
+            runtimeActionsWithoutManifest: true
+        )
+        let store = SetupStore(engine: engine)
+
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .appleAccount)
+        XCTAssertNotEqual(store.phase, .runtimeSetup)
+        XCTAssertNil(store.provisioningManifest)
+        let requests = await engine.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testCompletedOnboardingWithoutManifestRoutesBackToProvisioning() async throws {
+        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        let engine = ConsumerSequenceEngine(
+            teams: [.team("TEAM1"), .team("TEAM2")],
+            runtimeActionsWithoutManifest: true
+        )
+        let store = SetupStore(engine: engine)
+
+        store.bootstrap()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .appleAccount)
+        XCTAssertNotEqual(store.phase, .complete)
+        XCTAssertNotEqual(store.phase, .runtimeSetup)
+    }
+
+    func testManifestWithMissingRunnerMappingBlocksRuntimeSetup() async throws {
+        let invalidManifest = try Self.consumerManifest(validRunnerMapping: false)
+        let engine = ConsumerSequenceEngine(
+            teams: [.team("TEAM1")],
+            initialManifest: invalidManifest
+        )
+        let store = SetupStore(engine: engine)
+
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .installing)
+        XCTAssertNotEqual(store.phase, .runtimeSetup)
+
+        store.confirmRuntimeSetup()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .failed)
+        XCTAssertTrue(store.lastError?.details.contains(ConsumerProvisioningErrorCode.runnerMappingMissing.rawValue) == true)
+        let confirmations = await engine.runtimeConfirmationCount
+        XCTAssertEqual(confirmations, 0)
+    }
+
+    func testValidManifestAndRunnerMappingAllowsRuntimeSetup() async throws {
+        let manifest = try Self.consumerManifest(runtimeSetupStatus: .userActionRequired)
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: manifest)
+        let store = SetupStore(engine: engine)
+
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .runtimeSetup)
+
+        store.confirmRuntimeSetup()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .complete)
+        let confirmations = await engine.runtimeConfirmationCount
+        XCTAssertEqual(confirmations, 1)
+    }
+
+    func testFullyReadyConsumerUserStillRoutesToDashboard() async throws {
+        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        let manifest = try Self.consumerManifest(runtimeSetupStatus: .ready)
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: manifest)
+        let store = SetupStore(engine: engine)
+
+        store.bootstrap()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .complete)
+        XCTAssertEqual(store.provisioningManifest?.runtimeSetupStatus, .ready)
+    }
+
     func testConsumerBootstrapResumesPendingRuntimeSetupAfterPriorOnboarding() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
         let initialStore = SetupStore(engine: engine)
@@ -306,6 +393,57 @@ final class SetupStoreTests: XCTestCase {
         )
     }
 
+    private static func consumerManifest(
+        validRunnerMapping: Bool = true,
+        runtimeSetupStatus: RuntimeSetupStatus = .userActionRequired
+    ) throws -> ConsumerProvisioningManifest {
+        let teamIdentifier = "TEAM1"
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: teamIdentifier)
+        let mainProfile = ConsumerProfileState(
+            artifact: "main",
+            teamIdentifier: teamIdentifier,
+            bundleIdentifier: identifiers.main,
+            creationDate: Date(),
+            expirationDate: Date().addingTimeInterval(7 * 24 * 60 * 60),
+            remainingValidity: 7 * 24 * 60 * 60,
+            selectedDeviceIncluded: true,
+            personalTeam: true,
+            profileIdentifier: nil,
+            profileFingerprint: nil,
+            refreshRecommended: false
+        )
+        let runnerProfile = ConsumerProfileState(
+            artifact: "runner",
+            teamIdentifier: teamIdentifier,
+            bundleIdentifier: identifiers.runner,
+            creationDate: mainProfile.creationDate,
+            expirationDate: mainProfile.expirationDate,
+            remainingValidity: mainProfile.remainingValidity,
+            selectedDeviceIncluded: true,
+            personalTeam: true,
+            profileIdentifier: nil,
+            profileFingerprint: nil,
+            refreshRecommended: false
+        )
+        return ConsumerProvisioningManifest(
+            deviceIdentifierSafe: "A",
+            deviceIdentifierHash: "hash",
+            teamID: teamIdentifier,
+            sourceMainBundleID: ProtectedSourceBundleIdentifiers.default.main,
+            installedMainBundleID: identifiers.main,
+            sourceUITestBundleID: ProtectedSourceBundleIdentifiers.default.uiTests,
+            installedUITestBundleID: identifiers.uiTests,
+            sourceRunnerBundleID: ProtectedSourceBundleIdentifiers.default.runner,
+            installedRunnerBundleID: validRunnerMapping ? identifiers.runner : "",
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: Date(),
+            runtimeSetupStatus: runtimeSetupStatus,
+            appVersion: "1",
+            provisionerVersion: "1"
+        )
+    }
+
     private static func status(devices: [DetectedDevice], runtimeActions: [DoctorCheck] = []) -> DoctorStatus {
         var checks: [DoctorCheck] = [
             .init(state: .pass, component: "Mac", name: "macOS supported", detail: "ready"),
@@ -358,9 +496,19 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
     nonisolated let consumerProvisioningEnabled = true
     let teams: [PersonalTeamCandidate]
     private(set) var requests: [ConsumerProvisioningRequest] = []
+    private(set) var runtimeConfirmationCount = 0
     private var manifest: ConsumerProvisioningManifest?
+    private let runtimeActionsWithoutManifest: Bool
 
-    init(teams: [PersonalTeamCandidate]) { self.teams = teams }
+    init(
+        teams: [PersonalTeamCandidate],
+        initialManifest: ConsumerProvisioningManifest? = nil,
+        runtimeActionsWithoutManifest: Bool = false
+    ) {
+        self.teams = teams
+        self.manifest = initialManifest
+        self.runtimeActionsWithoutManifest = runtimeActionsWithoutManifest
+    }
 
     func doctor() async throws -> DoctorStatus {
         var checks: [DoctorCheck] = [
@@ -377,7 +525,7 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
             tunnelState: "connected"
         )
         checks.append(.init(state: .pass, component: "Device", name: "iPhone detected", detail: device.name, requiredFor: "device"))
-        if manifest?.runtimeSetupStatus == .userActionRequired {
+        if manifest?.runtimeSetupStatus == .userActionRequired || (manifest == nil && runtimeActionsWithoutManifest) {
             checks.append(.init(
                 state: .action,
                 component: "Runtime",
@@ -403,6 +551,7 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { manifest }
 
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest {
+        runtimeConfirmationCount += 1
         guard let manifest else {
             throw ConsumerProvisioningFailure(
                 code: .runnerMappingMissing,
