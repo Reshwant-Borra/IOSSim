@@ -7,6 +7,7 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         let second = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "abcd123456")
 
         XCTAssertEqual(first, second)
+        XCTAssertTrue(first.main.hasSuffix(".on-device-dvt-poc"))
         XCTAssertEqual(first.runner, "\(first.uiTests).xctrunner")
         XCTAssertEqual(Set([first.main, first.witness, first.unitTests, first.uiTests, first.runner]).count, 5)
     }
@@ -15,6 +16,7 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         let first = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "ABCD123456")
         let second = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "WXYZ987654")
 
+        XCTAssertNotEqual(first.main, second.main)
         XCTAssertNotEqual(first.uiTests, second.uiTests)
         XCTAssertNotEqual(first.runner, second.runner)
     }
@@ -26,9 +28,20 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         XCTAssertEqual(source.main, "com.iossim.on-device-dvt-poc")
         XCTAssertEqual(source.uiTests, "com.iossim.location-control-uitests")
         XCTAssertEqual(source.runner, "com.iossim.location-control-uitests.xctrunner")
-        XCTAssertEqual(source.main, derived.main)
+        XCTAssertNotEqual(source.main, derived.main)
         XCTAssertNotEqual(source.uiTests, derived.uiTests)
         XCTAssertNotEqual(source.runner, derived.runner)
+    }
+
+    func testCleanMacFailureTeamUsesDerivedMainIdentifier() throws {
+        let derived = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "LA898U57K7")
+
+        XCTAssertEqual(derived.main, "com.personalteam.iossim.t812ad2aa5dec.on-device-dvt-poc")
+        XCTAssertNotEqual(derived.main, ProtectedSourceBundleIdentifiers.default.main)
+        XCTAssertEqual(
+            derived.runner,
+            "com.personalteam.iossim.t812ad2aa5dec.location-control-uitests.xctrunner"
+        )
     }
 
     func testRunnerIdentifierRelationshipIsCoherent() throws {
@@ -169,7 +182,7 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         XCTAssertEqual(decoded, manifest)
     }
 
-    func testManifestRecordsUITestAndRunnerInstalledIdentifiers() throws {
+    func testManifestRecordsMainUITestAndRunnerInstalledIdentifiers() throws {
         let manifest = makeManifest(
             teamIdentifier: "5337SALD55",
             deviceIdentifierHash: "device-hash",
@@ -178,6 +191,8 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         )
         let derived = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: "5337SALD55")
 
+        XCTAssertEqual(manifest.sourceMainBundleID, ProtectedSourceBundleIdentifiers.default.main)
+        XCTAssertEqual(manifest.installedMainBundleID, derived.main)
         XCTAssertEqual(manifest.sourceUITestBundleID, ProtectedSourceBundleIdentifiers.default.uiTests)
         XCTAssertEqual(manifest.installedUITestBundleID, derived.uiTests)
         XCTAssertEqual(manifest.sourceRunnerBundleID, ProtectedSourceBundleIdentifiers.default.runner)
@@ -240,7 +255,7 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
         }
     }
 
-    func testRefreshUsesSameDerivedRunnerIdentifier() {
+    func testRefreshUsesSameDerivedMainAndRunnerIdentifiers() {
         let original = makeManifest(
             teamIdentifier: "5337SALD55",
             deviceIdentifierHash: "device-hash",
@@ -254,6 +269,7 @@ final class PersonalTeamProvisioningPOCTests: XCTestCase {
             runnerExpiration: Date(timeIntervalSince1970: 2_000)
         )
 
+        XCTAssertEqual(original.installedMainBundleID, refreshed.installedMainBundleID)
         XCTAssertEqual(original.installedUITestBundleID, refreshed.installedUITestBundleID)
         XCTAssertEqual(original.installedRunnerBundleID, refreshed.installedRunnerBundleID)
     }

@@ -91,7 +91,7 @@ public struct PersonalTeamBundleIdentifierSet: Codable, Equatable, Sendable {
     public init(teamIdentifier: String) throws {
         let token = Self.stableTeamToken(teamIdentifier)
         let prefix = "\(PersonalTeamProvisioningPOC.bundleIdentifierPrefix).\(token)"
-        main = ProtectedSourceBundleIdentifiers.default.main
+        main = "\(prefix).on-device-dvt-poc"
         witness = "\(prefix).location-witness"
         unitTests = "\(prefix).location-control-tests"
         uiTests = "\(prefix).location-control-uitests"

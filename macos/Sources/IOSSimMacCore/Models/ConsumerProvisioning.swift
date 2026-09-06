@@ -64,6 +64,7 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case accountTeamMismatch = "ACCOUNT_TEAM_MISMATCH"
     case profileUnavailable = "PROFILE_UNAVAILABLE"
     case bundleIDRegistrationFailure = "BUNDLE_ID_REGISTRATION_FAILURE"
+    case installedIdentityMigrationRequired = "INSTALLED_IDENTITY_MIGRATION_REQUIRED"
     case crossTeamUpgradeBlocked = "CROSS_TEAM_UPGRADE_BLOCKED"
     case mainSigningFailure = "MAIN_SIGNING_FAILURE"
     case runnerSigningFailure = "RUNNER_SIGNING_FAILURE"
@@ -160,10 +161,22 @@ public enum ConsumerProvisioningOperation: String, Codable, Equatable, Sendable 
 }
 
 enum ConsumerInstalledIdentityPolicy {
+    static func isIOSSimOwnedMain(_ bundleIdentifier: String) -> Bool {
+        if bundleIdentifier == ProtectedSourceBundleIdentifiers.default.main { return true }
+        return hasDerivedIdentityShape(bundleIdentifier, suffix: ".on-device-dvt-poc")
+    }
+
     static func isIOSSimOwnedRunner(_ bundleIdentifier: String) -> Bool {
         if bundleIdentifier == ProtectedSourceBundleIdentifiers.default.runner { return true }
+        return hasDerivedIdentityShape(bundleIdentifier, suffix: ".location-control-uitests.xctrunner")
+    }
+
+    static func isIOSSimOwnedMainOrRunner(_ bundleIdentifier: String) -> Bool {
+        isIOSSimOwnedMain(bundleIdentifier) || isIOSSimOwnedRunner(bundleIdentifier)
+    }
+
+    private static func hasDerivedIdentityShape(_ bundleIdentifier: String, suffix: String) -> Bool {
         let prefix = "com.personalteam.iossim.t"
-        let suffix = ".location-control-uitests.xctrunner"
         guard bundleIdentifier.hasPrefix(prefix), bundleIdentifier.hasSuffix(suffix) else { return false }
         let start = bundleIdentifier.index(bundleIdentifier.startIndex, offsetBy: prefix.count)
         let end = bundleIdentifier.index(bundleIdentifier.endIndex, offsetBy: -suffix.count)

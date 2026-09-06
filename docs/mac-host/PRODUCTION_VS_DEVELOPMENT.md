@@ -10,7 +10,8 @@ Production is compiled with `IOSSIM_BUNDLED_ENGINE` and uses
 
 - consumer setup stages and friendly errors
 - explicit iPhone and Personal Team selection
-- bundled profile-free main and runner artifacts
+- bundled canonical, profile-free main and runner source artifacts transformed
+  into deterministic Personal Team install identities
 - no repository lookup or CLI fallback
 - no Witness artifact or install
 - no Gate 3, raw XCTest, raw service, or Drive validation controls in normal UI

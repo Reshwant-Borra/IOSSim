@@ -78,14 +78,15 @@ The runner keeps the XCTest relationship:
 
 `<derived-ui-test-bundle-id>.xctrunner`
 
-The main app keeps `com.iossim.on-device-dvt-poc`. This preserved existing app
-data during same-bundle-ID update testing. The UI-test bundle and xctrunner use
-deterministic derived identifiers because the canonical runner bundle ID was not
-available under the Personal Team.
+The generated main app, UI-test bundle, and xctrunner use deterministic derived
+identifiers because canonical source identifiers are not guaranteed to be
+available to an arbitrary Personal Team. For example, the installed main app is:
+
+`com.personalteam.iossim.t<stable-team-hash>.on-device-dvt-poc`
 
 The hash is deterministic from the Team ID and does not use Apple credentials,
 email, device IDs, pairing material, or passwords. The same team receives the
-same derived IDs on refresh.
+same derived IDs on refresh, keeping subsequent refreshes in place.
 
 The installed runner ID is written into the refreshed main app's
 `IOSSimGate3RunnerBundleIdentifier` Info.plist key. On launch, the app validates
@@ -94,8 +95,17 @@ on later refreshes if bundled configuration is temporarily absent.
 
 ## Refresh Result
 
-Same-team update installs succeeded without uninstalling the IOSSim app. Repeated
-refresh/update installs preserved:
+The earlier physical same-team update proof used the canonical main identifier.
+The deterministic main-identifier extension now keeps a stable main identity for
+each team, but its first physical install and subsequent same-team refresh still
+require clean-Mac qualification. A first move from a legacy canonical install to
+the derived main identity creates a different iPhone app container and therefore
+requires an explicit Fresh Install; IOSSim does not claim that migration preserves
+local app data.
+
+Once installed under a team's derived identity, same-team refresh is designed to
+update in place without uninstall. The previously validated refresh architecture
+preserves:
 
 - app data in the IOSSim data container
 - imported RPPairing state

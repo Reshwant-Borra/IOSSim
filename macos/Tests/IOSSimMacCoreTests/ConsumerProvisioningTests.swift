@@ -41,6 +41,11 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertEqual(loaded?.schemaVersion, manifest.schemaVersion)
         XCTAssertEqual(loaded?.teamID, manifest.teamID)
         XCTAssertEqual(loaded?.deviceIdentifierHash, manifest.deviceIdentifierHash)
+        XCTAssertEqual(loaded?.sourceMainBundleID, ProtectedSourceBundleIdentifiers.default.main)
+        XCTAssertEqual(loaded?.installedMainBundleID, try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1").main)
+        XCTAssertEqual(loaded?.sourceUITestBundleID, ProtectedSourceBundleIdentifiers.default.uiTests)
+        XCTAssertEqual(loaded?.installedUITestBundleID, try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1").uiTests)
+        XCTAssertEqual(loaded?.sourceRunnerBundleID, ProtectedSourceBundleIdentifiers.default.runner)
         XCTAssertEqual(loaded?.installedRunnerBundleID, try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1").runner)
     }
 
@@ -203,12 +208,61 @@ final class ConsumerProvisioningTests: XCTestCase {
         await coordinator.end()
     }
 
-    func testProductionManifestContainsOnlyCanonicalMainAndDerivedRunner() throws {
+    func testProductionManifestMapsCanonicalSourcesToDerivedInstalledIdentities() throws {
         let manifest = try makeManifest(team: "TEAM1", device: "raw-device")
-        XCTAssertEqual(manifest.installedMainBundleID, ProtectedSourceBundleIdentifiers.default.main)
+        let expected = try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1")
+        XCTAssertEqual(manifest.sourceMainBundleID, ProtectedSourceBundleIdentifiers.default.main)
+        XCTAssertEqual(manifest.installedMainBundleID, expected.main)
+        XCTAssertNotEqual(manifest.installedMainBundleID, ProtectedSourceBundleIdentifiers.default.main)
+        XCTAssertEqual(manifest.sourceUITestBundleID, ProtectedSourceBundleIdentifiers.default.uiTests)
+        XCTAssertEqual(manifest.installedUITestBundleID, expected.uiTests)
+        XCTAssertEqual(manifest.sourceRunnerBundleID, ProtectedSourceBundleIdentifiers.default.runner)
         XCTAssertEqual(manifest.installedRunnerBundleID, try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1").runner)
         XCTAssertNotEqual(manifest.installedRunnerBundleID, ProtectedSourceBundleIdentifiers.default.runner)
         XCTAssertFalse(manifest.installedBundleIdentifiersForTest.contains(ProtectedSourceBundleIdentifiers.default.witness))
+    }
+
+    func testInstallRefreshAndRepairUseSameDerivedMainIdentifier() throws {
+        let team = "LA898U57K7"
+        let expected = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
+
+        for operation in [
+            ConsumerProvisioningOperation.install,
+            .refresh,
+            .repair,
+        ] {
+            let identifiers = try ConsumerArtifactProvisioner.installedIdentifiers(
+                teamIdentifier: team,
+                operation: operation
+            )
+            XCTAssertEqual(identifiers.main, expected.main, operation.rawValue)
+            XCTAssertEqual(identifiers.runner, expected.runner, operation.rawValue)
+            XCTAssertNotEqual(identifiers.main, ProtectedSourceBundleIdentifiers.default.main)
+        }
+    }
+
+    func testSigningShellRegistersDerivedMainIdentifier() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-signing-shell-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: "LA898U57K7")
+
+        try SigningShellProjectGenerator.generate(
+            at: root,
+            teamIdentifier: "LA898U57K7",
+            mainBundleIdentifier: identifiers.main,
+            uiTestBundleIdentifier: identifiers.uiTests
+        )
+
+        let project = try String(
+            contentsOf: root.appendingPathComponent("IOSSimSigningShell.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(project.contains("PRODUCT_BUNDLE_IDENTIFIER = \(identifiers.main);"))
+        XCTAssertFalse(project.contains(
+            "PRODUCT_BUNDLE_IDENTIFIER = \(ProtectedSourceBundleIdentifiers.default.main);"
+        ))
+        XCTAssertTrue(project.contains("PRODUCT_BUNDLE_IDENTIFIER = \(identifiers.uiTests);"))
     }
 
     func testCrossTeamInstallErrorIsFirstClass() {
@@ -221,7 +275,13 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
     }
 
-    func testFreshInstallOwnershipPolicyOnlyMatchesIOSSimRunners() {
+    func testFreshInstallOwnershipPolicyOnlyMatchesIOSSimMainAndRunnerIdentities() {
+        XCTAssertTrue(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMain(
+            ProtectedSourceBundleIdentifiers.default.main
+        ))
+        XCTAssertTrue(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMain(
+            "com.personalteam.iossim.t218ab9ef6bf9.on-device-dvt-poc"
+        ))
         XCTAssertTrue(ConsumerInstalledIdentityPolicy.isIOSSimOwnedRunner(
             ProtectedSourceBundleIdentifiers.default.runner
         ))
@@ -233,6 +293,12 @@ final class ConsumerProvisioningTests: XCTestCase {
         ))
         XCTAssertFalse(ConsumerInstalledIdentityPolicy.isIOSSimOwnedRunner(
             "com.example.t218ab9ef6bf9.location-control-uitests.xctrunner"
+        ))
+        XCTAssertFalse(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMain(
+            "com.personalteam.iossim.bad.on-device-dvt-poc"
+        ))
+        XCTAssertFalse(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMain(
+            "com.example.t218ab9ef6bf9.on-device-dvt-poc"
         ))
     }
 

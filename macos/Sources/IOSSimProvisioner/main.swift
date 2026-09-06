@@ -307,6 +307,7 @@ struct ProvisionerTool {
                 requiredFor: "mac"
             ))
         }
+        let consumerManifest = try? await ConsumerProvisioningStateStore().loadManifest()
         var devices = await AppleDeviceTool.discoverDevices(context: context)
         if let manifestForEligibility {
             var enrichedDevices: [DetectedDevice] = []
@@ -326,6 +327,7 @@ struct ProvisionerTool {
                 let installedBundleIdentifiers = await installedProjectBundleIdentifiers(
                     for: device.selectionIdentifier,
                     manifest: manifestForEligibility,
+                    consumerManifest: consumerManifest,
                     context: context
                 )
                 enrichedDevices.append(device.withProvisioningState(
@@ -401,7 +403,6 @@ struct ProvisionerTool {
                 }
             }
         }
-        let consumerManifest = try? await ConsumerProvisioningStateStore().loadManifest()
         let confirmedDeviceConnected = consumerManifest.map { manifest in
             manifest.runtimeSetupStatus == .ready && devices.contains {
                 PersonalTeamProvisioningPOC.deviceIdentifierHash($0.selectionIdentifier) == manifest.deviceIdentifierHash
@@ -609,19 +610,30 @@ private func uniqueDetails(from summaries: [ProvisioningProfileSummary]) -> Stri
 private func installedProjectBundleIdentifiers(
     for rawDeviceIdentifier: String,
     manifest: ArtifactManifest,
+    consumerManifest: ConsumerProvisioningManifest?,
     context: RuntimeProvisioningContext
 ) async -> [String]? {
     var installed: [String] = []
     for component in manifest.components {
+        let consumerStateApplies = consumerManifest?.deviceIdentifierHash
+            == PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier)
+        let installedBundleIdentifier: String
+        if consumerStateApplies, component.role == "iosMain", let consumerManifest {
+            installedBundleIdentifier = consumerManifest.installedMainBundleID
+        } else if consumerStateApplies, component.role == "locationControlRunner", let consumerManifest {
+            installedBundleIdentifier = consumerManifest.installedRunnerBundleID
+        } else {
+            installedBundleIdentifier = component.bundleIdentifier
+        }
         guard let isInstalled = await AppleDeviceTool.isAppInstalled(
-            bundleIdentifier: component.bundleIdentifier,
+            bundleIdentifier: installedBundleIdentifier,
             rawDeviceIdentifier: rawDeviceIdentifier,
             context: context
         ) else {
             return nil
         }
         if isInstalled {
-            installed.append(component.bundleIdentifier)
+            installed.append(installedBundleIdentifier)
         }
     }
     return installed

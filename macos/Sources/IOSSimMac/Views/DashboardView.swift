@@ -171,7 +171,8 @@ struct FailureView: View {
                     showDetails.toggle()
                 }
 #endif
-                if store.lastError?.details.contains(ConsumerProvisioningErrorCode.crossTeamUpgradeBlocked.rawValue) == true {
+                if store.lastError?.details.contains(ConsumerProvisioningErrorCode.crossTeamUpgradeBlocked.rawValue) == true
+                    || store.lastError?.details.contains(ConsumerProvisioningErrorCode.installedIdentityMigrationRequired.rawValue) == true {
                     Button("Fresh Install", role: .destructive) {
                         confirmingFreshInstall = true
                     }

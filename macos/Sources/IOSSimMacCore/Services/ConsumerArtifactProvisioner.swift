@@ -21,6 +21,16 @@ public actor ConsumerArtifactProvisioner {
         self.fileManager = fileManager
     }
 
+    static func installedIdentifiers(
+        teamIdentifier: String,
+        operation: ConsumerProvisioningOperation
+    ) throws -> PersonalTeamBundleIdentifierSet {
+        switch operation {
+        case .install, .refresh, .repair:
+            return try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: teamIdentifier)
+        }
+    }
+
     public func provision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
         try await refreshCoordinator.begin()
         defer { Task { await refreshCoordinator.end() } }
@@ -61,6 +71,7 @@ public actor ConsumerArtifactProvisioner {
             try await installAndVerify(prepared, rawDeviceIdentifier: rawDeviceIdentifier)
             try await launchMain(
                 rawDeviceIdentifier: rawDeviceIdentifier,
+                expectedMainBundleIdentifier: prepared.identifiers.main,
                 expectedRunnerBundleIdentifier: prepared.identifiers.runner
             )
 
@@ -76,7 +87,7 @@ public actor ConsumerArtifactProvisioner {
                 deviceOSVersion: selectedDevice?.osVersion,
                 teamID: team.teamIdentifier,
                 sourceMainBundleID: ProtectedSourceBundleIdentifiers.default.main,
-                installedMainBundleID: ProtectedSourceBundleIdentifiers.default.main,
+                installedMainBundleID: prepared.identifiers.main,
                 sourceUITestBundleID: ProtectedSourceBundleIdentifiers.default.uiTests,
                 installedUITestBundleID: prepared.identifiers.uiTests,
                 sourceRunnerBundleID: ProtectedSourceBundleIdentifiers.default.runner,
@@ -98,7 +109,7 @@ public actor ConsumerArtifactProvisioner {
                 device: rawDeviceIdentifier,
                 result: .passed,
                 duration: started,
-                detail: "\(request.operation.rawValue) completed with main and deterministic runner."
+                detail: "\(request.operation.rawValue) completed with deterministic main and runner identities."
             )
             return ConsumerProvisioningResult(
                 operation: request.operation,
@@ -203,11 +214,26 @@ public actor ConsumerArtifactProvisioner {
         rawDeviceIdentifier: String
     ) async throws {
         let prior = try await stateStore.loadManifest()
+        let expected = try Self.installedIdentifiers(
+            teamIdentifier: selectedTeam.teamIdentifier,
+            operation: request.operation
+        )
         let appliesToSelectedDevice = prior.map {
             $0.deviceIdentifierHash == PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier)
         } ?? false
-        if appliesToSelectedDevice, prior?.teamID == selectedTeam.teamIdentifier { return }
-        if appliesToSelectedDevice, !request.allowFreshInstallAfterCrossTeamConflict {
+        let priorUsesExpectedIdentifiers = prior.map {
+            $0.installedMainBundleID == expected.main
+                && $0.installedUITestBundleID == expected.uiTests
+                && $0.installedRunnerBundleID == expected.runner
+        } ?? false
+        if appliesToSelectedDevice,
+           prior?.teamID == selectedTeam.teamIdentifier,
+           priorUsesExpectedIdentifiers {
+            return
+        }
+        if appliesToSelectedDevice,
+           prior?.teamID != selectedTeam.teamIdentifier,
+           !request.allowFreshInstallAfterCrossTeamConflict {
             throw ConsumerProvisioningFailure(
                 code: .crossTeamUpgradeBlocked,
                 stage: .validatingTeam,
@@ -216,25 +242,58 @@ public actor ConsumerArtifactProvisioner {
                 developerDetail: "MismatchedApplicationIdentifierEntitlement: existing team \(RuntimeProvisioning.shortIdentifier(prior?.teamID)), requested \(RuntimeProvisioning.shortIdentifier(selectedTeam.teamIdentifier))."
             )
         }
+        if appliesToSelectedDevice,
+           prior?.teamID == selectedTeam.teamIdentifier,
+           !priorUsesExpectedIdentifiers,
+           !request.allowFreshInstallAfterCrossTeamConflict {
+            throw installedIdentityMigrationFailure()
+        }
+
+        let installedOwnedIdentifiers = await installedIOSSimMainAndRunnerBundleIdentifiers(
+            rawDeviceIdentifier: rawDeviceIdentifier
+        )
+        let expectedIdentifiers = Set([expected.main, expected.runner])
+        let unexpectedInstalledIdentifiers = installedOwnedIdentifiers.filter { !expectedIdentifiers.contains($0) }
+        if !unexpectedInstalledIdentifiers.isEmpty,
+           !request.allowFreshInstallAfterCrossTeamConflict {
+            throw installedIdentityMigrationFailure()
+        }
         if request.allowFreshInstallAfterCrossTeamConflict {
             try await uninstallIOSSimOwnedComponents(
+                priorMainBundleIdentifier: appliesToSelectedDevice ? prior?.installedMainBundleID : nil,
                 priorRunnerBundleIdentifier: appliesToSelectedDevice ? prior?.installedRunnerBundleID : nil,
                 rawDeviceIdentifier: rawDeviceIdentifier
             )
         }
     }
 
+    private func installedIdentityMigrationFailure() -> ConsumerProvisioningFailure {
+        ConsumerProvisioningFailure(
+            code: .installedIdentityMigrationRequired,
+            stage: .validatingTeam,
+            userMessage: "This iPhone has an earlier IOSSim app identity.",
+            remediation: "Use Fresh Install only if you accept removing that IOSSim app and its local data.",
+            developerDetail: "The installed main/runner identifiers do not match the deterministic identifiers for the selected Personal Team."
+        )
+    }
+
     private func uninstallIOSSimOwnedComponents(
+        priorMainBundleIdentifier: String?,
         priorRunnerBundleIdentifier: String?,
         rawDeviceIdentifier: String
     ) async throws {
-        var identifiers = await installedIOSSimRunnerBundleIdentifiers(rawDeviceIdentifier: rawDeviceIdentifier)
+        var identifiers = await installedIOSSimMainAndRunnerBundleIdentifiers(rawDeviceIdentifier: rawDeviceIdentifier)
+        if let priorMainBundleIdentifier,
+           ConsumerInstalledIdentityPolicy.isIOSSimOwnedMain(priorMainBundleIdentifier) {
+            identifiers.append(priorMainBundleIdentifier)
+        }
         if let priorRunnerBundleIdentifier,
            ConsumerInstalledIdentityPolicy.isIOSSimOwnedRunner(priorRunnerBundleIdentifier) {
             identifiers.append(priorRunnerBundleIdentifier)
         }
+        identifiers.append(ProtectedSourceBundleIdentifiers.default.main)
+        identifiers.append(ProtectedSourceBundleIdentifiers.default.runner)
         let orderedIdentifiers = Array(Set(identifiers)).sorted()
-            + [ProtectedSourceBundleIdentifiers.default.main]
         for bundleIdentifier in orderedIdentifiers {
             let result = try await context.runner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
@@ -262,11 +321,11 @@ public actor ConsumerArtifactProvisioner {
             stage: .validatingTeam,
             device: rawDeviceIdentifier,
             result: .passed,
-            detail: "Explicit cross-team fresh install removed only the prior IOSSim main app and runner."
+            detail: "Explicit fresh install removed only IOSSim-owned main and runner components."
         )
     }
 
-    private func installedIOSSimRunnerBundleIdentifiers(rawDeviceIdentifier: String) async -> [String] {
+    private func installedIOSSimMainAndRunnerBundleIdentifiers(rawDeviceIdentifier: String) async -> [String] {
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("iossim-installed-apps-\(UUID().uuidString)", isDirectory: true)
         do { try fileManager.createDirectory(at: root, withIntermediateDirectories: true) } catch { return [] }
@@ -291,7 +350,7 @@ public actor ConsumerArtifactProvisioner {
             return []
         }
         return apps.compactMap { $0["bundleIdentifier"] as? String }
-            .filter(ConsumerInstalledIdentityPolicy.isIOSSimOwnedRunner)
+            .filter(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMainOrRunner)
     }
 
     private func prepareArtifacts(
@@ -301,7 +360,10 @@ public actor ConsumerArtifactProvisioner {
         operation: ConsumerProvisioningOperation
     ) async throws -> PreparedConsumerArtifacts {
         try await record(stage: .preparingIdentities, device: rawDeviceIdentifier, result: .started)
-        let identifiers = try PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: team.teamIdentifier)
+        let identifiers = try Self.installedIdentifiers(
+            teamIdentifier: team.teamIdentifier,
+            operation: operation
+        )
         let manifest = try context.loadManifest()
         guard manifest.components.count == 2,
               let mainComponent = manifest.components.first(where: { $0.role == "iosMain" }),
@@ -608,6 +670,7 @@ public actor ConsumerArtifactProvisioner {
 
     private func launchMain(
         rawDeviceIdentifier: String,
+        expectedMainBundleIdentifier: String,
         expectedRunnerBundleIdentifier: String
     ) async throws {
         let result = try await context.runner.run(
@@ -615,7 +678,7 @@ public actor ConsumerArtifactProvisioner {
             arguments: [
                 "devicectl", "device", "process", "launch",
                 "--device", rawDeviceIdentifier,
-                ProtectedSourceBundleIdentifiers.default.main,
+                expectedMainBundleIdentifier,
                 "--timeout", "15", "--quiet"
             ],
             workingDirectory: context.resourcesURL,
@@ -632,6 +695,7 @@ public actor ConsumerArtifactProvisioner {
         }
         try await verifyPersistedRunnerMapping(
             rawDeviceIdentifier: rawDeviceIdentifier,
+            expectedMainBundleIdentifier: expectedMainBundleIdentifier,
             expectedRunnerBundleIdentifier: expectedRunnerBundleIdentifier
         )
         try await record(stage: .verifyingRuntimeConfiguration, device: rawDeviceIdentifier, result: .passed)
@@ -639,6 +703,7 @@ public actor ConsumerArtifactProvisioner {
 
     private func verifyPersistedRunnerMapping(
         rawDeviceIdentifier: String,
+        expectedMainBundleIdentifier: String,
         expectedRunnerBundleIdentifier: String
     ) async throws {
         let root = fileManager.temporaryDirectory
@@ -655,7 +720,7 @@ public actor ConsumerArtifactProvisioner {
                     "devicectl", "device", "copy", "from",
                     "--device", rawDeviceIdentifier,
                     "--domain-type", "appDataContainer",
-                    "--domain-identifier", ProtectedSourceBundleIdentifiers.default.main,
+                    "--domain-identifier", expectedMainBundleIdentifier,
                     "--source", "Library/Preferences",
                     "--destination", destination.path,
                     "--timeout", "30",
@@ -930,7 +995,7 @@ private struct PreparedConsumerArtifacts: Sendable {
     let operation: ConsumerProvisioningOperation
 }
 
-private enum SigningShellProjectGenerator {
+enum SigningShellProjectGenerator {
     static func generate(
         at root: URL,
         teamIdentifier: String,
