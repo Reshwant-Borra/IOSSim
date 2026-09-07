@@ -1,6 +1,7 @@
 # Consumer Apple Authorization and Provisioning
 
-Status: `PRIVATE_PERSONAL_TEAM_FRAGILE` (isolated engineering POC, 2026-09-07).
+Status: `LIVE_PERSONAL_TEAM_PROVISIONING_READY_FOR_HUMAN_TEST`
+(`LOCAL_TEST_ONLY` isolated engineering POC, 2026-09-07).
 
 This report separates Apple's supported provisioning API, the strongest
 headless Xcode path, and the experimental free Personal Team protocol. It does
@@ -20,13 +21,13 @@ a physically qualified native backend or a headless Xcode backend that can
 bootstrap Apple authorization inside IOSSim. It no longer selects the manually
 configured Xcode fallback merely because Xcode is installed.
 
-`ApplePersonalTeamExperimental.swift` is the replaceable private-protocol
-boundary. It contains a versioned endpoint adapter, wipeable password and 2FA
-input, a this-device-only Keychain session store, authoritative team/profile
-validation, the complete provisioning coordinator contract, strict install
-inventory checks, and a narrow repair planner. Its live transport remains
-unavailable until the cryptographic/authentication implementation is physically
-tested. Mocks exercise the contract but do not qualify it.
+`ApplePersonalTeamExperimental.swift` remains the replaceable private-protocol
+boundary. `ApplePersonalTeamLive.swift` now implements its local live transport
+through profile retrieval. It includes bounded HTTPS, Apple SRP-6a, trusted-
+device verification, Xcode-scoped token decryption, Keychain session storage,
+Developer Services operations, local key/CSR generation, selected-device and
+derived-App-ID registration, CMS profile validation, and safe checkpoints.
+Physical account/device proof is still pending, so AUTO remains unqualified.
 
 ## Supported Apple Path
 
@@ -75,28 +76,38 @@ the key, but that remaining setup is inappropriate for the primary consumer.
 
 ## Experimental Private Personal Team Path
 
-Current maintained implementations show this private flow:
+The LOCAL_TEST_ONLY build implements this private flow:
 
 `GrandSlam SRP init/complete -> trusted-device or SMS 2FA -> Xcode-scoped GS token -> Developer Services session -> teams -> certificate -> device -> App IDs -> profiles`
 
-The observed API family is
+The implemented API family is
 `developerservices2.apple.com/services/QH65B2/.../*.action`. The reusable
 session includes account-bound DSID and an Xcode-scoped GS token. Its lifetime
-is undocumented and should be tested with an innocuous team-list request.
+is taken from the returned token when supplied; IOSSim invents no expiry. Every
+reuse is validated with a team-list request.
 Passwords and 2FA codes are never reusable session state.
+
+SRP uses RFC 5054's 2048-bit group with SHA-256, a 256-bit `SecRandom` client
+secret, no username in `x`, and Apple's `s2k`/`s2k_fo` password preprocessing.
+The password digest is processed with PBKDF2-HMAC-SHA256 using the server salt
+and bounded iteration count. IOSSim validates `B`, the server SRP proof, the
+GrandSlam negotiation proof, AES-CBC protected session data, and AES-GCM
+protected app-token data. Password-derived buffers are wiped where Swift permits.
 
 ### Current implementation study
 
 | Project | Latest inspected commit | License finding | Auth/provisioning design | Requirements and known fragility |
 | --- | --- | --- | --- | --- |
 | Signr | `8ea0a52`, 2026-07-21 | README says MIT; vendored `plume_core` declares MPL-2.0, so the tree is not uniformly MIT | Local SRP; trusted-device/SMS 2FA; GS token; teams, CSR/cert, devices, IDs, profiles, signing and InstallationProxy | Uses private macOS AOSKit anisette and hardcoded emulated Xcode client info; Xcode/Rust are build requirements |
-| SideStore/AltSign | `35b68f1`, 2026-08-26 | No root license in the inspected fork; dependencies have separate licenses | SRP/2FA/anisette, stored application token, full refresh flow | Frequently uses anisette infrastructure; issue #1446 reports current Xcode-token HTTP 503 failures |
+| Riley Testut/AltSign | `1c44cfd`, 2020-07-24 | No license was relied upon; no source copied | Conceptual GrandSlam request/proof, 2FA and Developer Services field behavior | Historic implementation, used only to cross-check protocol shape |
+| Dadoum/apple-crates | `a505b2a`, 2026-08-01 | Repository license files inspected; no source copied or linked | Maintained Rust GrandSlam and Xcode Developer Services behavior | Source for current Xcode 16.4 adapter identity and response models |
+| attaswift/BigInt | `63feef7`, 2026-08-20 | MIT; notice packaged | Pure-Swift arbitrary precision integer arithmetic | Pinned source dependency; SRP protocol/derivation remains IOSSim code |
 | Dadoum/Provision | `7717ce1`, 2025-06-23 | LGPL-2.0 | AuthKit-like local API and persisted ADI/device identity | Requires extracted Apple Android libraries; warns against primary accounts; former sideload code was removed |
 | jkcoxson/idevice | IOSSim pin `c442bd2` | MIT | No Apple Account auth; device trust, RPPairing, AFC, InstallationProxy | Preferred IOSSim device transport; no external credential server |
 
-No source from those projects was copied, linked, or distributed. IOSSim's
-adapter records only the independently observed protocol shape and validation
-rules; it currently sends no Apple request.
+No protocol implementation source from those projects was copied. BigInt is the
+only new linked dependency and its MIT notice is packaged. IOSSim independently
+implements the protocol and can now send the expected Apple requests.
 
 Observed values are classified as:
 
@@ -104,7 +115,11 @@ Observed values are classified as:
   GS token audience, and provisioning resource operations;
 - dynamic: SRP challenges, salt/iterations, anisette OTP, sessions,
   certificates, profiles, and response content;
-- version-bound: Xcode/AuthKit client information and user-agent behavior;
+- Apple-system-provided: AOSKit OTP/machine data and macOS AuthKit generic headers;
+- derived locally: local-user header from the system machine UUID, current time,
+  locale, timezone, model/OS/build client description, SRP/CSR material;
+- version-bound: Xcode/AuthKit client information, user-agent behavior, and the
+  AOSKit production routing value isolated in the machine adapter;
 - machine-bound: anisette device/local-user/machine identifiers and ADI;
 - account-bound: DSID, GS token, teams, certificates, devices, IDs and profiles.
 
@@ -131,8 +146,9 @@ Observed sources:
 | `xcodebuild` | IDs, certs, device, profiles | XCODE_INVISIBLE candidate / DEVELOPMENT FALLBACK | Fully automates after supported account or API-key auth exists |
 | `xcrun`/`devicectl` | device operations | Allowed for XCODE_INVISIBLE; remove for native | Pinned idevice bridge |
 | Xcode Accounts | initial Apple login and 2FA | PATH A BLOCKER | No supported headless bootstrap; do not scrape/import private Xcode state |
-| Apple development identity | certificate/key | Native replacement | Keychain key, CSR, list/reuse IOSSim identity; live issuance pending |
-| Xcode App IDs/device/profile | provisioning resources | Native replacement | Private Developer Services adapter; live transport pending |
+| Apple development identity | certificate/key | Native replacement | Keychain RSA key, local CSR, IOSSim ownership metadata, public-key-matched certificate reuse/issuance |
+| Xcode App IDs/device/profile | provisioning resources | Native replacement | Live versioned private Developer Services adapter through validated profiles |
+| BigInt | SRP modular arithmetic | MIT Swift package pinned to `63feef7` | Source-linked at build; no runtime service; notice packaged |
 | `/usr/bin/security` | Keychain/cert inspection | Ordinary macOS | Prefer Security.framework for secrets |
 | `/usr/bin/codesign` | inside-out signing | Ordinary macOS | Existing signing order retained; no `--deep` shortcut |
 | repo/Xcode project | build canonical artifacts | Release engineering only | Not packaged or needed at customer runtime |
@@ -160,10 +176,11 @@ conversion to wipeable buffers. One authoritative Personal Team is selected
 automatically; ambiguous teams can be selected without certificate/profile
 terminology.
 
-Because no live backend is qualified, authorization currently fails safely with
-"IOSSim couldn't prepare Apple authorization". It does not pretend setup
-succeeded or route AUTO users to Xcode. The manually configured path remains
-only through the development `XCODE_FALLBACK` override.
+Only the separately compiled LOCAL_TEST_ONLY RC selects the native backend by
+default and shows an unmistakable experimental badge and safe stage. It runs
+authorization through profiles in one attempt. Normal builds keep AUTO and do
+not select the unproven backend. The Xcode fallback remains available only as
+an explicit development/recovery override.
 
 ## Security and Session Model
 
@@ -174,12 +191,14 @@ only through the development `XCODE_FALLBACK` override.
   support bundles.
 - Authorization/cookie/Apple GS/anisette/session headers and labeled 2FA codes
   are explicitly redacted with no debug bypass.
-- Future opaque session state uses a this-device-only Keychain item. Support
+- Opaque minimum session state uses a non-synchronizing, this-device-only
+  Keychain item. Support
   export reads only safe metadata: method category, valid boolean, client
   adapter version, expiry, backend and last stage.
 - No IOSSim credential server, third-party anisette server, Xcode-state theft,
   UI automation, or security bypass exists.
-- Responses must use expected HTTPS hosts, status, content types and size, and
+- Responses use normal platform TLS and must use expected Apple HTTPS hosts,
+  status, content types and strict streaming size limits, and
   pass team/profile/resource validation.
 - Creation operations are represented as read-before-create backend calls;
   rate limits and non-idempotent operations are not blindly retried.
@@ -187,10 +206,11 @@ only through the development `XCODE_FALLBACK` override.
 
 ## Provisioning, Refresh, and Repair Contract
 
-The mocked coordinator covers:
+The live coordinator now covers steps 1-7; mocks retain regression coverage for
+the complete contract:
 
 1. session resume or Apple Account authorization;
-2. legitimate trusted-device/SMS verification;
+2. legitimate trusted-device verification (SMS phone selection remains pending);
 3. authoritative Personal Team preference;
 4. Keychain identity reuse or local CSR/certificate creation;
 5. selected-device registration;
@@ -226,18 +246,22 @@ verification remain pending.
 | --- | --- |
 | Path A initial auth | `PATH_A_BLOCKED_AT_INITIAL_ACCOUNT_AUTH` |
 | Path A remaining provisioning | Existing headless-capable machinery after auth; not a brand-new-user solution |
-| Path B Apple auth/2FA | Isolated interface, validation and mocks; live SRP/anisette transport absent |
-| Path B team/cert/device/IDs/profiles | Complete mocked coordinator; live requests absent |
+| Path B local machine identity | Live AOSKit/AuthKit adapter; credentials-free probe passed on macOS 26.6.2 |
+| Path B Apple auth/2FA | Live SRP and trusted-device 2FA implementation; pending real-account proof |
+| Path B session/team | Live Xcode-scoped token and team discovery; pending real-account proof |
+| Path B cert/device/IDs/profiles | Live read-before-create operations and strict validation; pending real-account/iPhone proof |
 | Native signing/install/pair | Contracts/mappings only; no Mac host FFI implementation or physical proof |
 | Gate 3/Spoof/Rich XCUILocation/Rich Drive | Not run for either new backend |
 
 ## Physical Evidence and Limitations
 
-No qualifying physical evidence was produced. Xcode is installed on this Mac,
+No qualifying account or physical-iPhone evidence was produced. A credentials-
+free local AOSKit machine-identity probe passed. Xcode is installed on this Mac,
 Homebrew happens to be installed, external `idevicepair` is absent, and no
 physical iPhone is connected. The proven manually configured Xcode runtime
 evidence remains baseline evidence only; it was not reclassified as headless or
 native consumer proof.
 
-Current verdict: `PRIVATE_PERSONAL_TEAM_FRAGILE`. The local package remains
-`LOCAL_TEST_ONLY`.
+Current verdict: `LIVE_PERSONAL_TEAM_PROVISIONING_READY_FOR_HUMAN_TEST`. The
+package remains `LOCAL_TEST_ONLY`; native signing, installation, pairing and all
+iPhone runtime gates remain pending.
