@@ -201,6 +201,7 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
   private let hostname: String
   private let recorder: SessionDiagnosticRecorder?
   private let gate3RunnerBundleID: String
+  private let pairingStore: RPPairingStore?
   private let lock = NSLock()
   private var state: TunnelState = .disconnected
   private var endpoint = DeveloperEndpoint()
@@ -220,10 +221,12 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
   public init(
     hostname: String = "IOSSimOnDeviceDVTPOC",
     recorder: SessionDiagnosticRecorder? = .shared,
-    gate3RunnerBundleID: String? = nil
+    gate3RunnerBundleID: String? = nil,
+    pairingStore: RPPairingStore? = nil
   ) {
     self.hostname = hostname
     self.recorder = recorder
+    self.pairingStore = pairingStore
     self.gate3RunnerBundleID =
       Gate3XCTestRunnerBundleIdentifierResolver.validConfiguredRunnerBundleID(gate3RunnerBundleID)
       ?? Gate3XCTestRunnerBundleIdentifierResolver().resolvedInstalledRunnerBundleID()
@@ -685,6 +688,10 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
               stage: .tunnelEstablished)
           }
         }
+        try persistUpdatedPairingHandle(
+          pairingHandle,
+          originalData: pairingData
+        )
         setState(.tunnelEstablished)
         await recorder?.record(
           category: "TUNNEL",
@@ -840,6 +847,45 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
         .appendingPathExtension("plist")
       try data.write(to: url, options: [.atomic, .completeFileProtection])
       return url
+    }
+
+    private func persistUpdatedPairingHandle(
+      _ pairingHandle: OpaquePointer,
+      originalData: Data
+    ) throws {
+      var bytes: UnsafeMutablePointer<UInt8>?
+      var count: UInt = 0
+      if let error = rp_pairing_file_to_bytes(pairingHandle, &bytes, &count) {
+        defer { idevice_error_free(error) }
+        throw POCError(
+          .pairingStorageFailed,
+          ffiMessage(error) ?? "Updated RPPairing serialization failed.",
+          stage: .pairingImported)
+      }
+      guard let bytes, count > 0 else {
+        throw POCError(
+          .pairingStorageFailed,
+          "Updated RPPairing serialization returned no data.",
+          stage: .pairingImported)
+      }
+      defer { idevice_data_free(bytes, count) }
+      let updatedData = Data(bytes: bytes, count: Int(count))
+      let persisted = try RPPairingUpdatePersistence.persistIfChanged(
+        updatedData,
+        originalData: originalData,
+        store: pairingStore
+      )
+      if persisted {
+        Task {
+          await recorder?.record(
+            category: "PAIRING",
+            component: "Pairing",
+            previousState: "loaded",
+            newState: "updated_and_persisted",
+            message: "Updated device-verified RPPairing state persisted securely"
+          )
+        }
+      }
     }
 
     private func cleanup() {

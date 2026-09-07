@@ -67,7 +67,11 @@ typedef void (*XCTestRunnerStatusCallback)(void *context,
                                            const char *message);
 
 IdeviceFfiError *rp_pairing_file_read(const char *path, RpPairingFileHandle **out);
+IdeviceFfiError *rp_pairing_file_to_bytes(RpPairingFileHandle *handle,
+                                          uint8_t **out_data,
+                                          uintptr_t *out_len);
 void rp_pairing_file_free(RpPairingFileHandle *handle);
+void idevice_data_free(uint8_t *data, uintptr_t len);
 
 IdeviceFfiError *tunnel_create_rppairing(const idevice_sockaddr *addr,
                                          idevice_socklen_t addr_len,

@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_PATH="${1:-${ROOT_DIR}/Vendor/idevice/lib/libidevice_ffi.a}"
 REQUIRED_SYMBOLS=(
   "rp_pairing_file_read"
+  "rp_pairing_file_to_bytes"
+  "idevice_data_free"
   "tunnel_create_rppairing"
   "remote_server_connect_rsd"
   "device_info_directory_listing"
