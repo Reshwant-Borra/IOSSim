@@ -16,8 +16,15 @@ public final class SetupStore: ObservableObject {
     @Published public private(set) var provisioningManifest: ConsumerProvisioningManifest?
     @Published public private(set) var consumerStage: ConsumerProvisioningStage = .idle
     @Published public private(set) var lastSupportBundleURL: URL?
+    @Published public private(set) var appleAuthorization = AppleAuthorizationSummary(
+        method: .privateGrandSlamSRP,
+        stage: .notStarted,
+        sessionValid: false
+    )
+    @Published public private(set) var appleVerificationChallenge: AppleVerificationChallenge?
 
     public let engine: any IOSSimSetupEngine
+    private let authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator
     private var task: Task<Void, Never>?
     private let onboardingKey = "IOSSimMac.onboardingCompleted"
     private let selectedDeviceKey = "IOSSimMac.selectedDeviceIdentifier"
@@ -26,8 +33,14 @@ public final class SetupStore: ObservableObject {
     private let automaticRefreshKey = "IOSSimMac.automaticRefreshEnabled"
     private var automaticRefreshAttempted = false
 
-    public init(engine: any IOSSimSetupEngine) {
+    public init(
+        engine: any IOSSimSetupEngine,
+        authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator = .init(
+            backend: UnavailableExperimentalPersonalTeamBackend()
+        )
+    ) {
         self.engine = engine
+        self.authorizationCoordinator = authorizationCoordinator
         selectedDeviceIdentifier = UserDefaults.standard.string(forKey: selectedDeviceKey)
         selectedTeamIdentifier = UserDefaults.standard.string(forKey: selectedTeamKey)
     }
@@ -252,6 +265,55 @@ public final class SetupStore: ObservableObject {
         UserDefaults.standard.set(identifier, forKey: selectedTeamKey)
     }
 
+    /// Accepts the SwiftUI `String` only at this boundary. The view clears its
+    /// bindings immediately; this method converts the password to wipeable
+    /// bytes before starting asynchronous work and never stores it in state.
+    public func beginAppleAuthorization(account: String, password: String) {
+        guard !isRunning, !account.isEmpty, !password.isEmpty else { return }
+        let sensitivePassword = SensitiveInput(password)
+        runCancellable(stage: .appleAccount) { [self] in
+            appleVerificationChallenge = try await authorizationCoordinator.begin(
+                account: account,
+                password: sensitivePassword
+            )
+            appleAuthorization = await authorizationCoordinator.authorization
+            if appleVerificationChallenge == nil {
+                try await applyExperimentalTeams()
+            }
+        }
+    }
+
+    public func submitAppleVerification(code: String) {
+        guard !isRunning, !code.isEmpty else { return }
+        let sensitiveCode = SensitiveInput(code)
+        runCancellable(stage: .appleAccount) { [self] in
+            appleVerificationChallenge = try await authorizationCoordinator.verify(code: sensitiveCode)
+            appleAuthorization = await authorizationCoordinator.authorization
+            if appleVerificationChallenge == nil {
+                try await applyExperimentalTeams()
+            }
+        }
+    }
+
+    private func applyExperimentalTeams() async throws {
+        let discovered = await authorizationCoordinator.teams
+        guard !discovered.isEmpty else { throw ExperimentalBackendError.noTeam }
+        personalTeams = discovered.map {
+            PersonalTeamCandidate(
+                teamIdentifier: $0.id,
+                teamDisplayName: $0.name,
+                signingIdentityCommonName: "IOSSim managed",
+                signingIdentityFingerprint: "pending",
+                certificateSubjectTeamIdentifier: $0.id,
+                personalTeam: $0.isPersonalTeam
+            )
+        }
+        if let preferred = try? ExperimentalConsumerProvisioningCoordinator.preferredTeam(from: discovered) {
+            selectTeam(identifier: preferred.id)
+        }
+        phase = .installing
+    }
+
     private func runSetup() {
         phase = .checkingMac
         runCritical { [self] in
@@ -281,8 +343,8 @@ public final class SetupStore: ObservableObject {
                 throw ConsumerProvisioningFailure(
                     code: .teamSelectionRequired,
                     stage: .waitingForTeamSelection,
-                    userMessage: "Choose an Apple Personal Team.",
-                    remediation: "Select the account IOSSim should use, then continue.",
+                    userMessage: "IOSSim couldn't prepare Apple authorization.",
+                    remediation: "Continue Apple authorization in IOSSim, then try again.",
                     developerDetail: "No Personal Team selected."
                 )
             }
@@ -384,6 +446,9 @@ public final class SetupStore: ObservableObject {
         let remembered = UserDefaults.standard.string(forKey: selectedTeamKey)
         if let remembered, personalTeams.contains(where: { $0.teamIdentifier == remembered }) {
             selectedTeamIdentifier = remembered
+        } else if personalTeams.filter(\.personalTeam).count == 1,
+                  let personal = personalTeams.first(where: \.personalTeam) {
+            selectTeam(identifier: personal.teamIdentifier)
         } else if personalTeams.count == 1 {
             selectTeam(identifier: personalTeams[0].teamIdentifier)
         } else if let manifest = provisioningManifest,
@@ -464,6 +529,10 @@ public final class SetupStore: ObservableObject {
                 )
                 self.consumerStage = .failed
                 self.phase = .failed
+            } catch let failure as ExperimentalBackendError {
+                self.appleAuthorization = await self.authorizationCoordinator.authorization
+                self.lastError = Self.appleAuthorizationError(failure)
+                self.phase = failure == .verificationExpired ? .appleAccount : .failed
             } catch {
                 self.lastError = SetupError(
                     headline: "IOSSim could not complete this step.",
@@ -475,6 +544,35 @@ public final class SetupStore: ObservableObject {
             self.isRunning = false
             self.isCriticalStage = false
             self.task = nil
+        }
+    }
+
+    private static func appleAuthorizationError(_ failure: ExperimentalBackendError) -> SetupError {
+        switch failure {
+        case .badPassword:
+            return SetupError(
+                headline: "Apple couldn't verify that account.",
+                recovery: "Check your Apple Account and password, then try again.",
+                details: failure.safeCode
+            )
+        case .verificationExpired:
+            return SetupError(
+                headline: "That Apple verification code expired.",
+                recovery: "Request or enter a new verification code.",
+                details: failure.safeCode
+            )
+        case .sessionExpired:
+            return SetupError(
+                headline: "Apple authorization needs to be refreshed.",
+                recovery: "Continue with Apple to authorize IOSSim again.",
+                details: failure.safeCode
+            )
+        default:
+            return SetupError(
+                headline: "IOSSim couldn't prepare Apple authorization.",
+                recovery: "Try again. IOSSim will not change your other development certificates or apps.",
+                details: failure.safeCode
+            )
         }
     }
 
@@ -517,8 +615,8 @@ public final class SetupStore: ObservableObject {
         }
         if lower.contains("development team") || lower.contains("signing") {
             return SetupError(
-                headline: "Apple signing needs attention.",
-                recovery: "Open Xcode Settings and make sure an Apple Development account is available.",
+                headline: "IOSSim couldn't prepare Apple authorization.",
+                recovery: "Continue Apple authorization in IOSSim, then try again.",
                 details: result.combinedOutput
             )
         }

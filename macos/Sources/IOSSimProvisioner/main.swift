@@ -244,9 +244,12 @@ struct ProvisionerTool {
         ))
         let consumerSelection = RuntimeProvisioning.consumerBackendSelection(resourcesURL: context.resourcesURL)
         let xcodePresent = consumerSelection.xcodePresent
+        let usesXcodeBackend = consumerSelection.backend.map {
+            [.xcodeFallback, .xcodeInvisible].contains($0)
+        } == true
         var xcodeResult: ProcessResult?
         var devicectlResult: ProcessResult?
-        if consumerSelection.backend == .xcodeFallback {
+        if usesXcodeBackend {
             xcodeResult = try? await context.runner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
                 arguments: ["-version"],
@@ -265,13 +268,13 @@ struct ProvisionerTool {
             || RuntimeProvisioning.devicectlForbidden()
             || devicectlResult?.exitCode != 0
         let appleToolingReady = consumerSelection.ready
-            && (consumerSelection.backend != .xcodeFallback || (fullXcodeAvailable && !devicectlUnavailable))
+            && (!usesXcodeBackend || (fullXcodeAvailable && !devicectlUnavailable))
         checks.append(DoctorCheck(
             state: .pass,
             component: "Provisioning",
             name: "backend selection",
             detail: "preference=\(consumerSelection.preference.rawValue) backend=\(consumerSelection.backend?.rawValue ?? "NONE") zeroXcodeMode=\(consumerSelection.zeroXcodeMode)",
-            requiredFor: "mac"
+            requiredFor: "authorization"
         ))
         checks.append(DoctorCheck(
             state: .pass,
@@ -283,14 +286,12 @@ struct ProvisionerTool {
         checks.append(DoctorCheck(
             state: appleToolingReady ? .pass : .action,
             component: "Provisioning",
-            name: consumerSelection.zeroXcodeMode ? "native zero-Xcode backend" : "Xcode fallback backend",
+            name: consumerSelection.zeroXcodeMode ? "native Personal Team backend" : "headless Xcode backend",
             detail: appleToolingReady
                 ? (xcodeResult?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ready")
                 : (consumerSelection.failureCode ?? "backend unavailable"),
-            action: appleToolingReady ? nil : (consumerSelection.zeroXcodeMode
-                ? "Native Personal Team provisioning is not qualified on this build."
-                : "Install Xcode only when explicitly using the development fallback."),
-            requiredFor: "mac"
+            action: appleToolingReady ? nil : "IOSSim could not prepare Apple authorization on this Mac.",
+            requiredFor: "authorization"
         ))
         do {
             let manifest = try context.loadManifest()
@@ -486,7 +487,7 @@ struct ProvisionerTool {
             let failure = ConsumerProvisioningFailure(
                 code: .deviceSelectionRequired,
                 stage: .waitingForDeviceSelection,
-                userMessage: "Choose an iPhone and Personal Team before installing.",
+                userMessage: "IOSSim needs an iPhone and Apple authorization before installing.",
                 remediation: "Return to setup and make both selections.",
                 developerDetail: "consumer-provision requires --operation, --device, and --team."
             )

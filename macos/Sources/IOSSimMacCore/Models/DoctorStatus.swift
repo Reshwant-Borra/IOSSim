@@ -401,7 +401,7 @@ public enum StatusInterpreter {
             return "Open LocalDevVPN on your iPhone and approve Apple's VPN configuration prompt."
         }
         if check.name.localizedCaseInsensitiveContains("PAIRING") {
-            return "Open IOSSim on your iPhone and complete the device pairing step."
+            return "Keep your iPhone unlocked while IOSSim prepares the secure connection."
         }
         return check.action ?? "Complete this step, then check again."
     }

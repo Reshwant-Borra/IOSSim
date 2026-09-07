@@ -190,8 +190,8 @@ public actor ConsumerArtifactProvisioner {
             throw ConsumerProvisioningFailure(
                 code: teams.isEmpty ? .personalTeamUnavailable : .accountTeamMismatch,
                 stage: .validatingTeam,
-                userMessage: "IOSSim could not use the selected Personal Team.",
-                remediation: "Open Xcode Settings > Accounts, sign in, and make sure an Apple Development certificate is available.",
+                userMessage: "IOSSim couldn't prepare Apple authorization.",
+                remediation: "Continue Apple authorization in IOSSim, then try again.",
                 developerDetail: "No profile-backed signing identity matched DEVELOPMENT_TEAM \(RuntimeProvisioning.shortIdentifier(identifier))."
             )
         }
@@ -200,8 +200,8 @@ public actor ConsumerArtifactProvisioner {
             throw ConsumerProvisioningFailure(
                 code: .accountTeamMismatch,
                 stage: .validatingTeam,
-                userMessage: "The selected Apple signing account does not match its Personal Team.",
-                remediation: "Open Xcode Settings > Accounts and refresh the account’s signing certificates.",
+                userMessage: "IOSSim couldn't validate Apple authorization.",
+                remediation: "Refresh Apple authorization in IOSSim, then try again.",
                 developerDetail: "Certificate subject OU and provisioning profile TeamIdentifier disagree."
             )
         }
@@ -401,8 +401,8 @@ public actor ConsumerArtifactProvisioner {
             throw ConsumerProvisioningFailure(
                 code: .profileUnavailable,
                 stage: .preparingIdentities,
-                userMessage: "Xcode could not prepare Personal Team signing.",
-                remediation: "Open Xcode Settings > Accounts, select your account, and try again.",
+                userMessage: "IOSSim couldn't prepare Apple authorization.",
+                remediation: "Continue Apple authorization in IOSSim, then try again.",
                 developerDetail: "Generated signing shell did not contain both embedded provisioning profiles."
             )
         }
@@ -487,8 +487,8 @@ public actor ConsumerArtifactProvisioner {
             throw ConsumerProvisioningFailure(
                 code: code,
                 stage: .preparingIdentities,
-                userMessage: "Xcode could not prepare Personal Team signing.",
-                remediation: "Open Xcode Settings > Accounts, verify the selected account, then try again.",
+                userMessage: "IOSSim couldn't prepare Apple authorization.",
+                remediation: "Refresh Apple authorization in IOSSim, then try again.",
                 developerDetail: result.combinedOutput
             )
         }
@@ -815,7 +815,7 @@ public actor ConsumerArtifactProvisioner {
                 code: .accountTeamMismatch,
                 stage: .validatingTeam,
                 userMessage: "Xcode prepared signing for a different Apple team.",
-                remediation: "Open Xcode Settings > Accounts and verify the selected Personal Team.",
+                remediation: "Refresh Apple authorization in IOSSim, then try again.",
                 developerDetail: "Profile TeamIdentifier/application-identifier mismatch for \(artifact)."
             )
         }
@@ -855,7 +855,7 @@ public actor ConsumerArtifactProvisioner {
             throw ConsumerProvisioningFailure(
                 code: .profileUnavailable,
                 stage: .preparingIdentities,
-                userMessage: "The Personal Team profile is incomplete.",
+                userMessage: "IOSSim couldn't finish iPhone authorization.",
                 remediation: "Refresh the selected account in Xcode and try again.",
                 developerDetail: "Profile has no Entitlements dictionary."
             )
@@ -880,7 +880,7 @@ public actor ConsumerArtifactProvisioner {
             throw ConsumerProvisioningFailure(
                 code: .profileUnavailable,
                 stage: .preparingIdentities,
-                userMessage: "IOSSim could not inspect the Personal Team profile.",
+                userMessage: "IOSSim couldn't validate iPhone authorization.",
                 remediation: "Refresh the selected account in Xcode and try again.",
                 developerDetail: "security cms failed for generated profile."
             )

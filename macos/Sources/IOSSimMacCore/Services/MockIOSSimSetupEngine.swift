@@ -126,7 +126,7 @@ public actor MockIOSSimSetupEngine: IOSSimSetupEngine {
             case .localDevVPN:
                 checks.append(.init(state: .action, component: "Runtime", name: "LocalDevVPN", detail: "external iPhone app required", action: "Install/launch LocalDevVPN on the iPhone.", requiredFor: "device"))
             case .pairing:
-                checks.append(.init(state: .action, component: "Runtime", name: "PAIRING MATERIAL", detail: "configured state only", action: "Import RPPairing inside IOSSim.", requiredFor: "device"))
+                checks.append(.init(state: .action, component: "Runtime", name: "PAIRING MATERIAL", detail: "configured state only", action: "Keep the iPhone unlocked while IOSSim prepares the secure connection.", requiredFor: "device"))
             }
         }
         let deviceSummary = DeviceSummary(ready: device != nil && runtimeActions.isEmpty, connected: device != nil, devices: device.map { [$0] } ?? [])
