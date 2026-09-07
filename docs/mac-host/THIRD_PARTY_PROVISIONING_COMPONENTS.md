@@ -11,6 +11,9 @@ Audit date: 2026-09-07. Distribution status: `LOCAL_TEST_ONLY`.
 | `idevicepair` from libimobiledevice | none | No current purpose | LGPL-2.1-or-later in the current source file | Not included or invoked | LGPL relinking/source obligations would apply if distributed in a combined work | Not required; do not bundle without a separate legal review |
 | `usbmuxd` / `libusbmuxd` | none | The target design talks to Apple's existing macOS usbmux service through Rust protocol code | Upstream daemon is GPL-2.0; client library is LGPL-2.1; neither is shipped here | No daemon/library included | None for Apple's system service use | External Homebrew usbmuxd is not a customer prerequisite |
 | Apple usbmux service | macOS system component | USB device multiplexing endpoint | Apple system software | Used in place; not redistributed | Not applicable | Acceptable ordinary macOS dependency |
+| `rursache/Signr` | `8ea0a52a4fa` inspected 2026-09-07 | Research reference for local GrandSlam/SRP, 2FA, Developer Services, signing, and install | Repository README says MIT; vendored `plume_core` declares MPL-2.0, so the inspected tree is not uniformly MIT | Not copied, linked, bundled, or invoked | None for protocol research; redistribution would require a file-by-file/dependency review | Research-only. Do not import the tree under a blanket MIT assumption |
+| `SideStore/AltSign` | `35b68f1` inspected 2026-09-07 | Research reference for Apple auth, anisette, provisioning, and refresh | No root license was present in the inspected fork; dependencies carry separate licenses | Not copied, linked, bundled, or invoked | Unknown without provenance and dependency review | Research-only. Not approved for redistribution or source reuse |
+| `Dadoum/Provision` | `7717ce1` inspected 2026-09-07 | Research reference for AuthKit-style authentication and ADI persistence | LGPL-2.0 | Not copied, linked, bundled, or invoked | LGPL obligations would require specific distribution analysis if code were reused | Research-only. Not approved for linkage into the distributed IOSSim binary |
 
 The exact checked-in idevice license is `ios/Vendor/idevice/LICENSE.txt`. Package
 assembly now copies it to
@@ -24,6 +27,18 @@ License sources inspected:
 - <https://github.com/libimobiledevice/libimobiledevice/blob/master/tools/idevicepair.c>
 - <https://github.com/libimobiledevice/libusbmuxd>
 - <https://github.com/libimobiledevice/usbmuxd>
+- <https://github.com/rursache/Signr>
+- <https://github.com/SideStore/AltSign>
+- <https://github.com/Dadoum/Provision>
+
+## Apple Provisioning Research Boundary
+
+The three Apple-account projects above were used only to compare independently
+observable protocol shape, security behavior, and current breakages. No source,
+binary, headers, test fixture, or user credential material was copied into
+IOSSim. The experimental IOSSim module is an original interface and validation
+boundary; its live transport is intentionally unavailable. Any future source
+reuse requires a fresh file-level license and provenance review before coding.
 
 ## Rust Dependency Audit
 

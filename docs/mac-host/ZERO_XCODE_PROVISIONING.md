@@ -1,175 +1,243 @@
-# Zero-Xcode Consumer Provisioning
+# Consumer Apple Authorization and Provisioning
 
-Status: `ZERO_XCODE_PERSONAL_TEAM_BLOCKED` (engineering investigation, 2026-09-07).
+Status: `PRIVATE_PERSONAL_TEAM_FRAGILE` (isolated engineering POC, 2026-09-07).
 
-This document records the zero-Xcode architecture, dependency audit, completed
-safe work, and the feasibility stop condition. It does not claim physical
-qualification. The investigation host has `/Applications/Xcode.app` installed
-and no connected qualification iPhone, so it cannot provide the required
-negative or physical evidence.
+This report separates Apple's supported provisioning API, the strongest
+headless Xcode path, and the experimental free Personal Team protocol. It does
+not claim physical qualification. The investigation Mac has Xcode installed and
+no connected qualification iPhone.
 
 ## Architecture
 
-The product-level boundary is:
+The single product flow is:
 
-`SwiftUI setup -> IOSSimMacCore -> Consumer provisioning backend selection -> helper/device backend -> iPhone`
+`SwiftUI setup -> IOSSimMacCore -> Consumer backend selector -> provisioning/device backend -> selected iPhone`
 
-Backend preferences are `AUTO`, `ZERO_XCODE`, and `XCODE_FALLBACK`, selected for
-development with `IOSSIM_PROVISIONING_BACKEND`. `AUTO` prefers a fully qualified
-native backend. Until every native capability gate is ready, it identifies the
-working Xcode path explicitly as `XCODE_FALLBACK`. `ZERO_XCODE` fails closed and
-also forces the device layer away from `devicectl`; it never silently changes to
-Xcode.
+Product preferences are `AUTO`, `XCODE_INVISIBLE`, and
+`NATIVE_PERSONAL_TEAM`. Compatibility values `ZERO_XCODE` and
+`XCODE_FALLBACK` remain development/recovery overrides. `AUTO` may choose only
+a physically qualified native backend or a headless Xcode backend that can
+bootstrap Apple authorization inside IOSSim. It no longer selects the manually
+configured Xcode fallback merely because Xcode is installed.
 
-`XcodePresenceDetector` checks only the known `/Applications/Xcode.app` and
-`/Applications/Xcode-beta.app` paths. It does not run `xcode-select`, `xcrun`, or
-search other volumes. Doctor/support diagnostics record `provisioningBackend`,
-`xcodePresent`, and `zeroXcodeMode`. Xcode version probing occurs only for the
-fallback backend.
+`ApplePersonalTeamExperimental.swift` is the replaceable private-protocol
+boundary. It contains a versioned endpoint adapter, wipeable password and 2FA
+input, a this-device-only Keychain session store, authoritative team/profile
+validation, the complete provisioning coordinator contract, strict install
+inventory checks, and a narrow repair planner. Its live transport remains
+unavailable until the cryptographic/authentication implementation is physically
+tested. Mocks exercise the contract but do not qualify it.
 
-## Xcode Dependency Audit
+## Supported Apple Path
 
-| Current dependency | Current operation | Zero-Xcode classification | Replacement or disposition |
-| --- | --- | --- | --- |
-| Full Xcode application | Supplies iPhone SDK/platform support, Xcode account state, automatic signing, and CoreDevice tools | REMOVE from consumer runtime | Prebuild profile-free iPhone artifacts; native provisioning and bundled device bridge remain gated |
-| `xcodebuild` | Builds an ephemeral signing shell with `-allowProvisioningUpdates`, causing Xcode to create/find IDs, register the device, and issue main/runner profiles | TEMPORARY FALLBACK | Paid team: documented App Store Connect provisioning API plus direct signing. Free Personal Team: blocked as described below |
-| `xcrun` | Locates/runs `devicectl`; also wraps build-time SDK/notary tools | REMOVE from zero-Xcode runtime | Bundled pinned idevice bridge for device operations. Build/notarization use is not a consumer runtime dependency |
-| `devicectl list devices` | Discovery, selected-device resolution, trust/developer/connection state | REPLACE | Pinned idevice `usbmuxd`, `LockdownClient`, and exact-UDID provider |
-| `devicectl device info apps` | Installed inventory and duplicate detection | REPLACE | idevice `InstallationProxyClient.browse/get_apps` |
-| `devicectl device info lockState` | Locked-state diagnosis | REPLACE | lockdown values/session result, with consumer-safe error mapping |
-| `devicectl device install app` | Main and runner install/update | REPLACE | idevice AFC staging plus `utils::installation` / `InstallationProxyClient` |
-| `devicectl device uninstall app` | Explicit IOSSim-only migration cleanup | REPLACE | `InstallationProxyClient.uninstall`, after the existing ownership allow-list |
-| `devicectl device process launch` | First launch and runner-mapping verification | REPLACE | idevice CoreDevice/DVT process-control service; physical validation required |
-| Xcode Accounts | Apple Account login, 2FA session, Personal Team discovery | REMOVE, BLOCKED | No documented non-Xcode free-team API. Do not import or scrape Xcode state |
-| Xcode-created Apple Development identity | Certificate/private-key creation and reuse | REMOVE, BLOCKED for free team | Paid team uses local Keychain key/CSR plus documented API. Free-team issuance is private |
-| Xcode-generated App IDs | Main and UI-test deterministic ID registration | REMOVE, BLOCKED for free team | Paid team uses documented bundle-ID API; free-team endpoint is private |
-| Xcode device registration | Authorizes selected iPhone | REMOVE, BLOCKED for free team | Paid team uses documented device API; free-team endpoint is private |
-| Xcode provisioning profiles | Main/runner profile issuance and renewal | REMOVE, BLOCKED for free team | Paid team uses documented profile API; free-team profile service is private |
-| `/usr/bin/security` | Enumerates certificates/identities and accesses Keychain | NOT ACTUALLY REQUIRED FROM XCODE | Ordinary macOS tool; a native implementation should prefer Security.framework |
-| `/usr/bin/codesign` | Inside-out artifact signing and verification | NOT ACTUALLY REQUIRED FROM XCODE | Ordinary macOS signing facility; retain direct use or move to Security.framework where appropriate |
-| Xcode project/source at package build time | Produces canonical profile-free iPhone payloads | NOT ACTUALLY REQUIRED AT CONSUMER RUNTIME | Developer/release build concern; source/project is not packaged |
+For paid Apple Developer Program teams, the App Store Connect API supports
+bundle IDs, certificates, registered devices, and provisioning profiles. It is
+authenticated with API-key-signed JWTs. The account holder or administrator
+must first request API access and generate/download a team key in App Store
+Connect; individual keys cannot use provisioning endpoints. This supports
+managed paid-team automation, not the normal free-account login experience.
 
-Repository development commands still use Xcode to compile the iPhone artifacts.
-That is separate from the customer runtime requirement and must not be confused
-with a zero-Xcode installed app.
-
-## Apple Provisioning Classification
-
-Apple's current account documentation states that a free account's Personal
-Team App IDs, devices, certificates, and profiles are managed directly in Xcode,
-with 10 App IDs, 3 devices, 3 apps per device, and seven-day expirations. Apple's
-documented App Store Connect API can manage bundle IDs, certificates, devices,
-and profiles for an Apple Developer Program team.
-
-| Operation | Paid Developer Program team | Free Personal Team |
-| --- | --- | --- |
-| Authenticate | DOCUMENTED_SUPPORTED using App Store Connect API keys | REQUIRES_XCODE in Apple documentation; UNDOCUMENTED_BUT_OBSERVED elsewhere |
-| Discover team | DOCUMENTED_SUPPORTED | REQUIRES_XCODE / UNKNOWN outside Xcode |
-| Create/reuse certificate | DOCUMENTED_SUPPORTED | REQUIRES_XCODE / UNDOCUMENTED_BUT_OBSERVED |
-| Register device | DOCUMENTED_SUPPORTED | REQUIRES_XCODE / UNDOCUMENTED_BUT_OBSERVED |
-| Register bundle ID | DOCUMENTED_SUPPORTED | REQUIRES_XCODE / UNDOCUMENTED_BUT_OBSERVED |
-| Issue/download profile | DOCUMENTED_SUPPORTED | REQUIRES_XCODE / UNDOCUMENTED_BUT_OBSERVED |
-| Renew profile | DOCUMENTED_SUPPORTED | REQUIRES_XCODE / UNDOCUMENTED_BUT_OBSERVED |
+Sign in with Apple (`AuthenticationServices`) authenticates a person to an app's
+service. It does not establish Xcode developer-account state or grant
+Certificates, Identifiers & Profiles authority.
 
 Primary Apple sources:
 
 - <https://developer.apple.com/help/account/basics/about-your-developer-account>
 - <https://developer.apple.com/app-store-connect/api/>
+- <https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api>
 - <https://developer.apple.com/documentation/appstoreconnectapi/profiles>
-- <https://developer.apple.com/help/account/certificates/create-certificates/certificates-overview>
 
-### Undocumented observed protocol family
+## Headless Xcode Path
 
-Open-source AltSign/SideStore code demonstrates local Apple Account SRP/GrandSlam
-authentication with anisette/device-attestation headers, followed by private
-`developerservices2.apple.com/services/QH65B2/ios/*.action` requests. Observed
-operations cover team lookup, certificates, devices, App IDs, and profiles.
-This is evidence of feasibility, not an Apple-supported contract.
+Hard conclusion: `PATH_A_BLOCKED_AT_INITIAL_ACCOUNT_AUTH` for a brand-new free
+Personal Team consumer.
+
+Xcode 26.6's local `xcodebuild -help` says:
+
+- `-allowProvisioningUpdates` creates/updates automatically managed profiles,
+  App IDs, and certificates and downloads missing manual profiles;
+- `-allowProvisioningDeviceRegistration`, used with the first flag, registers
+  the destination device;
+- authentication requires either a developer account already added in Xcode
+  Accounts or an App Store Connect key supplied with
+  `-authenticationKeyPath`, `-authenticationKeyID`, and
+  `-authenticationKeyIssuerID`.
+
+No supported `xcodebuild` option, public Xcode API, macOS authorization
+framework, or delegated browser flow lets IOSSim submit a free Apple Account
+login/2FA and create that initial Xcode account state. Existing automatic
+signing is therefore headless only after a user has configured Xcode, which
+fails the product criterion. GUI automation was not implemented.
+
+Paid teams can use the API-key variant headlessly after an administrator creates
+the key, but that remaining setup is inappropriate for the primary consumer.
+
+## Experimental Private Personal Team Path
+
+Current maintained implementations show this private flow:
+
+`GrandSlam SRP init/complete -> trusted-device or SMS 2FA -> Xcode-scoped GS token -> Developer Services session -> teams -> certificate -> device -> App IDs -> profiles`
+
+The observed API family is
+`developerservices2.apple.com/services/QH65B2/.../*.action`. The reusable
+session includes account-bound DSID and an Xcode-scoped GS token. Its lifetime
+is undocumented and should be tested with an innocuous team-list request.
+Passwords and 2FA codes are never reusable session state.
+
+### Current implementation study
+
+| Project | Latest inspected commit | License finding | Auth/provisioning design | Requirements and known fragility |
+| --- | --- | --- | --- | --- |
+| Signr | `8ea0a52`, 2026-07-21 | README says MIT; vendored `plume_core` declares MPL-2.0, so the tree is not uniformly MIT | Local SRP; trusted-device/SMS 2FA; GS token; teams, CSR/cert, devices, IDs, profiles, signing and InstallationProxy | Uses private macOS AOSKit anisette and hardcoded emulated Xcode client info; Xcode/Rust are build requirements |
+| SideStore/AltSign | `35b68f1`, 2026-08-26 | No root license in the inspected fork; dependencies have separate licenses | SRP/2FA/anisette, stored application token, full refresh flow | Frequently uses anisette infrastructure; issue #1446 reports current Xcode-token HTTP 503 failures |
+| Dadoum/Provision | `7717ce1`, 2025-06-23 | LGPL-2.0 | AuthKit-like local API and persisted ADI/device identity | Requires extracted Apple Android libraries; warns against primary accounts; former sideload code was removed |
+| jkcoxson/idevice | IOSSim pin `c442bd2` | MIT | No Apple Account auth; device trust, RPPairing, AFC, InstallationProxy | Preferred IOSSim device transport; no external credential server |
+
+No source from those projects was copied, linked, or distributed. IOSSim's
+adapter records only the independently observed protocol shape and validation
+rules; it currently sends no Apple request.
+
+Observed values are classified as:
+
+- stable in concept: SRP challenge/response, explicit 2FA, account DSID, Xcode
+  GS token audience, and provisioning resource operations;
+- dynamic: SRP challenges, salt/iterations, anisette OTP, sessions,
+  certificates, profiles, and response content;
+- version-bound: Xcode/AuthKit client information and user-agent behavior;
+- machine-bound: anisette device/local-user/machine identifiers and ADI;
+- account-bound: DSID, GS token, teams, certificates, devices, IDs and profiles.
+
+A SideStore report dated 2026-08-31 shows GrandSlam succeeding while the
+`com.apple.gs.xcode.auth` application-token request returned HTTP 503 across
+multiple anisette sources. This is direct current evidence that the private
+path is too fragile to claim an IOSSim authorization POC without physical IOSSim
+evidence.
 
 Observed sources:
 
-- <https://github.com/rileytestut/AltSign/blob/master/AltSign/Apple%20API/ALTAppleAPI%2BAuthentication.m>
-- <https://github.com/SideStore/apple-private-apis>
+- <https://github.com/rursache/Signr>
+- <https://github.com/SideStore/AltSign>
+- <https://github.com/SideStore/SideStore/issues/1446>
 - <https://github.com/altstoreio/AltStore/issues/1772>
+- <https://docs.sidestore.io/docs/advanced/anisette>
+- <https://github.com/Dadoum/Provision>
 
-The flow can require password, trusted-device or SMS 2FA, an application token,
-and anisette state. Sessions and protocol behavior are not documented. A recent
-2026 report records a 2FA loop caused by Apple rejecting a stale emulated Xcode
-client identity. SideStore also warns that shared anisette infrastructure can
-trigger account security controls. Certificate/session limits and renewal
-semantics are inferred from behavior rather than a stable contract.
+## Dependency Audit
 
-IOSSim therefore does not implement or request Apple passwords/2FA through this
-protocol in production. It does not send credentials to an IOSSim server, use a
-third-party anisette service, copy Xcode cookies, or weaken 2FA. Any future POC
-must be isolated, local-only, Keychain-backed, independently reviewed, and run
-with a dedicated test Apple Account before product integration.
+| Dependency | Operation | Classification | Replacement/disposition |
+| --- | --- | --- | --- |
+| Full Xcode | SDK/platform, stored account, signing, CoreDevice | PATH A hidden dependency | Acceptable only if initial account auth becomes headless; currently blocked |
+| `xcodebuild` | IDs, certs, device, profiles | XCODE_INVISIBLE candidate / DEVELOPMENT FALLBACK | Fully automates after supported account or API-key auth exists |
+| `xcrun`/`devicectl` | device operations | Allowed for XCODE_INVISIBLE; remove for native | Pinned idevice bridge |
+| Xcode Accounts | initial Apple login and 2FA | PATH A BLOCKER | No supported headless bootstrap; do not scrape/import private Xcode state |
+| Apple development identity | certificate/key | Native replacement | Keychain key, CSR, list/reuse IOSSim identity; live issuance pending |
+| Xcode App IDs/device/profile | provisioning resources | Native replacement | Private Developer Services adapter; live transport pending |
+| `/usr/bin/security` | Keychain/cert inspection | Ordinary macOS | Prefer Security.framework for secrets |
+| `/usr/bin/codesign` | inside-out signing | Ordinary macOS | Existing signing order retained; no `--deep` shortcut |
+| repo/Xcode project | build canonical artifacts | Release engineering only | Not packaged or needed at customer runtime |
 
-## Gate Status
+Native device-operation mapping:
 
-| Gate | Status | Evidence |
-| --- | --- | --- |
-| A: discovery/lockdown pairing | MAPPED, NOT PHYSICALLY PROVEN | Pinned idevice exposes usbmuxd discovery, exact-device lookup, lockdown pair and session verify |
-| B: free Apple auth/Personal Team | BLOCKED | No documented supported API; private alternative fails reliability/security acceptance |
-| C-F: identity/device/IDs/profiles | BLOCKED BY B | Paid-team API route is documented; free-team route is private |
-| G-H: inside-out signing | EXISTING XCODE-FALLBACK PROOF ONLY | Direct codesign logic exists, but native-issued profiles/identity are unavailable |
-| I-J: native install/inventory | MAPPED, NOT BUNDLED OR PHYSICALLY PROVEN | idevice InstallationProxy/AFC APIs exist |
-| K-M: runtime/Gate 3/Spoof/Rich Drive | NOT RUN FOR ZERO-XCODE | Frozen known-good runtime remains unchanged |
+| Operation | Pinned idevice capability |
+| --- | --- |
+| enumerate/select | usbmuxd exact-device enumeration |
+| trust/pair/state | lockdown pair/validate/session |
+| inventory | InstallationProxy browse/get-apps |
+| staging | AFC/PublicStaging |
+| install/update | InstallationProxy install |
+| IOSSim-only uninstall | InstallationProxy uninstall behind existing ownership allow-list |
+| container handoff | HouseArrest/AFC when required |
+| RPPairing | remote pairing plus serialized long-term state |
 
-The correct verdict is `ZERO_XCODE_PERSONAL_TEAM_BLOCKED`, not PASS. Mocks,
-source inspection, or a paid-team proof cannot satisfy the requested free-team
-physical acceptance gate.
+## Consumer UI
+
+The current production setup page no longer instructs consumers to open Xcode,
+choose a Personal Team, or manage certificates. It presents Apple Account and
+password fields, an Apple verification-code state, and a concise privacy
+disclosure. Password and verification bindings are cleared immediately after
+conversion to wipeable buffers. One authoritative Personal Team is selected
+automatically; ambiguous teams can be selected without certificate/profile
+terminology.
+
+Because no live backend is qualified, authorization currently fails safely with
+"IOSSim couldn't prepare Apple authorization". It does not pretend setup
+succeeded or route AUTO users to Xcode. The manually configured path remains
+only through the development `XCODE_FALLBACK` override.
+
+## Security and Session Model
+
+- Passwords and 2FA codes are memory-only, non-Codable inputs and are wiped
+  after each operation as far as Swift's memory model permits.
+- Passwords, 2FA, headers, cookies, tokens, private keys, raw auth responses,
+  pairing records, TLS secrets, and raw device IDs are excluded from logs and
+  support bundles.
+- Authorization/cookie/Apple GS/anisette/session headers and labeled 2FA codes
+  are explicitly redacted with no debug bypass.
+- Future opaque session state uses a this-device-only Keychain item. Support
+  export reads only safe metadata: method category, valid boolean, client
+  adapter version, expiry, backend and last stage.
+- No IOSSim credential server, third-party anisette server, Xcode-state theft,
+  UI automation, or security bypass exists.
+- Responses must use expected HTTPS hosts, status, content types and size, and
+  pass team/profile/resource validation.
+- Creation operations are represented as read-before-create backend calls;
+  rate limits and non-idempotent operations are not blindly retried.
+- No executable code is downloaded at runtime.
+
+## Provisioning, Refresh, and Repair Contract
+
+The mocked coordinator covers:
+
+1. session resume or Apple Account authorization;
+2. legitimate trusted-device/SMS verification;
+3. authoritative Personal Team preference;
+4. Keychain identity reuse or local CSR/certificate creation;
+5. selected-device registration;
+6. existing deterministic ID registration;
+7. main/runner profile retrieval and validation;
+8. inside-out signing;
+9. installation and exact inventory verification;
+10. selected-device pairing verification.
+
+Refresh reuses session, signing identity, team, deterministic IDs and pairing.
+The existing 48-hour threshold remains. Session expiration preserves the key
+and installed state and requests Apple authorization again.
+
+Repair selects only the first broken prerequisite: reauthorize, refresh
+profiles, reinstall main, reinstall runner, or repair pairing. It does not
+destroy unrelated settings or identities.
 
 ## Pairing Lifecycle
 
-The pinned idevice source can perform lockdown pairing, validate the saved
-record, create the iOS 17.4+ CoreDevice software tunnel, perform RPPairing, and
-serialize the updated record. This makes a user-installed `idevicepair` binary
-unnecessary in the target design.
+The pinned idevice source provides lockdown pairing, remote pairing, AFC and
+InstallationProxy operations. A user-installed `idevicepair` executable is not
+part of the architecture.
 
-The iPhone FFI now exposes `rp_pairing_file_to_bytes`. After a successful tunnel
-operation, IOSSim serializes the possibly updated long-term RPPairing handle,
-validates it, and updates the existing Keychain item. An invalid update cannot
-replace the last usable record. The serialization contains the long-term host
-identity and `alt_irk`; it does not persist ephemeral tunnel TLS secrets.
+The iPhone FFI serializes RPPairing state updated during tunnel creation,
+validates it, and atomically updates its Keychain record. Invalid updates cannot
+replace the last usable record, and ephemeral tunnel TLS secrets are not
+persisted. Mac-side generation, secure handoff and selected-device physical
+verification remain pending.
 
-Mac-side generation, selected-device binding, AFC handoff, public-key
-fingerprint metadata, and device-recognition proof remain unimplemented because
-the physical POC stopped at Gate B. Structural plist validity alone is not
-treated as proof.
+## Gate Status
 
-## Signing, IDs, Profiles, and Refresh
-
-The source IDs and deterministic Personal Team derivation remain frozen. A
-future native backend must obtain the authoritative Team ID from Apple's
-response, reuse an IOSSim-owned Keychain private key/certificate, validate the
-selected device and certificate inside each decoded profile, sign nested code
-inside-out, and preserve the existing source-to-installed main/UI-test/runner
-mapping. It must never infer the Team ID from a certificate display name.
-
-The existing 48-hour refresh policy and same-team derived IDs remain suitable.
-Native refresh cannot be enabled until the same supported authentication and
-profile issuance gates are solved. It must not create a new certificate each
-week or revoke unrelated certificates.
-
-## Security Model
-
-- Apple passwords, 2FA codes, session cookies/tokens, private signing keys, raw
-  pairing records, PSKs, and raw device IDs are excluded from logs/support data.
-- Explicit `ZERO_XCODE` never executes Xcode tools and never falls back.
-- Pairing data and future auth/session state belong in Keychain.
-- Device selection is explicit when multiple devices are present; no operation
-  may choose a different device.
-- No executable is downloaded at runtime.
-- The local RC remains `LOCAL_TEST_ONLY`.
+| Gate | Status |
+| --- | --- |
+| Path A initial auth | `PATH_A_BLOCKED_AT_INITIAL_ACCOUNT_AUTH` |
+| Path A remaining provisioning | Existing headless-capable machinery after auth; not a brand-new-user solution |
+| Path B Apple auth/2FA | Isolated interface, validation and mocks; live SRP/anisette transport absent |
+| Path B team/cert/device/IDs/profiles | Complete mocked coordinator; live requests absent |
+| Native signing/install/pair | Contracts/mappings only; no Mac host FFI implementation or physical proof |
+| Gate 3/Spoof/Rich XCUILocation/Rich Drive | Not run for either new backend |
 
 ## Physical Evidence and Limitations
 
-No zero-Xcode physical evidence exists in this work. The investigation Mac
-reported `xcodePresent=true`; `idevicepair` was absent, Homebrew happened to be
-installed but was not used, and the native scaffold saw no connected device.
-Gate 3, Spoof, Rich XCUILocation, Rich Drive, reboot persistence, same-profile
-refresh, and the negative command telemetry therefore remain pending.
+No qualifying physical evidence was produced. Xcode is installed on this Mac,
+Homebrew happens to be installed, external `idevicepair` is absent, and no
+physical iPhone is connected. The proven manually configured Xcode runtime
+evidence remains baseline evidence only; it was not reclassified as headless or
+native consumer proof.
 
-The proven Xcode-backed physical runtime evidence remains documented in
-`PERSONAL_TEAM_PROVISIONING_POC.md` and was not reclassified as zero-Xcode proof.
+Current verdict: `PRIVATE_PERSONAL_TEAM_FRAGILE`. The local package remains
+`LOCAL_TEST_ONLY`.
