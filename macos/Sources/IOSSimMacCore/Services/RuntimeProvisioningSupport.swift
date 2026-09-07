@@ -44,6 +44,20 @@ public enum RuntimeProvisioning {
         return env
     }
 
+    public static func consumerBackendSelection(
+        resourcesURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> ConsumerProvisioningBackendSelection {
+        ConsumerProvisioningBackendSelector.select(
+            preference: ConsumerProvisioningBackendPreference.selected(environment: environment),
+            capabilities: ZeroXcodeCapabilityPolicy.currentCapabilities(
+                resourcesURL: resourcesURL,
+                fileManager: fileManager
+            )
+        )
+    }
+
     public static func xcrunURL() -> URL? {
         let url = URL(fileURLWithPath: "/usr/bin/xcrun")
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
@@ -72,9 +86,17 @@ public enum ProvisioningBackendKind: String, Sendable {
     case devicectl
     case idevice
 
-    public static func selected() -> ProvisioningBackendKind {
-        let raw = ProcessInfo.processInfo.environment["IOSSIM_DEVICE_BACKEND"]?.lowercased()
+    public static func selected(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> ProvisioningBackendKind {
+        let raw = environment["IOSSIM_DEVICE_BACKEND"]?.lowercased()
         if raw == "idevice" {
+            return .idevice
+        }
+        if raw == "devicectl" {
+            return .devicectl
+        }
+        if ConsumerProvisioningBackendPreference.selected(environment: environment) == .zeroXcode {
             return .idevice
         }
         return .devicectl

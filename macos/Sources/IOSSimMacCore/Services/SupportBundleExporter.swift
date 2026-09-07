@@ -12,7 +12,10 @@ private struct SupportEnvironment: Codable {
     let releaseVariant: String?
     let sourceCommit: String?
     let macOSVersion: String
-    let xcodeVersion: String
+    let provisioningBackend: String
+    let xcodePresent: Bool
+    let zeroXcodeMode: Bool
+    let xcodeVersion: String?
     let deviceName: String?
     let deviceModel: String?
     let deviceOSVersion: String?
@@ -44,6 +47,18 @@ public enum SupportBundleExporter {
         let manifest = try? await stateStore.loadManifest()
         let events = await stateStore.loadEvents(limit: 500)
         let os = ProcessInfo.processInfo.operatingSystemVersion
+        let preference = ConsumerProvisioningBackendPreference.selected()
+        let xcodePresent = XcodePresenceDetector.isPresent(fileManager: fileManager)
+        let selection = ConsumerProvisioningBackendSelector.select(
+            preference: preference,
+            capabilities: ConsumerProvisioningCapabilities(
+                bundledDeviceBridgeReady: false,
+                nativeAppleAuthenticationReady: false,
+                nativePersonalTeamProvisioningReady: false,
+                directSigningReady: false,
+                xcodePresent: xcodePresent
+            )
+        )
         let document = SanitizedSupportDocument(
             schemaVersion: 1,
             generatedAt: Date(),
@@ -54,7 +69,12 @@ public enum SupportBundleExporter {
                 releaseVariant: release?.variant,
                 sourceCommit: release?.sourceCommit,
                 macOSVersion: "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
-                xcodeVersion: await xcodeVersion(runner: runner),
+                provisioningBackend: selection.backend?.rawValue ?? "NONE",
+                xcodePresent: xcodePresent,
+                zeroXcodeMode: selection.zeroXcodeMode,
+                xcodeVersion: selection.backend == .xcodeFallback
+                    ? await xcodeVersion(runner: runner)
+                    : nil,
                 deviceName: manifest?.deviceName,
                 deviceModel: manifest?.deviceModel,
                 deviceOSVersion: manifest?.deviceOSVersion

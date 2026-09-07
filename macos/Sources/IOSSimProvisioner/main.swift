@@ -242,32 +242,54 @@ struct ProvisionerTool {
             action: macSupported ? nil : "Upgrade macOS.",
             requiredFor: "mac"
         ))
-        let backendKind = ProvisioningBackendKind.selected()
-        let xcodeResult = try? await context.runner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
-            arguments: ["-version"],
-            workingDirectory: context.resourcesURL,
-            environment: RuntimeProvisioning.deterministicEnvironment()
-        )
-        let devicectlResult = try? await context.runner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
-            arguments: ["--find", "devicectl"],
-            workingDirectory: context.resourcesURL,
-            environment: RuntimeProvisioning.deterministicEnvironment()
-        )
+        let consumerSelection = RuntimeProvisioning.consumerBackendSelection(resourcesURL: context.resourcesURL)
+        let xcodePresent = consumerSelection.xcodePresent
+        var xcodeResult: ProcessResult?
+        var devicectlResult: ProcessResult?
+        if consumerSelection.backend == .xcodeFallback {
+            xcodeResult = try? await context.runner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+                arguments: ["-version"],
+                workingDirectory: context.resourcesURL,
+                environment: RuntimeProvisioning.deterministicEnvironment()
+            )
+            devicectlResult = try? await context.runner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+                arguments: ["--find", "devicectl"],
+                workingDirectory: context.resourcesURL,
+                environment: RuntimeProvisioning.deterministicEnvironment()
+            )
+        }
         let fullXcodeAvailable = xcodeResult?.exitCode == 0
         let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil
             || RuntimeProvisioning.devicectlForbidden()
             || devicectlResult?.exitCode != 0
-        let appleToolingReady = backendKind != .devicectl || (fullXcodeAvailable && !devicectlUnavailable)
+        let appleToolingReady = consumerSelection.ready
+            && (consumerSelection.backend != .xcodeFallback || (fullXcodeAvailable && !devicectlUnavailable))
+        checks.append(DoctorCheck(
+            state: .pass,
+            component: "Provisioning",
+            name: "backend selection",
+            detail: "preference=\(consumerSelection.preference.rawValue) backend=\(consumerSelection.backend?.rawValue ?? "NONE") zeroXcodeMode=\(consumerSelection.zeroXcodeMode)",
+            requiredFor: "mac"
+        ))
+        checks.append(DoctorCheck(
+            state: .pass,
+            component: "Provisioning",
+            name: "xcodePresent",
+            detail: xcodePresent ? "true" : "false",
+            requiredFor: "diagnostics"
+        ))
         checks.append(DoctorCheck(
             state: appleToolingReady ? .pass : .action,
-            component: "Apple Tooling",
-            name: backendKind == .devicectl ? "Xcode and devicectl" : "idevice backend",
-            detail: backendKind == .devicectl
-                ? (appleToolingReady ? (xcodeResult?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ready") : "full Xcode developer tools unavailable")
-                : "selected",
-            action: appleToolingReady ? nil : "Install Xcode, open it once, and select it in Xcode Settings > Locations.",
+            component: "Provisioning",
+            name: consumerSelection.zeroXcodeMode ? "native zero-Xcode backend" : "Xcode fallback backend",
+            detail: appleToolingReady
+                ? (xcodeResult?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ready")
+                : (consumerSelection.failureCode ?? "backend unavailable"),
+            action: appleToolingReady ? nil : (consumerSelection.zeroXcodeMode
+                ? "Native Personal Team provisioning is not qualified on this build."
+                : "Install Xcode only when explicitly using the development fallback."),
             requiredFor: "mac"
         ))
         do {
