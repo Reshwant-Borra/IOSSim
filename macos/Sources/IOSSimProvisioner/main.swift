@@ -437,7 +437,7 @@ struct ProvisionerTool {
                 component: "Runtime",
                 name: "PAIRING MATERIAL",
                 detail: "stored on iPhone; never bundled",
-                action: "Open IOSSim on your iPhone and complete the pairing import.",
+                action: "Keep your iPhone unlocked while IOSSim prepares and verifies the secure connection.",
                 requiredFor: "device"
             ))
             checks.append(DoctorCheck(
