@@ -15,11 +15,18 @@ public enum AppleAuthorizationMethodCategory: String, Codable, Sendable {
 
 public enum AppleAuthorizationStage: String, Codable, Equatable, Sendable {
     case notStarted = "NOT_STARTED"
-    case authenticating = "AUTHENTICATING"
+    case startingAuthentication = "STARTING_AUTHENTICATION"
+    case challengeReceived = "CHALLENGE_RECEIVED"
+    case credentialsVerified = "CREDENTIALS_VERIFIED"
     case verificationRequired = "VERIFICATION_REQUIRED"
+    case verificationSubmitted = "VERIFICATION_SUBMITTED"
     case authorized = "AUTHORIZED"
+    case sessionEstablished = "SESSION_ESTABLISHED"
     case sessionExpired = "SESSION_EXPIRED"
     case failed = "FAILED"
+
+    /// Compatibility spelling retained for manifests written by the first POC.
+    public static var authenticating: Self { .startingAuthentication }
 }
 
 public enum AppleVerificationMethod: String, Codable, Equatable, Sendable {
@@ -66,17 +73,20 @@ public struct AppleAuthorizationSessionMetadata: Codable, Equatable, Sendable {
     public let accountFingerprint: String
     public let clientIdentityVersion: String
     public let createdAt: Date
+    public let lastValidatedAt: Date?
     public let expiresAt: Date?
 
     public init(
         accountFingerprint: String,
         clientIdentityVersion: String,
         createdAt: Date,
+        lastValidatedAt: Date? = nil,
         expiresAt: Date?
     ) {
         self.accountFingerprint = accountFingerprint
         self.clientIdentityVersion = clientIdentityVersion
         self.createdAt = createdAt
+        self.lastValidatedAt = lastValidatedAt
         self.expiresAt = expiresAt
     }
 }
@@ -191,7 +201,7 @@ public final class SensitiveInput: @unchecked Sendable {
         bytes = Data(value.utf8)
     }
 
-    fileprivate init(data: Data) {
+    init(data: Data) {
         bytes = data
     }
 
@@ -252,6 +262,9 @@ public struct ExperimentalProfile: Equatable, Sendable {
     public let certificateFingerprint: String
     public let provisionedDeviceIdentifiers: Set<String>
     public let applicationIdentifierEntitlement: String
+    public let applicationIdentifierPrefix: String
+    public let getTaskAllow: Bool
+    public let profileType: String
     public let issuedAt: Date
     public let expiresAt: Date
     public let profileData: Data
@@ -262,6 +275,9 @@ public struct ExperimentalProfile: Equatable, Sendable {
         certificateFingerprint: String,
         provisionedDeviceIdentifiers: Set<String>,
         applicationIdentifierEntitlement: String,
+        applicationIdentifierPrefix: String? = nil,
+        getTaskAllow: Bool = true,
+        profileType: String = "development",
         issuedAt: Date,
         expiresAt: Date,
         profileData: Data
@@ -271,6 +287,9 @@ public struct ExperimentalProfile: Equatable, Sendable {
         self.certificateFingerprint = certificateFingerprint
         self.provisionedDeviceIdentifiers = provisionedDeviceIdentifiers
         self.applicationIdentifierEntitlement = applicationIdentifierEntitlement
+        self.applicationIdentifierPrefix = applicationIdentifierPrefix ?? teamIdentifier
+        self.getTaskAllow = getTaskAllow
+        self.profileType = profileType
         self.issuedAt = issuedAt
         self.expiresAt = expiresAt
         self.profileData = profileData
@@ -396,10 +415,78 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
     case responseChanged
     case rateLimited
     case unavailable
+    case networkFailure
+    case localAnisetteUnavailable
+    case srpAuthFailed
+    case authenticationRejected
+    case authenticationProtocolMismatch
+    case verificationRejected
+    case xcodeScopedTokenFailed
+    case developerServicesFailed
+    case personalTeamAmbiguous
+    case certificateRequestFailed
+    case deviceRegistrationFailed
+    case appIDRegistrationFailed
+    case profileRequestFailed
+    case responseTooLarge
+    case redirectRejected
 
     public var safeCode: String {
-        String(describing: self).uppercased()
+        switch self {
+        case .badPassword, .authenticationRejected: return "APPLE_AUTH_REJECTED"
+        case .verificationExpired: return "APPLE_2FA_EXPIRED"
+        case .verificationRejected: return "APPLE_2FA_REJECTED"
+        case .sessionExpired: return "APPLE_SESSION_REJECTED"
+        case .noTeam: return "PERSONAL_TEAM_NOT_FOUND"
+        case .personalTeamAmbiguous: return "PERSONAL_TEAM_AMBIGUOUS"
+        case .certificateLimit: return "CERTIFICATE_LIMIT_REACHED"
+        case .certificateRequestFailed: return "CERTIFICATE_REQUEST_FAILED"
+        case .deviceLimit: return "DEVICE_LIMIT_REACHED"
+        case .deviceRegistrationFailed: return "DEVICE_REGISTRATION_FAILED"
+        case .appIDLimit: return "APP_ID_LIMIT_REACHED"
+        case .appIDCollision: return "APP_ID_COLLISION"
+        case .appIDRegistrationFailed: return "APP_ID_REGISTRATION_FAILED"
+        case .invalidProfile: return "PROFILE_VALIDATION_FAILED"
+        case .profileRequestFailed: return "PROFILE_REQUEST_FAILED"
+        case .networkFailure: return "APPLE_AUTH_NETWORK_FAILURE"
+        case .localAnisetteUnavailable: return "LOCAL_ANISETTE_UNAVAILABLE"
+        case .srpAuthFailed: return "SRP_AUTH_FAILED"
+        case .authenticationProtocolMismatch, .responseChanged: return "APPLE_AUTH_PROTOCOL_MISMATCH"
+        case .xcodeScopedTokenFailed: return "XCODE_SCOPED_TOKEN_FAILED"
+        case .developerServicesFailed: return "DEVELOPER_SERVICES_FAILED"
+        case .rateLimited: return "APPLE_SERVICE_RATE_LIMITED"
+        case .responseTooLarge: return "APPLE_RESPONSE_TOO_LARGE"
+        case .redirectRejected: return "APPLE_REDIRECT_REJECTED"
+        default: return String(describing: self).uppercased()
+        }
     }
+}
+
+public enum ApplePersonalTeamCheckpoint: String, Codable, CaseIterable, Sendable {
+    case authStarted = "APPLE_AUTH_STARTED"
+    case authChallengeReceived = "APPLE_AUTH_CHALLENGE_RECEIVED"
+    case authPasswordAccepted = "APPLE_AUTH_PASSWORD_ACCEPTED"
+    case twoFactorRequired = "APPLE_2FA_REQUIRED"
+    case twoFactorAccepted = "APPLE_2FA_ACCEPTED"
+    case sessionReady = "APPLE_SESSION_READY"
+    case personalTeamFound = "PERSONAL_TEAM_FOUND"
+    case signingIdentityReused = "SIGNING_IDENTITY_REUSED"
+    case signingIdentityCreated = "SIGNING_IDENTITY_CREATED"
+    case deviceAlreadyRegistered = "DEVICE_ALREADY_REGISTERED"
+    case deviceRegistered = "DEVICE_REGISTERED"
+    case mainIDReady = "MAIN_ID_READY"
+    case uiTestIDReady = "UITEST_ID_READY"
+    case runnerIDReady = "RUNNER_ID_READY"
+    case mainProfileReady = "MAIN_PROFILE_READY"
+    case runnerProfileReady = "RUNNER_PROFILE_READY"
+    case provisioningReady = "PROVISIONING_READY"
+}
+
+public struct ExperimentalProvisioningPreparation: Sendable {
+    public let team: ExperimentalAppleTeam
+    public let identity: ExperimentalSigningIdentity
+    public let derivedIdentifiers: PersonalTeamBundleIdentifierSet
+    public let profiles: [ExperimentalProfile]
 }
 
 public struct ExperimentalRepairObservation: Equatable, Sendable {
@@ -484,7 +571,7 @@ public actor ExperimentalConsumerProvisioningCoordinator {
     }
 
     public func begin(account: String, password: SensitiveInput) async throws -> AppleVerificationChallenge? {
-        authorization = summary(stage: .authenticating, valid: false)
+        authorization = summary(stage: .startingAuthentication, valid: false)
         defer { password.clear() }
         do {
             return try applyAuthorizationResult(
@@ -497,6 +584,7 @@ public actor ExperimentalConsumerProvisioningCoordinator {
     }
 
     public func verify(code: SensitiveInput) async throws -> AppleVerificationChallenge? {
+        authorization = summary(stage: .verificationSubmitted, valid: false)
         defer { code.clear() }
         do {
             return try applyAuthorizationResult(await backend.submitVerification(code: code))
@@ -510,6 +598,34 @@ public actor ExperimentalConsumerProvisioningCoordinator {
     }
 
     public func provision(_ request: ExperimentalProvisioningRequest) async throws -> ExperimentalProvisioningReceipt {
+        let prepared = try await prepareProvisioning(request)
+        try await backend.signArtifacts(
+            identifiers: prepared.derivedIdentifiers,
+            identity: prepared.identity,
+            profiles: prepared.profiles
+        )
+        let inventory = try await backend.installArtifacts(
+            identifiers: prepared.derivedIdentifiers,
+            request: request
+        )
+        guard inventory.isExpected else { throw ExperimentalBackendError.inventoryMismatch }
+        let pairingVerified = try await backend.preparePairing(for: request)
+        guard pairingVerified else { throw ExperimentalBackendError.pairingFailure }
+        return ExperimentalProvisioningReceipt(
+            team: prepared.team,
+            identity: prepared.identity,
+            derivedIdentifiers: prepared.derivedIdentifiers,
+            profiles: prepared.profiles,
+            inventory: inventory,
+            pairingVerified: pairingVerified
+        )
+    }
+
+    /// Live P0-P7 checkpoint. Signing, installation, and pairing are kept out
+    /// of this method so the experimental RC cannot imply those gates passed.
+    public func prepareProvisioning(
+        _ request: ExperimentalProvisioningRequest
+    ) async throws -> ExperimentalProvisioningPreparation {
         guard authorization.sessionValid else { throw ExperimentalBackendError.sessionExpired }
         let team = try Self.preferredTeam(from: teams)
         let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: team.id)
@@ -530,18 +646,11 @@ public actor ExperimentalConsumerProvisioningCoordinator {
             selectedDeviceIdentifier: request.selectedDeviceIdentifier,
             now: Date()
         )
-        try await backend.signArtifacts(identifiers: identifiers, identity: identity, profiles: profiles)
-        let inventory = try await backend.installArtifacts(identifiers: identifiers, request: request)
-        guard inventory.isExpected else { throw ExperimentalBackendError.inventoryMismatch }
-        let pairingVerified = try await backend.preparePairing(for: request)
-        guard pairingVerified else { throw ExperimentalBackendError.pairingFailure }
-        return ExperimentalProvisioningReceipt(
+        return ExperimentalProvisioningPreparation(
             team: team,
             identity: identity,
             derivedIdentifiers: identifiers,
-            profiles: profiles,
-            inventory: inventory,
-            pairingVerified: pairingVerified
+            profiles: profiles
         )
     }
 
@@ -612,6 +721,9 @@ public actor ExperimentalConsumerProvisioningCoordinator {
                 && $0.certificateFingerprint == certificateFingerprint
                 && $0.provisionedDeviceIdentifiers.contains(selectedDeviceIdentifier)
                 && $0.applicationIdentifierEntitlement == "\(teamIdentifier).\($0.bundleIdentifier)"
+                && $0.applicationIdentifierPrefix == teamIdentifier
+                && $0.getTaskAllow
+                && $0.profileType == "development"
                 && $0.issuedAt <= now
                 && $0.expiresAt > now
                 && !$0.profileData.isEmpty
@@ -651,14 +763,24 @@ public struct PrivateAppleProtocolAdapter: Equatable, Sendable {
     public static let researched2026 = PrivateAppleProtocolAdapter(
         version: "research-2026-09",
         grandSlamService: URL(string: "https://gsa.apple.com/grandslam/GsService2")!,
+        trustedDeviceVerification: URL(string: "https://gsa.apple.com/auth/verify/trusteddevice")!,
+        verificationValidation: URL(string: "https://gsa.apple.com/grandslam/GsService2/validate")!,
         developerServicesBase: URL(string: "https://developerservices2.apple.com/services/QH65B2/")!,
-        xcodeTokenAudience: "com.apple.gs.xcode.auth"
+        xcodeTokenAudience: "com.apple.gs.xcode.auth",
+        xcodeClientIdentifier: "XABBG36SBA",
+        xcodeVersionHeader: "16.4 (16F6)",
+        xcodeBundleVersion: "23792"
     )
 
     public let version: String
     public let grandSlamService: URL
+    public let trustedDeviceVerification: URL
+    public let verificationValidation: URL
     public let developerServicesBase: URL
     public let xcodeTokenAudience: String
+    public let xcodeClientIdentifier: String
+    public let xcodeVersionHeader: String
+    public let xcodeBundleVersion: String
 
     public func developerURL(operation: String) throws -> URL {
         guard operation.range(of: "^[A-Za-z]+(?:/[A-Za-z]+)?$", options: .regularExpression) != nil,

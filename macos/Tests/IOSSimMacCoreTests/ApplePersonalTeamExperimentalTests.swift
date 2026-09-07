@@ -38,7 +38,7 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         }
         let summary = await coordinator.authorization
         XCTAssertEqual(summary.stage, .failed)
-        XCTAssertEqual(summary.safeErrorCode, "BADPASSWORD")
+        XCTAssertEqual(summary.safeErrorCode, "APPLE_AUTH_REJECTED")
     }
 
     func testExpiredVerificationCodeRequestsNewVerification() async throws {
