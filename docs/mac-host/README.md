@@ -38,3 +38,8 @@ The Mac-hosted implementation remains useful because it is broader, better valid
 ## Non-Committed Data
 
 Do not commit host runtime state from `backend/data/`, Python caches, frontend build output, logs, or process files. These are ignored by the repo-level `.gitignore`.
+
+## Consumer Mac Application
+
+- [Zero-Xcode provisioning feasibility and dependency audit](ZERO_XCODE_PROVISIONING.md)
+- [Third-party provisioning components and licensing](THIRD_PARTY_PROVISIONING_COMPONENTS.md)

@@ -27,6 +27,7 @@ LOCAL_RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "local-release"
 MAC_APP_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSim.entitlements"
 MAC_HELPER_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisioner.entitlements"
 MAC_ICON_SOURCE = MAC_DIR / "Resources" / "IOSSimIcon.png"
+IDEVICE_LICENSE_SOURCE = IOS_DIR / "Vendor" / "idevice" / "LICENSE.txt"
 IOS_PROJECT = IOS_DIR / "IOSSimOnDevicePOC.xcodeproj"
 DERIVED_DATA = IOS_DIR / ".build" / "DerivedData"
 MAC_APP_PATH = ROOT / ".build" / "iossim" / "mac" / "IOSSim.app"
@@ -1259,6 +1260,9 @@ def assemble_self_contained_app(
     os.chmod(macos_dir / "IOSSimProvisioner", 0o755)
     write_app_info_plist(contents)
     build_app_icon(runner, resources)
+    notices = resources / "ThirdPartyNotices"
+    notices.mkdir()
+    shutil.copy2(IDEVICE_LICENSE_SOURCE, notices / "idevice-LICENSE.txt")
 
     components: list[dict[str, Any]] = []
     for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
@@ -2123,6 +2127,16 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
     except Exception as exc:
         ok &= audit_fail("Production Info.plist", str(exc))
     ok &= audit_pass("Production app icon") if (resources / "IOSSim.icns").is_file() else audit_fail("Production app icon", "Contents/Resources/IOSSim.icns missing")
+    packaged_idevice_license = resources / "ThirdPartyNotices" / "idevice-LICENSE.txt"
+    license_ok = (
+        IDEVICE_LICENSE_SOURCE.is_file()
+        and packaged_idevice_license.is_file()
+        and sha256_file(packaged_idevice_license) == sha256_file(IDEVICE_LICENSE_SOURCE)
+    )
+    ok &= audit_pass("idevice MIT license notice") if license_ok else audit_fail(
+        "idevice MIT license notice",
+        "Contents/Resources/ThirdPartyNotices/idevice-LICENSE.txt missing or changed",
+    )
     if not manifest_path.exists():
         ok &= audit_fail("Device artifact manifest", "missing")
         return False
