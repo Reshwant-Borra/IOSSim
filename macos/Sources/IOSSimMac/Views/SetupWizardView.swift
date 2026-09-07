@@ -328,6 +328,11 @@ struct AppleAccountView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if store.nativeProvisioningExperiment {
+                Text("LOCAL TEST ONLY — Experimental Personal Team provisioning")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
             Text(store.appleVerificationChallenge == nil ? "Apple Authorization" : "Apple Verification")
                 .font(.title2.weight(.semibold))
             if let challenge = store.appleVerificationChallenge {
@@ -335,7 +340,7 @@ struct AppleAccountView: View {
                     ? "Enter the code Apple sent to your trusted device."
                     : "Enter the verification code Apple sent by text message.")
                     .foregroundStyle(.secondary)
-                TextField("Apple Verification Code", text: $verificationCode)
+                SecureField("Apple Verification Code", text: $verificationCode)
                     .textContentType(.oneTimeCode)
                     .frame(maxWidth: 280)
                     .onSubmit(verify)
@@ -382,6 +387,12 @@ struct AppleAccountView: View {
                     }
                     .pickerStyle(.radioGroup)
                 }
+            }
+            if store.nativeProvisioningExperiment {
+                Text("Safe stage: \(store.liveProvisioningCheckpoint?.rawValue ?? store.appleAuthorization.stage.rawValue)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -452,12 +463,31 @@ struct VerifyingView: View {
 }
 
 struct CompletionView: View {
+    @EnvironmentObject private var store: SetupStore
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Setup Complete")
+            Text(store.nativeProvisioningExperiment ? "Provisioning Ready" : "Setup Complete")
                 .font(.title2.weight(.semibold))
-            Text("IOSSim is ready to manage setup, repair, and component updates from this Mac.")
+            Text(store.nativeProvisioningExperiment
+                ? "Apple authorization, Personal Team preparation, device registration, identifiers, and profiles completed. Native signing and installation are not part of this test build."
+                : "IOSSim is ready to manage setup, repair, and component updates from this Mac.")
                 .foregroundStyle(.secondary)
+            if store.nativeProvisioningExperiment {
+                FriendlyCheckRow(
+                    title: "PROVISIONING_READY",
+                    detail: "Signing and installation pending",
+                    state: .pass
+                )
+                Button("Export Support Report") { store.exportSupportBundle() }
+                    .disabled(store.isRunning)
+                if let url = store.lastSupportBundleURL {
+                    Text("Saved to \(url.path)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
         }
     }
 }

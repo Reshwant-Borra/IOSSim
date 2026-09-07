@@ -14,7 +14,11 @@ public enum ConsumerProvisioningBackendPreference: String, Codable, CaseIterable
     public static func selected(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
         guard let raw = environment["IOSSIM_PROVISIONING_BACKEND"]?.uppercased(),
               let value = Self(rawValue: raw) else {
+#if IOSSIM_LOCAL_TEST_ONLY
+            return .nativePersonalTeam
+#else
             return .automatic
+#endif
         }
         return value
     }
@@ -148,7 +152,8 @@ public enum ConsumerProvisioningBackendSelector {
                 code: "CONSUMER_AUTHORIZATION_BACKEND_UNAVAILABLE"
             )
         case .nativePersonalTeam:
-            guard capabilities.nativeZeroXcodeReady else {
+            guard capabilities.nativeAppleAuthenticationReady
+                && capabilities.nativePersonalTeamProvisioningReady else {
                 return unavailable(
                     preference,
                     capabilities,
@@ -225,6 +230,13 @@ public enum ConsumerProvisioningBackendSelector {
 }
 
 public enum ZeroXcodeCapabilityPolicy {
+    public static var livePersonalTeamExperimentEnabled: Bool {
+#if IOSSIM_LOCAL_TEST_ONLY
+        true
+#else
+        false
+#endif
+    }
     /// Source-backed classification as of 2026-09-07. Paid-team provisioning
     /// uses App Store Connect API keys, not Apple Account passwords.
     public static let appleOperations: [AppleProvisioningCapability] = [
@@ -253,8 +265,8 @@ public enum ZeroXcodeCapabilityPolicy {
             .appendingPathComponent("IOSSimIdeviceHost")
         return ConsumerProvisioningCapabilities(
             bundledDeviceBridgeReady: fileManager.isExecutableFile(atPath: bridge.path),
-            nativeAppleAuthenticationReady: false,
-            nativePersonalTeamProvisioningReady: false,
+            nativeAppleAuthenticationReady: livePersonalTeamExperimentEnabled,
+            nativePersonalTeamProvisioningReady: livePersonalTeamExperimentEnabled,
             directSigningReady: false,
             xcodePresent: XcodePresenceDetector.isPresent(fileManager: fileManager)
         )

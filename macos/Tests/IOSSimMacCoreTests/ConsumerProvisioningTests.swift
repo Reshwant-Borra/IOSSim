@@ -188,7 +188,7 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertTrue(text.contains("release-commit"))
         XCTAssertTrue(text.contains("0.1.0"))
         XCTAssertTrue(text.contains("PRODUCTION"))
-        XCTAssertTrue(text.contains("True Personal Team profile-expiration extension remains pending"))
+        XCTAssertTrue(text.contains("Experimental private Apple protocol; physical Personal Team proof is pending"))
         XCTAssertFalse(text.contains(rawDevice))
         XCTAssertFalse(text.contains("do-not-export"))
         XCTAssertFalse(text.contains("user@example.com"))

@@ -140,15 +140,32 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     public init() {}
 
     public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
-        []
+        // Until the pinned idevice FFI grows a macOS host target, use the
+        // system USB inventory solely to bind provisioning to the iPhone the
+        // user physically selected. This invokes no Xcode tool and performs
+        // no pairing, installation, or trust bypass.
+        let profiler = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        guard FileManager.default.isExecutableFile(atPath: profiler.path),
+              let result = try? await context.runner.run(
+                executableURL: profiler,
+                arguments: ["SPUSBDataType", "-json", "-detailLevel", "mini"],
+                workingDirectory: context.resourcesURL,
+                environment: RuntimeProvisioning.deterministicEnvironment()
+              ),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8), data.count <= 4_194_304,
+              let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        return Self.usbIPhones(in: root)
     }
 
     public func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
-        nil
+        guard let selector else { return nil }
+        let matches = await discoverDevices(context: context).filter { $0.selectionIdentifier == selector }
+        return matches.count == 1 ? selector : nil
     }
 
     public func signingDeviceIdentifier(matching selector: String, context: RuntimeProvisioningContext) async -> String? {
-        nil
+        await rawDeviceIdentifier(matching: selector, context: context)
     }
 
     public func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
@@ -161,6 +178,37 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
             stdout: "",
             stderr: "IDEVICE_BACKEND_UNAVAILABLE: host-side idevice provisioning requires a macOS idevice FFI library; the current bundled library is iOS-only."
         )
+    }
+
+    static func usbIPhones(in value: Any) -> [DetectedDevice] {
+        var devices: [DetectedDevice] = []
+        func visit(_ value: Any) {
+            if let array = value as? [Any] { array.forEach(visit); return }
+            guard let dictionary = value as? [String: Any] else { return }
+            let name = (dictionary["_name"] as? String) ?? ""
+            let product = (dictionary["product_id"] as? String) ?? ""
+            if name.localizedCaseInsensitiveContains("iPhone"),
+               let serial = dictionary["serial_num"] as? String,
+               (8...128).contains(serial.count),
+               serial.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-" )).contains($0) }) {
+                devices.append(DetectedDevice(
+                    name: name,
+                    identifier: RuntimeProvisioning.shortIdentifier(serial),
+                    selectionIdentifier: serial,
+                    udidRedacted: RuntimeProvisioning.shortIdentifier(serial),
+                    model: product.isEmpty ? nil : product,
+                    pairingState: "unknown",
+                    tunnelState: "not-checked",
+                    isLocked: nil,
+                    provisioningEligibilityStatus: .requiresResigning,
+                    provisioningEligibilityDetail: "Selected through local USB inventory for Personal Team provisioning."
+                ))
+            }
+            dictionary.values.forEach(visit)
+        }
+        visit(value)
+        var seen: Set<String> = []
+        return devices.filter { seen.insert($0.selectionIdentifier).inserted }
     }
 }
 

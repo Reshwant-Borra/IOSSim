@@ -22,9 +22,11 @@ public final class SetupStore: ObservableObject {
         sessionValid: false
     )
     @Published public private(set) var appleVerificationChallenge: AppleVerificationChallenge?
+    @Published public private(set) var liveProvisioningCheckpoint: ApplePersonalTeamCheckpoint?
 
     public let engine: any IOSSimSetupEngine
     private let authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator
+    public let nativeProvisioningExperiment: Bool
     private var task: Task<Void, Never>?
     private let onboardingKey = "IOSSimMac.onboardingCompleted"
     private let selectedDeviceKey = "IOSSimMac.selectedDeviceIdentifier"
@@ -35,12 +37,16 @@ public final class SetupStore: ObservableObject {
 
     public init(
         engine: any IOSSimSetupEngine,
-        authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator = .init(
-            backend: UnavailableExperimentalPersonalTeamBackend()
-        )
+        authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator? = nil,
+        nativeProvisioningExperiment: Bool = ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled
     ) {
         self.engine = engine
-        self.authorizationCoordinator = authorizationCoordinator
+        self.nativeProvisioningExperiment = nativeProvisioningExperiment
+        self.authorizationCoordinator = authorizationCoordinator ?? .init(
+            backend: nativeProvisioningExperiment
+                ? LiveApplePersonalTeamBackend()
+                : UnavailableExperimentalPersonalTeamBackend()
+        )
         selectedDeviceIdentifier = UserDefaults.standard.string(forKey: selectedDeviceKey)
         selectedTeamIdentifier = UserDefaults.standard.string(forKey: selectedTeamKey)
     }
@@ -312,6 +318,26 @@ public final class SetupStore: ObservableObject {
             selectTeam(identifier: preferred.id)
         }
         phase = .installing
+        if nativeProvisioningExperiment {
+            try await runLiveProvisioningThroughProfiles()
+        }
+    }
+
+    private func runLiveProvisioningThroughProfiles() async throws {
+        guard let selected = selectedDevice,
+              let identifier = selectedDeviceIdentifier else {
+            throw ExperimentalBackendError.deviceRegistrationFailed
+        }
+        consumerStage = .preparingIdentities
+        let prepared = try await authorizationCoordinator.prepareProvisioning(.init(
+            selectedDeviceIdentifier: identifier,
+            selectedDeviceName: selected.name,
+            operation: .install
+        ))
+        selectedTeamIdentifier = prepared.team.id
+        liveProvisioningCheckpoint = .provisioningReady
+        consumerStage = .preparingArtifacts
+        phase = .complete
     }
 
     private func runSetup() {
@@ -373,6 +399,13 @@ public final class SetupStore: ObservableObject {
     }
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
+        if nativeProvisioningExperiment,
+           status.mac.ready,
+           selectedDevice != nil,
+           liveProvisioningCheckpoint != .provisioningReady {
+            phase = .appleAccount
+            return
+        }
         let installationKnown = !engine.consumerProvisioningEnabled || consumerProvisioningStateSupportsRuntimeSetup
         let consumerRuntimeReady = !engine.consumerProvisioningEnabled
             || (consumerProvisioningStateSupportsRuntimeSetup && provisioningManifest?.runtimeSetupStatus == .ready)
@@ -440,6 +473,17 @@ public final class SetupStore: ObservableObject {
         guard let selectedDeviceIdentifier else {
             personalTeams = []
             selectedTeamIdentifier = nil
+            return
+        }
+        if nativeProvisioningExperiment {
+            do {
+                if try await authorizationCoordinator.resume() {
+                    appleAuthorization = await authorizationCoordinator.authorization
+                    try await applyExperimentalTeams()
+                }
+            } catch ExperimentalBackendError.sessionExpired {
+                appleAuthorization = await authorizationCoordinator.authorization
+            }
             return
         }
         personalTeams = try await engine.discoverPersonalTeams(selectedDeviceIdentifier: selectedDeviceIdentifier)

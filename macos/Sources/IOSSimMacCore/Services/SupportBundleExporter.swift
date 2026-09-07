@@ -32,6 +32,7 @@ private struct SanitizedSupportDocument: Codable {
     let environment: SupportEnvironment
     let provisioning: ConsumerProvisioningManifest?
     let provisioningEvents: [ProvisioningLogEvent]
+    let nativePersonalTeam: ApplePersonalTeamDiagnosticSnapshot?
     let notes: [String]
 }
 
@@ -58,16 +59,19 @@ public enum SupportBundleExporter {
             preference: preference,
             capabilities: ConsumerProvisioningCapabilities(
                 bundledDeviceBridgeReady: false,
-                nativeAppleAuthenticationReady: false,
-                nativePersonalTeamProvisioningReady: false,
+                nativeAppleAuthenticationReady: ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
+                nativePersonalTeamProvisioningReady: ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
                 directSigningReady: false,
                 xcodePresent: xcodePresent
             )
         )
         let authMetadata = try? KeychainAppleAuthorizationSessionStore().loadMetadata()
-        let authSessionValid = authMetadata?.expiresAt.map { $0 > Date() } ?? false
+        let nativeDiagnostics = ApplePersonalTeamDiagnosticsStore().load()
+        let authSessionValid = nativeDiagnostics?.sessionValid
+            ?? authMetadata.map { $0.expiresAt.map { $0 > Date() } ?? true }
+            ?? false
         let document = SanitizedSupportDocument(
-            schemaVersion: 1,
+            schemaVersion: 2,
             generatedAt: Date(),
             environment: SupportEnvironment(
                 iPhoneAppVersion: manifest?.appVersion,
@@ -95,10 +99,12 @@ public enum SupportBundleExporter {
             ),
             provisioning: manifest,
             provisioningEvents: events,
+            nativePersonalTeam: nativeDiagnostics,
             notes: [
                 "Local-only sanitized support export.",
                 "Apple credentials, signing private keys, provisioning payloads, and RPPairing material are excluded.",
-                "True Personal Team profile-expiration extension remains pending physical validation."
+                "Experimental private Apple protocol; physical Personal Team proof is pending.",
+                "Native signing and installation are outside this P0-P7 test build."
             ]
         )
         let encoder = JSONEncoder()

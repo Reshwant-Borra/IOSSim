@@ -79,7 +79,7 @@ struct DiagnosticsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Create a sanitized support file with setup status, software versions, profile dates, and recent provisioning results.")
                     .foregroundStyle(.secondary)
-                Button("Export Support File") {
+                Button("Export Support Report") {
                     store.exportSupportBundle()
                 }
                 .disabled(store.isRunning)

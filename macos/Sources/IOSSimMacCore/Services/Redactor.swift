@@ -33,14 +33,19 @@ public enum Redactor {
             )
         }
         output = replace(
-            pattern: "(?i)(authorization|cookie|set-cookie|x-apple-gs-token|x-apple-i-md(?:-m)?|session[-_ ]?id)\\s*[:=]\\s*[^\\s,;]+",
+            pattern: "(?i)(authorization|cookie|set-cookie|x-apple-gs-token|x-apple-identity-token|x-apple-i-identity-id|x-apple-i-md(?:-m|-lu|-rinfo)?|session[-_ ]?id|dsid|adsid|pairing[-_ ]?(?:secret|psk|material))\\s*[:=]\\s*[^\\s,;]+",
             in: output,
             with: "$1=[REDACTED]"
         )
         output = replace(
-            pattern: "(?i)(verification|2fa|two-factor)[-_ ]?(code)?\\s*[:=]\\s*[0-9]{4,8}",
+            pattern: "(?i)(verification|security|2fa|two-factor)[-_ ]?(code)?\\s*[:=]\\s*[0-9]{4,8}",
             in: output,
             with: "$1-code=[REDACTED]"
+        )
+        output = replace(
+            pattern: "(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]{8,}",
+            in: output,
+            with: "Bearer [REDACTED]"
         )
         return output
     }

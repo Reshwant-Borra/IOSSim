@@ -28,6 +28,7 @@ MAC_APP_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSim.entitlements"
 MAC_HELPER_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisioner.entitlements"
 MAC_ICON_SOURCE = MAC_DIR / "Resources" / "IOSSimIcon.png"
 IDEVICE_LICENSE_SOURCE = IOS_DIR / "Vendor" / "idevice" / "LICENSE.txt"
+BIGINT_LICENSE_SOURCE = MAC_DIR / "ThirdPartyNotices" / "BigInt-LICENSE.txt"
 IOS_PROJECT = IOS_DIR / "IOSSimOnDevicePOC.xcodeproj"
 DERIVED_DATA = IOS_DIR / ".build" / "DerivedData"
 MAC_APP_PATH = ROOT / ".build" / "iossim" / "mac" / "IOSSim.app"
@@ -1137,7 +1138,7 @@ def macos_bin_path(runner: Runner) -> Path:
     return Path(result.stdout.strip())
 
 
-def build_universal_macos_products(runner: Runner) -> Path:
+def build_universal_macos_products(runner: Runner, local_test_only: bool = False) -> Path:
     intermediates = RELEASE_OUTPUT_DIR / "intermediates"
     architecture_products: dict[str, Path] = {}
     sdk = subprocess.run(
@@ -1160,6 +1161,8 @@ def build_universal_macos_products(runner: Runner) -> Path:
             "--sdk", sdk.stdout.strip(),
             "-Xswiftc", "-D", "-Xswiftc", "IOSSIM_BUNDLED_ENGINE",
         ]
+        if local_test_only:
+            base += ["-Xswiftc", "-D", "-Xswiftc", "IOSSIM_LOCAL_TEST_ONLY"]
         for product in ["IOSSimMac", "IOSSimProvisioner"]:
             result = runner.run(
                 f"swift-build-{product}-{architecture}",
@@ -1263,6 +1266,7 @@ def assemble_self_contained_app(
     notices = resources / "ThirdPartyNotices"
     notices.mkdir()
     shutil.copy2(IDEVICE_LICENSE_SOURCE, notices / "idevice-LICENSE.txt")
+    shutil.copy2(BIGINT_LICENSE_SOURCE, notices / "BigInt-LICENSE.txt")
 
     components: list[dict[str, Any]] = []
     for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
@@ -2047,7 +2051,7 @@ def command_release_local(args: argparse.Namespace) -> int:
         print_step("FAIL", "Local release prerequisites", "build did not complete")
         return 1
     try:
-        mac_products = build_universal_macos_products(runner)
+        mac_products = build_universal_macos_products(runner, local_test_only=True)
         app_dir = assemble_self_contained_app(runner, ios_configuration="Release", macos_products_path=mac_products)
         local_sign_device_artifacts(runner, app_dir)
         update_device_artifact_hashes(app_dir)
@@ -2136,6 +2140,16 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
     ok &= audit_pass("idevice MIT license notice") if license_ok else audit_fail(
         "idevice MIT license notice",
         "Contents/Resources/ThirdPartyNotices/idevice-LICENSE.txt missing or changed",
+    )
+    packaged_bigint_license = resources / "ThirdPartyNotices" / "BigInt-LICENSE.txt"
+    bigint_license_ok = (
+        BIGINT_LICENSE_SOURCE.is_file()
+        and packaged_bigint_license.is_file()
+        and sha256_file(packaged_bigint_license) == sha256_file(BIGINT_LICENSE_SOURCE)
+    )
+    ok &= audit_pass("BigInt MIT license notice") if bigint_license_ok else audit_fail(
+        "BigInt MIT license notice",
+        "Contents/Resources/ThirdPartyNotices/BigInt-LICENSE.txt missing or changed",
     )
     if not manifest_path.exists():
         ok &= audit_fail("Device artifact manifest", "missing")

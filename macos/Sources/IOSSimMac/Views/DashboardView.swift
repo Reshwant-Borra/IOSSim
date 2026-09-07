@@ -166,6 +166,10 @@ struct FailureView: View {
                         showingDevicePicker = true
                     }
                 }
+                Button("Export Support Report") {
+                    store.exportSupportBundle()
+                }
+                .disabled(store.isRunning)
 #if !IOSSIM_BUNDLED_ENGINE
                 Button(showDetails ? "Hide Details" : "Show Details") {
                     showDetails.toggle()
