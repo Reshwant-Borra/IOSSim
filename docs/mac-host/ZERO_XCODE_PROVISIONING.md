@@ -173,4 +173,3 @@ refresh, and the negative command telemetry therefore remain pending.
 
 The proven Xcode-backed physical runtime evidence remains documented in
 `PERSONAL_TEAM_PROVISIONING_POC.md` and was not reclassified as zero-Xcode proof.
-
