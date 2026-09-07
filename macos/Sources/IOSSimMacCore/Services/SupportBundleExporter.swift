@@ -15,6 +15,11 @@ private struct SupportEnvironment: Codable {
     let provisioningBackend: String
     let xcodePresent: Bool
     let zeroXcodeMode: Bool
+    let authMethodCategory: String?
+    let authSessionValid: Bool
+    let authClientIdentityVersion: String?
+    let authSessionExpiration: Date?
+    let lastProvisioningStage: String?
     let xcodeVersion: String?
     let deviceName: String?
     let deviceModel: String?
@@ -59,6 +64,8 @@ public enum SupportBundleExporter {
                 xcodePresent: xcodePresent
             )
         )
+        let authMetadata = try? KeychainAppleAuthorizationSessionStore().loadMetadata()
+        let authSessionValid = authMetadata?.expiresAt.map { $0 > Date() } ?? false
         let document = SanitizedSupportDocument(
             schemaVersion: 1,
             generatedAt: Date(),
@@ -72,7 +79,14 @@ public enum SupportBundleExporter {
                 provisioningBackend: selection.backend?.rawValue ?? "NONE",
                 xcodePresent: xcodePresent,
                 zeroXcodeMode: selection.zeroXcodeMode,
-                xcodeVersion: selection.backend == .xcodeFallback
+                authMethodCategory: authMetadata == nil ? nil : AppleAuthorizationMethodCategory.privateGrandSlamSRP.rawValue,
+                authSessionValid: authSessionValid,
+                authClientIdentityVersion: authMetadata?.clientIdentityVersion,
+                authSessionExpiration: authMetadata?.expiresAt,
+                lastProvisioningStage: events.last?.stage.rawValue,
+                xcodeVersion: selection.backend.map {
+                    [.xcodeFallback, .xcodeInvisible].contains($0)
+                } == true
                     ? await xcodeVersion(runner: runner)
                     : nil,
                 deviceName: manifest?.deviceName,

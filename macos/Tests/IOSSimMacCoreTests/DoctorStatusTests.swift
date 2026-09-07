@@ -78,6 +78,15 @@ final class DoctorStatusTests: XCTestCase {
         XCTAssertTrue(output.contains("[REDACTED]"))
     }
 
+    func testAuthenticationHeadersCookiesAndVerificationCodesAreAlwaysRedacted() {
+        let input = "Authorization: Bearer-value Cookie=session-value X-Apple-GS-Token: apple-value 2FA-code=123456"
+        let output = Redactor.redact(input)
+        for secret in ["Bearer-value", "session-value", "apple-value", "123456"] {
+            XCTAssertFalse(output.contains(secret))
+        }
+        XCTAssertGreaterThanOrEqual(output.components(separatedBy: "[REDACTED]").count, 4)
+    }
+
     private func status(runtimeName: String) -> DoctorStatus {
         let device = DetectedDevice(
             name: "iPhone",

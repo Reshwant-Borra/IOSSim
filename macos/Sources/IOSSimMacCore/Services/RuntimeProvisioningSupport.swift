@@ -96,7 +96,9 @@ public enum ProvisioningBackendKind: String, Sendable {
         if raw == "devicectl" {
             return .devicectl
         }
-        if ConsumerProvisioningBackendPreference.selected(environment: environment) == .zeroXcode {
+        if [.zeroXcode, .nativePersonalTeam].contains(
+            ConsumerProvisioningBackendPreference.selected(environment: environment)
+        ) {
             return .idevice
         }
         return .devicectl

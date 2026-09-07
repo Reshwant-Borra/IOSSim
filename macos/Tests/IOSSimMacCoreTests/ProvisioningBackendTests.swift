@@ -17,19 +17,20 @@ final class ProvisioningBackendTests: XCTestCase {
             preference: .automatic,
             capabilities: capabilities(native: true, xcodePresent: true)
         )
-        XCTAssertEqual(selection.backend, .nativeZeroXcode)
+        XCTAssertEqual(selection.backend, .nativePersonalTeam)
         XCTAssertTrue(selection.zeroXcodeMode)
         XCTAssertTrue(selection.ready)
     }
 
-    func testAutomaticIdentifiesTemporaryXcodeFallbackHonestly() {
+    func testAutomaticDoesNotRouteConsumersToManualXcodeFallback() {
         let selection = ConsumerProvisioningBackendSelector.select(
             preference: .automatic,
             capabilities: capabilities(native: false, xcodePresent: true)
         )
-        XCTAssertEqual(selection.backend, .xcodeFallback)
+        XCTAssertNil(selection.backend)
         XCTAssertFalse(selection.zeroXcodeMode)
-        XCTAssertTrue(selection.ready)
+        XCTAssertFalse(selection.ready)
+        XCTAssertEqual(selection.failureCode, "CONSUMER_AUTHORIZATION_BACKEND_UNAVAILABLE")
     }
 
     func testExplicitZeroXcodeNeverFallsBackToXcode() {
@@ -55,8 +56,36 @@ final class ProvisioningBackendTests: XCTestCase {
             capabilities: capabilities(native: false, xcodePresent: false)
         )
         XCTAssertNil(selection.backend)
-        XCTAssertEqual(selection.failureCode, "ZERO_XCODE_PERSONAL_TEAM_BLOCKED")
+        XCTAssertEqual(selection.failureCode, "CONSUMER_AUTHORIZATION_BACKEND_UNAVAILABLE")
         XCTAssertFalse(selection.xcodePresent)
+    }
+
+    func testAutomaticUsesHeadlessXcodeOnlyWhenInitialAuthorizationIsReady() {
+        let selection = ConsumerProvisioningBackendSelector.select(
+            preference: .automatic,
+            capabilities: capabilities(native: false, xcodePresent: true, headlessXcodeAuth: true)
+        )
+        XCTAssertEqual(selection.backend, .xcodeInvisible)
+        XCTAssertTrue(selection.ready)
+        XCTAssertFalse(selection.zeroXcodeMode)
+    }
+
+    func testExplicitHeadlessXcodeReportsInitialAccountAuthBlocker() {
+        let selection = ConsumerProvisioningBackendSelector.select(
+            preference: .xcodeInvisible,
+            capabilities: capabilities(native: false, xcodePresent: true)
+        )
+        XCTAssertNil(selection.backend)
+        XCTAssertEqual(selection.failureCode, "PATH_A_BLOCKED_AT_INITIAL_ACCOUNT_AUTH")
+    }
+
+    func testLegacyXcodeFallbackRemainsExplicitlyAvailable() {
+        let selection = ConsumerProvisioningBackendSelector.select(
+            preference: .xcodeFallback,
+            capabilities: capabilities(native: false, xcodePresent: true)
+        )
+        XCTAssertEqual(selection.backend, .xcodeFallback)
+        XCTAssertTrue(selection.ready)
     }
 
     func testXcodePresenceUsesOnlyKnownApplicationPaths() {
@@ -75,7 +104,7 @@ final class ProvisioningBackendTests: XCTestCase {
             Set(AppleProvisioningOperation.allCases)
         )
         XCTAssertTrue(ZeroXcodeCapabilityPolicy.appleOperations.allSatisfy {
-            $0.paidTeam == .documentedSupported && $0.freePersonalTeam == .requiresXcode
+            $0.paidTeam == .documentedSupported && $0.freePersonalTeam == .undocumentedButObserved
         })
     }
 
@@ -102,13 +131,18 @@ final class ProvisioningBackendTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains("IDEVICE_BACKEND_UNAVAILABLE"))
     }
 
-    private func capabilities(native: Bool, xcodePresent: Bool) -> ConsumerProvisioningCapabilities {
+    private func capabilities(
+        native: Bool,
+        xcodePresent: Bool,
+        headlessXcodeAuth: Bool = false
+    ) -> ConsumerProvisioningCapabilities {
         ConsumerProvisioningCapabilities(
             bundledDeviceBridgeReady: native,
             nativeAppleAuthenticationReady: native,
             nativePersonalTeamProvisioningReady: native,
             directSigningReady: native,
-            xcodePresent: xcodePresent
+            xcodePresent: xcodePresent,
+            headlessXcodeAuthenticationReady: headlessXcodeAuth
         )
     }
 }

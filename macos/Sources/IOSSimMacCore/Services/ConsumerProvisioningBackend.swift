@@ -4,6 +4,10 @@ import Foundation
 /// `DeviceProvisioningBackend`, which only owns USB device operations.
 public enum ConsumerProvisioningBackendPreference: String, Codable, CaseIterable, Sendable {
     case automatic = "AUTO"
+    case xcodeInvisible = "XCODE_INVISIBLE"
+    case nativePersonalTeam = "NATIVE_PERSONAL_TEAM"
+    /// Development compatibility aliases. Production AUTO never selects the
+    /// manually configured fallback.
     case zeroXcode = "ZERO_XCODE"
     case xcodeFallback = "XCODE_FALLBACK"
 
@@ -17,7 +21,9 @@ public enum ConsumerProvisioningBackendPreference: String, Codable, CaseIterable
 }
 
 public enum ConsumerProvisioningBackendIdentifier: String, Codable, Sendable {
-    case nativeZeroXcode = "NATIVE_ZERO_XCODE"
+    case nativePersonalTeam = "NATIVE_PERSONAL_TEAM"
+    case xcodeInvisible = "XCODE_INVISIBLE"
+    /// Existing manually configured development/recovery backend.
     case xcodeFallback = "XCODE_FALLBACK"
 }
 
@@ -63,19 +69,22 @@ public struct ConsumerProvisioningCapabilities: Codable, Equatable, Sendable {
     public let nativePersonalTeamProvisioningReady: Bool
     public let directSigningReady: Bool
     public let xcodePresent: Bool
+    public let headlessXcodeAuthenticationReady: Bool
 
     public init(
         bundledDeviceBridgeReady: Bool,
         nativeAppleAuthenticationReady: Bool,
         nativePersonalTeamProvisioningReady: Bool,
         directSigningReady: Bool,
-        xcodePresent: Bool
+        xcodePresent: Bool,
+        headlessXcodeAuthenticationReady: Bool = false
     ) {
         self.bundledDeviceBridgeReady = bundledDeviceBridgeReady
         self.nativeAppleAuthenticationReady = nativeAppleAuthenticationReady
         self.nativePersonalTeamProvisioningReady = nativePersonalTeamProvisioningReady
         self.directSigningReady = directSigningReady
         self.xcodePresent = xcodePresent
+        self.headlessXcodeAuthenticationReady = headlessXcodeAuthenticationReady
     }
 
     public var nativeZeroXcodeReady: Bool {
@@ -83,6 +92,10 @@ public struct ConsumerProvisioningCapabilities: Codable, Equatable, Sendable {
             && nativeAppleAuthenticationReady
             && nativePersonalTeamProvisioningReady
             && directSigningReady
+    }
+
+    public var xcodeInvisibleReady: Bool {
+        xcodePresent && headlessXcodeAuthenticationReady
     }
 }
 
@@ -112,8 +125,10 @@ public struct ConsumerProvisioningBackendSelection: Codable, Equatable, Sendable
 }
 
 public enum ConsumerProvisioningBackendSelector {
-    /// AUTO prefers the native path. Until all native gates are qualified it
-    /// reports the surviving Xcode path honestly as XCODE_FALLBACK.
+    /// AUTO may select only a backend that meets the consumer requirement:
+    /// Apple authorization starts in IOSSim and the user never configures
+    /// Xcode. The proven manual Xcode path remains an explicit development and
+    /// recovery override, never an automatic production fallback.
     public static func select(
         preference: ConsumerProvisioningBackendPreference,
         capabilities: ConsumerProvisioningCapabilities
@@ -121,17 +136,39 @@ public enum ConsumerProvisioningBackendSelector {
         switch preference {
         case .automatic:
             if capabilities.nativeZeroXcodeReady {
-                return selection(.nativeZeroXcode, preference, capabilities, zeroXcode: true)
+                return selection(.nativePersonalTeam, preference, capabilities, zeroXcode: true)
             }
-            if capabilities.xcodePresent {
-                return selection(.xcodeFallback, preference, capabilities, zeroXcode: false)
+            if capabilities.xcodeInvisibleReady {
+                return selection(.xcodeInvisible, preference, capabilities, zeroXcode: false)
             }
             return unavailable(
                 preference,
                 capabilities,
-                zeroXcode: true,
-                code: "ZERO_XCODE_PERSONAL_TEAM_BLOCKED"
+                zeroXcode: !capabilities.xcodePresent,
+                code: "CONSUMER_AUTHORIZATION_BACKEND_UNAVAILABLE"
             )
+        case .nativePersonalTeam:
+            guard capabilities.nativeZeroXcodeReady else {
+                return unavailable(
+                    preference,
+                    capabilities,
+                    zeroXcode: true,
+                    code: "NATIVE_PERSONAL_TEAM_NOT_QUALIFIED"
+                )
+            }
+            return selection(.nativePersonalTeam, preference, capabilities, zeroXcode: true)
+        case .xcodeInvisible:
+            guard capabilities.xcodeInvisibleReady else {
+                return unavailable(
+                    preference,
+                    capabilities,
+                    zeroXcode: false,
+                    code: capabilities.xcodePresent
+                        ? "PATH_A_BLOCKED_AT_INITIAL_ACCOUNT_AUTH"
+                        : "XCODE_INVISIBLE_UNAVAILABLE"
+                )
+            }
+            return selection(.xcodeInvisible, preference, capabilities, zeroXcode: false)
         case .zeroXcode:
             guard capabilities.nativeZeroXcodeReady else {
                 return unavailable(
@@ -141,7 +178,7 @@ public enum ConsumerProvisioningBackendSelector {
                     code: "ZERO_XCODE_BACKEND_NOT_QUALIFIED"
                 )
             }
-            return selection(.nativeZeroXcode, preference, capabilities, zeroXcode: true)
+            return selection(.nativePersonalTeam, preference, capabilities, zeroXcode: true)
         case .xcodeFallback:
             guard capabilities.xcodePresent else {
                 return unavailable(
@@ -191,20 +228,20 @@ public enum ZeroXcodeCapabilityPolicy {
     /// Source-backed classification as of 2026-09-07. Paid-team provisioning
     /// uses App Store Connect API keys, not Apple Account passwords.
     public static let appleOperations: [AppleProvisioningCapability] = [
-        .init(operation: .authenticateAppleAccount, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "Paid teams can use App Store Connect API keys. Apple documents Personal Team setup through Xcode only."),
-        .init(operation: .discoverPersonalTeam, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "No documented Personal Team discovery API is available outside Xcode."),
-        .init(operation: .createOrReuseCertificate, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "Certificate APIs are documented for Developer Program teams; Personal Team assets are Xcode-managed."),
-        .init(operation: .registerDevice, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "Device APIs are documented for Developer Program teams; free-device registration is Xcode-managed."),
-        .init(operation: .registerBundleIdentifier, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "Bundle ID APIs are documented for Developer Program teams; free App IDs are Xcode-managed."),
-        .init(operation: .issueProvisioningProfile, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "Profile APIs are documented for Developer Program teams; free profiles are Xcode-managed."),
-        .init(operation: .renewProvisioningProfile, paidTeam: .documentedSupported, freePersonalTeam: .requiresXcode,
-              detail: "Free seven-day reprovisioning is documented as an Xcode workflow."),
+        .init(operation: .authenticateAppleAccount, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "Apple documents Personal Team setup through Xcode; current third-party tools observe private GrandSlam/SRP authentication."),
+        .init(operation: .discoverPersonalTeam, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "No documented Personal Team API exists outside Xcode; private Developer Services listTeams is observed."),
+        .init(operation: .createOrReuseCertificate, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "Private Developer Services certificate listing and CSR submission are observed."),
+        .init(operation: .registerDevice, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "Private Developer Services device listing and registration are observed."),
+        .init(operation: .registerBundleIdentifier, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "Private Developer Services App ID listing and registration are observed."),
+        .init(operation: .issueProvisioningProfile, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "Private Developer Services provisioning-profile issuance is observed."),
+        .init(operation: .renewProvisioningProfile, paidTeam: .documentedSupported, freePersonalTeam: .undocumentedButObserved,
+              detail: "Seven-day renewal repeats the same private provisioning flow."),
     ]
 
     public static func currentCapabilities(

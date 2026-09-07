@@ -32,6 +32,16 @@ public enum Redactor {
                 with: "$1=[REDACTED]"
             )
         }
+        output = replace(
+            pattern: "(?i)(authorization|cookie|set-cookie|x-apple-gs-token|x-apple-i-md(?:-m)?|session[-_ ]?id)\\s*[:=]\\s*[^\\s,;]+",
+            in: output,
+            with: "$1=[REDACTED]"
+        )
+        output = replace(
+            pattern: "(?i)(verification|2fa|two-factor)[-_ ]?(code)?\\s*[:=]\\s*[0-9]{4,8}",
+            in: output,
+            with: "$1-code=[REDACTED]"
+        )
         return output
     }
 
