@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 import XCTest
 @testable import IOSSimMacCore
 
@@ -48,6 +49,15 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertEqual(loaded?.installedUITestBundleID, try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1").uiTests)
         XCTAssertEqual(loaded?.sourceRunnerBundleID, ProtectedSourceBundleIdentifiers.default.runner)
         XCTAssertEqual(loaded?.installedRunnerBundleID, try PersonalTeamBundleIdentifierSet(teamIdentifier: "TEAM1").runner)
+        let directoryMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        let manifestURL = await store.manifestURL
+        let manifestMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: manifestURL.path)[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(directoryMode, 0o700)
+        XCTAssertEqual(manifestMode, 0o600)
     }
 
     func testRuntimeSetupConfirmationPreservesProvisioningIdentity() async throws {
@@ -126,6 +136,11 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertEqual(events.first?.selectedDevice, "000081...401C")
         XCTAssertFalse(events.first?.detail?.contains("super-secret") == true)
         XCTAssertFalse(events.first?.detail?.contains("user@example.com") == true)
+        let logURL = await store.logURL
+        let logMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: logURL.path)[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(logMode, 0o600)
     }
 
     func testStructuredLogReadsLegacyMultilineObjects() throws {
@@ -289,6 +304,20 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
     }
 
+    func testDeviceDisconnectInstallErrorsAreRetryableDeviceUnavailability() {
+        for output in [
+            "Device unavailable: iPhone disconnected",
+            "The device was not found",
+            "Failed to connect to device; connection invalidated",
+        ] {
+            XCTAssertEqual(
+                ConsumerProvisioningErrorClassifier.installErrorCode(output: output, artifact: "main"),
+                .deviceUnavailable,
+                output
+            )
+        }
+    }
+
     func testFreshInstallOwnershipPolicyOnlyMatchesIOSSimMainAndRunnerIdentities() {
         XCTAssertTrue(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMain(
             ProtectedSourceBundleIdentifiers.default.main
@@ -387,6 +416,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             context: RuntimeProvisioningContext(resourcesURL: resources, runner: runner),
             stateStore: ConsumerProvisioningStateStore(directoryURL: state),
             nativeArtifactStore: nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: workspaces
         )
 
@@ -438,6 +468,7 @@ final class ConsumerProvisioningTests: XCTestCase {
                 certificateFingerprint: fingerprint,
                 certificateExpiration: Date().addingTimeInterval(86_400),
                 privateKeyPersistentReference: Data([1]),
+                keyApplicationTagIdentifier: "com.iossim.personal-team.\(team).00000000-0000-0000-0000-000000000001",
                 reused: true
             ),
             derivedIdentifiers: identifiers,
@@ -446,6 +477,19 @@ final class ConsumerProvisioningTests: XCTestCase {
         let store = NativeProvisioningArtifactStore(directoryURL: root)
         try await store.save(preparation, selectedDeviceIdentifier: udid)
         _ = try await store.load(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        _ = try await store.load(teamIdentifier: team)
+        let directoryMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        let artifactURL = await store.artifactURL
+        let artifactMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: artifactURL.path)[.posixPermissions] as? NSNumber
+        ).intValue & 0o777
+        XCTAssertEqual(directoryMode, 0o700)
+        XCTAssertEqual(artifactMode, 0o600)
+        let serializedArtifacts = try String(contentsOf: artifactURL, encoding: .utf8)
+        XCTAssertTrue(serializedArtifacts.contains("keyApplicationTagIdentifier"))
+        XCTAssertFalse(serializedArtifacts.contains("privateKeyPersistentReference"))
 
         for (otherTeam, otherDevice) in [("OLDRTEAM01", udid), (team, "00008150-OTHERDEVICE000") ] {
             do {
@@ -528,7 +572,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             ))
             XCTFail("Expected native certificate continuity failure")
         } catch let failure as ConsumerProvisioningFailure {
-            XCTAssertEqual(failure.code, .profileUnavailable)
+            XCTAssertEqual(failure.code, .profileCertificateMismatch)
             XCTAssertFalse(failure.userMessage.localizedCaseInsensitiveContains("authorization"))
         }
         let evidence = await recorder.evidence()
@@ -579,6 +623,172 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
         XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
         XCTAssertTrue(result.combinedOutput.contains("get-task-allow"))
+    }
+
+    func testEveryDownstreamFaultPreservesNativeContextAndRetryCompletesWithoutDestructiveRollback() async throws {
+        let expectations: [(ConsumerProvisioningFaultPoint, ConsumerProvisioningErrorCode, ConsumerProvisioningStage)] = [
+            (.signingIdentityResolution, .signingIdentityNotFound, .preparingIdentities),
+            (.preparingArtifacts, .artifactInvalid, .preparingArtifacts),
+            (.nestedSigning, .nestedSigningFailed, .signingNestedComponents),
+            (.mainSigning, .signOperationFailed, .signingMain),
+            (.runnerSigning, .signOperationFailed, .signingRunner),
+            (.signatureVerification, .signatureVerificationFailed, .verifyingSignatures),
+            (.installMain, .mainInstallFailure, .installingMain),
+            (.installRunner, .runnerInstallFailure, .installingRunner),
+            (.installVerification, .mainInstallFailure, .verifyingInstallation),
+            (.runtimeConfigWrite, .runtimeVerificationFailed, .writingRuntimeConfiguration),
+            (.runtimeConfigVerify, .runtimeVerificationFailed, .verifyingRuntimeConfiguration),
+            (.deviceDisconnected, .deviceUnavailable, .waitingForDevice),
+        ]
+        XCTAssertEqual(Set(expectations.map(\.0)), Set(ConsumerProvisioningFaultPoint.allCases))
+
+        for (point, expectedCode, expectedStage) in expectations {
+            let harness = try await makeNativeHarness(faultPoint: point)
+            defer { try? FileManager.default.removeItem(at: harness.root) }
+            do {
+                _ = try await harness.provisioner.provision(harness.request)
+                XCTFail("Expected injected failure at \(point.rawValue)")
+            } catch let failure as ConsumerProvisioningFailure {
+                XCTAssertEqual(failure.code, expectedCode, point.rawValue)
+                XCTAssertEqual(failure.stage, expectedStage, point.rawValue)
+            }
+            _ = try await harness.nativeStore.load(
+                teamIdentifier: harness.team,
+                selectedDeviceIdentifier: harness.physicalUDID
+            )
+            let failedEvidence = await harness.recorder.evidence()
+            XCTAssertTrue(failedEvidence.uninstalledBundleIdentifiers.isEmpty, point.rawValue)
+
+            let retry = ConsumerArtifactProvisioner(
+                context: RuntimeProvisioningContext(resourcesURL: harness.resources, runner: harness.runner),
+                stateStore: harness.stateStore,
+                nativeArtifactStore: harness.nativeStore,
+                nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+                workspaceRootURL: harness.workspaces
+            )
+            let retried = try await retry.provision(harness.request)
+            XCTAssertEqual(retried.finalStage, .complete, point.rawValue)
+        }
+    }
+
+    func testDisconnectedPhoneStillCompletesLocalNativePreparationAndWaitsWithoutReauthentication() async throws {
+        let harness = try await makeNativeHarness(faultPoint: .deviceDisconnected)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let disconnectedRunner = ProcessRunner { executable, arguments, _, _, _ in
+            if executable.path == "/usr/bin/xcrun", arguments.starts(with: ["devicectl", "list", "devices"]) {
+                if let index = arguments.firstIndex(of: "--json-output"), arguments.indices.contains(index + 1) {
+                    let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": []]])
+                    try data.write(to: URL(fileURLWithPath: arguments[index + 1]), options: .atomic)
+                }
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if executable.path == "/usr/bin/xcrun", arguments.starts(with: ["devicectl", "device", "install", "app"]) {
+                return .init(exitCode: 1, stdout: "", stderr: "Device unavailable: iPhone disconnected")
+            }
+            return try await harness.recorder.run(executable: executable, arguments: arguments)
+        }
+        let stateStore = ConsumerProvisioningStateStore(directoryURL: harness.root.appendingPathComponent("DisconnectedState"))
+        let provisioner = ConsumerArtifactProvisioner(
+            context: RuntimeProvisioningContext(resourcesURL: harness.resources, runner: disconnectedRunner),
+            stateStore: stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces
+        )
+
+        do {
+            _ = try await provisioner.provision(harness.request)
+            XCTFail("Expected the device-dependent install stage to wait")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .deviceUnavailable)
+            XCTAssertEqual(failure.stage, .waitingForDevice)
+            XCTAssertTrue(failure.remediation.contains("authorization") || failure.remediation.contains("Authorization"))
+        }
+        _ = try await harness.nativeStore.load(teamIdentifier: harness.team)
+        let passed = await stateStore.loadEvents().filter { $0.result == .passed }.map(\.stage)
+        for localStage in [
+            ConsumerProvisioningStage.preparedNativeContextReused,
+            .signingIdentityResolved, .preparingArtifacts, .signingNestedComponents,
+            .signingMain, .signingRunner, .verifyingSignatures,
+            .artifactValidationComplete, .installCommandsPrepared, .runtimeConfigurationPrepared,
+        ] {
+            XCTAssertTrue(passed.contains(localStage), "Missing disconnected local stage \(localStage.rawValue)")
+        }
+    }
+
+    private func makeNativeHarness(faultPoint: ConsumerProvisioningFaultPoint) async throws -> (
+        root: URL,
+        resources: URL,
+        workspaces: URL,
+        team: String,
+        physicalUDID: String,
+        nativeStore: NativeProvisioningArtifactStore,
+        stateStore: ConsumerProvisioningStateStore,
+        recorder: NativePipelineRecorder,
+        runner: ProcessRunner,
+        provisioner: ConsumerArtifactProvisioner,
+        request: ConsumerProvisioningRequest
+    ) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-native-fault-\(UUID().uuidString)", isDirectory: true)
+        let resources = root.appendingPathComponent("Resources", isDirectory: true)
+        let workspaces = root.appendingPathComponent("Workspaces", isDirectory: true)
+        let team = "T8SL4SG87F"
+        let physicalUDID = "00008150-00022D581E12401C"
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
+        let certificate = Data("fixture-development-certificate".utf8)
+        let sha256 = SHA256.hash(data: certificate).map { String(format: "%02X", $0) }.joined()
+        let profiles = try makeNativeProfiles(
+            team: team,
+            physicalUDID: physicalUDID,
+            identifiers: identifiers,
+            certificate: certificate,
+            certificateFingerprint: sha256
+        )
+        let preparation = ExperimentalProvisioningPreparation(
+            team: .init(id: team, name: "Personal Team", isPersonalTeam: true, isPaidDeveloperTeam: false),
+            identity: .init(
+                certificateFingerprint: sha256,
+                certificateExpiration: Date().addingTimeInterval(86_400),
+                privateKeyPersistentReference: Data([1]),
+                reused: true
+            ),
+            derivedIdentifiers: identifiers,
+            profiles: profiles
+        )
+        let nativeStore = NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("Native"))
+        try await nativeStore.save(preparation, selectedDeviceIdentifier: physicalUDID)
+        try makeConsumerArtifactFixture(at: resources)
+        let recorder = NativePipelineRecorder(
+            team: team,
+            physicalUDID: physicalUDID,
+            identifiers: identifiers,
+            certificateSHA1: Insecure.SHA1.hash(data: certificate).map { String(format: "%02X", $0) }.joined(),
+            profileDataByBundle: Dictionary(uniqueKeysWithValues: profiles.map { ($0.bundleIdentifier, $0.profileData) })
+        )
+        let runner = ProcessRunner { executable, arguments, _, _, _ in
+            try await recorder.run(executable: executable, arguments: arguments)
+        }
+        let stateStore = ConsumerProvisioningStateStore(directoryURL: root.appendingPathComponent("State"))
+        let provisioner = ConsumerArtifactProvisioner(
+            context: RuntimeProvisioningContext(resourcesURL: resources, runner: runner),
+            stateStore: stateStore,
+            nativeArtifactStore: nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            faultInjector: FixtureFaultInjector(point: faultPoint),
+            workspaceRootURL: workspaces
+        )
+        return (
+            root, resources, workspaces, team, physicalUDID, nativeStore, stateStore, recorder, runner,
+            provisioner,
+            .init(
+                operation: .install,
+                selectedDeviceIdentifier: physicalUDID,
+                selectedTeamIdentifier: team,
+                allowFreshInstallAfterCrossTeamConflict: false,
+                backend: .nativePersonalTeam
+            )
+        )
     }
 
     private func makeManifest(team: String, device: String) throws -> ConsumerProvisioningManifest {
@@ -726,6 +936,77 @@ final class ConsumerProvisioningTests: XCTestCase {
         try FileManager.default.copyItem(
             at: URL(fileURLWithPath: "/usr/bin/true"),
             to: url.appendingPathComponent(executable)
+        )
+    }
+}
+
+private struct FixtureNativeSigningIdentityResolver: NativeSigningIdentityResolving {
+    func resolve(
+        certificateDER: Data,
+        expectedSHA256: String,
+        expectedKeyApplicationTagIdentifier: String?,
+        teamIdentifier: String,
+        workingDirectory: URL
+    ) async throws -> NativeSigningIdentityResolution {
+        let actual = SHA256.hash(data: certificateDER).map { String(format: "%02X", $0) }.joined()
+        guard actual == expectedSHA256 else {
+            throw ConsumerProvisioningFailure(
+                code: .profileCertificateMismatch,
+                stage: .preparingIdentities,
+                userMessage: "fixture mismatch",
+                remediation: "fixture mismatch",
+                developerDetail: "fixture mismatch"
+            )
+        }
+        var diagnostics = NativeSigningIdentityDiagnostics()
+        diagnostics.profileCertificatePresent = true
+        diagnostics.keychainCertificateFound = true
+        diagnostics.keychainPrivateKeyFound = true
+        diagnostics.certificatePublicKeyMatch = true
+        diagnostics.keychainIdentityFound = true
+        diagnostics.secIdentityResolutionSucceeded = true
+        diagnostics.codesignIdentityVisible = true
+        diagnostics.codesignSignTestSucceeded = true
+        diagnostics.certificateQueryStatus = errSecSuccess
+        diagnostics.privateKeyQueryStatus = errSecSuccess
+        diagnostics.identityQueryStatus = errSecSuccess
+        diagnostics.secIdentityResolutionStatus = errSecSuccess
+        diagnostics.certificateFingerprint = expectedSHA256
+        diagnostics.publicKeyFingerprint = expectedSHA256
+        diagnostics.keyApplicationTagIdentifier = expectedKeyApplicationTagIdentifier
+        return NativeSigningIdentityResolution(
+            certificateSHA1: Insecure.SHA1.hash(data: certificateDER).map { String(format: "%02X", $0) }.joined(),
+            diagnostics: diagnostics
+        )
+    }
+}
+
+private struct FixtureFaultInjector: ConsumerProvisioningFaultInjecting {
+    let point: ConsumerProvisioningFaultPoint
+
+    func check(_ candidate: ConsumerProvisioningFaultPoint) throws {
+        guard candidate == point else { return }
+        let classification: (ConsumerProvisioningErrorCode, ConsumerProvisioningStage)
+        switch point {
+        case .signingIdentityResolution: classification = (.signingIdentityNotFound, .preparingIdentities)
+        case .preparingArtifacts: classification = (.artifactInvalid, .preparingArtifacts)
+        case .nestedSigning: classification = (.nestedSigningFailed, .signingNestedComponents)
+        case .mainSigning: classification = (.signOperationFailed, .signingMain)
+        case .runnerSigning: classification = (.signOperationFailed, .signingRunner)
+        case .signatureVerification: classification = (.signatureVerificationFailed, .verifyingSignatures)
+        case .installMain: classification = (.mainInstallFailure, .installingMain)
+        case .installRunner: classification = (.runnerInstallFailure, .installingRunner)
+        case .installVerification: classification = (.mainInstallFailure, .verifyingInstallation)
+        case .runtimeConfigWrite: classification = (.runtimeVerificationFailed, .writingRuntimeConfiguration)
+        case .runtimeConfigVerify: classification = (.runtimeVerificationFailed, .verifyingRuntimeConfiguration)
+        case .deviceDisconnected: classification = (.deviceUnavailable, .waitingForDevice)
+        }
+        throw ConsumerProvisioningFailure(
+            code: classification.0,
+            stage: classification.1,
+            userMessage: "Injected downstream failure.",
+            remediation: "Retry with the same prepared native context; Apple authorization remains valid.",
+            developerDetail: "Injected \(point.rawValue); no destructive rollback is permitted."
         )
     }
 }

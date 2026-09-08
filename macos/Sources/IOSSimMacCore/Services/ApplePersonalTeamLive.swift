@@ -950,15 +950,39 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     }
 
     func createPrivateKey(applicationTag: Data) throws -> SecKey {
+        var trustedApplications: [SecTrustedApplication] = []
+        var trustedApplicationPaths: [String?] = [nil, "/usr/bin/codesign"]
+        let bundledProvisioner = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/IOSSimProvisioner", isDirectory: false)
+        if FileManager.default.isExecutableFile(atPath: bundledProvisioner.path) {
+            trustedApplicationPaths.append(bundledProvisioner.path)
+        }
+        for path in trustedApplicationPaths {
+            var application: SecTrustedApplication?
+            guard SecTrustedApplicationCreateFromPath(path, &application) == errSecSuccess,
+                  let application else {
+                throw ExperimentalBackendError.certificateRequestFailed
+            }
+            trustedApplications.append(application)
+        }
+        var access: SecAccess?
+        guard SecAccessCreate(
+            keyLabel as CFString,
+            trustedApplications as CFArray,
+            &access
+        ) == errSecSuccess, let access else {
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
         let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
             kSecAttrKeySizeInBits as String: 2_048,
+            kSecAttrAccess as String: access,
             kSecPrivateKeyAttrs as String: [
                 kSecAttrIsPermanent as String: true,
                 kSecAttrApplicationTag as String: applicationTag,
                 kSecAttrLabel as String: keyLabel,
                 kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-                kSecAttrSynchronizable as String: false
+                kSecAttrSynchronizable as String: false,
             ]
         ]
         var error: Unmanaged<CFError>?
@@ -1272,6 +1296,7 @@ extension LiveApplePersonalTeamBackend {
             certificateFingerprint: match.fingerprint,
             certificateExpiration: match.expiration,
             privateKeyPersistentReference: persistent,
+            keyApplicationTagIdentifier: canonicalManagedKeyTag(tag, teamIdentifier: team.id),
             reused: reused
         )
     }
@@ -1812,17 +1837,25 @@ func certificateExpiration(_ certificate: SecCertificate) -> Date? {
     return nil
 }
 
-private func createCertificateSigningRequest(key: SecKey) throws -> String {
+func createCertificateSigningRequest(key: SecKey, teamIdentifier: String? = nil) throws -> String {
     guard let publicKey = SecKeyCopyPublicKey(key) else { throw ExperimentalBackendError.certificateRequestFailed }
     var error: Unmanaged<CFError>?
     guard let pkcs1 = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {
         throw ExperimentalBackendError.certificateRequestFailed
     }
-    let subject = ASN1.sequence([
+    var subjectValues = [
         ASN1.set(ASN1.sequence([ASN1.oid([0x55, 0x04, 0x06]), ASN1.printable("US")])),
         ASN1.set(ASN1.sequence([ASN1.oid([0x55, 0x04, 0x0A]), ASN1.utf8("IOSSim")])),
-        ASN1.set(ASN1.sequence([ASN1.oid([0x55, 0x04, 0x03]), ASN1.utf8("IOSSim")]))
-    ])
+    ]
+    if let teamIdentifier {
+        subjectValues.append(ASN1.set(ASN1.sequence([
+            ASN1.oid([0x55, 0x04, 0x0B]), ASN1.utf8(teamIdentifier),
+        ])))
+    }
+    subjectValues.append(ASN1.set(ASN1.sequence([
+        ASN1.oid([0x55, 0x04, 0x03]), ASN1.utf8("IOSSim"),
+    ])))
+    let subject = ASN1.sequence(subjectValues)
     let algorithm = ASN1.sequence([ASN1.oid([0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01]), ASN1.null])
     let publicInfo = ASN1.sequence([algorithm, ASN1.bitString(pkcs1)])
     let requestInfo = ASN1.sequence([ASN1.integer(0), subject, publicInfo, Data([0xA0, 0x00])])

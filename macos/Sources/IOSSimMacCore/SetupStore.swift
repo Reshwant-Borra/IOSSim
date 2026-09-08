@@ -713,8 +713,9 @@ public final class SetupStore: ObservableObject {
                     recovery: failure.remediation,
                     details: "\(failure.code.rawValue): \(failure.developerDetail)"
                 )
-                self.consumerStage = .failed
-                self.phase = .failed
+                let waitingForDevice = failure.code == .deviceUnavailable || failure.stage == .waitingForDevice
+                self.consumerStage = waitingForDevice ? .waitingForDevice : .failed
+                self.phase = waitingForDevice ? .waitingForDevice : .failed
                 self.recordStateTransition(
                     .uiStatePublished,
                     generation: generation,

@@ -131,6 +131,20 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertEqual(provisioned, ["A"])
     }
 
+    func testConsumerDisconnectSurfacesWaitingStateInsteadOfAuthenticationFailure() async throws {
+        let engine = ConsumerDisconnectEngine()
+        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        store.continueFromCurrentStatus()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .waitingForDevice)
+        XCTAssertEqual(store.consumerStage, .waitingForDevice)
+        XCTAssertTrue(store.lastError?.details.contains(ConsumerProvisioningErrorCode.deviceUnavailable.rawValue) == true)
+        XCTAssertFalse(store.lastError?.headline.localizedCaseInsensitiveContains("authorization") == true)
+    }
+
     func testReconnectSameDeviceRestoresSelection() async throws {
         UserDefaults.standard.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
         UserDefaults.standard.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
@@ -370,6 +384,40 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertEqual(request?.allowFreshInstallAfterCrossTeamConflict, true)
     }
 
+    func testCanceledOlderSuccessCannotOverwriteNewerDeviceState() async throws {
+        let oldStatus = Self.status(devices: [Self.device("A")])
+        let currentStatus = Self.status(devices: [])
+        let engine = RacingDoctorEngine(oldResult: .success(oldStatus), currentStatus: currentStatus)
+        let store = SetupStore(engine: engine)
+
+        store.getStarted()
+        while await engine.callCount < 1 { await Task.yield() }
+        store.cancelCurrentOperation()
+        store.getStarted()
+        try await waitUntilIdle(store)
+        while !(await engine.oldCallFinished) { await Task.yield() }
+
+        XCTAssertEqual(store.phase, .waitingForDevice)
+        XCTAssertTrue(store.status?.device.devices.isEmpty == true)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testCanceledOlderFailureCannotOverwriteNewerSuccess() async throws {
+        let currentStatus = Self.status(devices: [])
+        let engine = RacingDoctorEngine(oldResult: .failure, currentStatus: currentStatus)
+        let store = SetupStore(engine: engine)
+
+        store.getStarted()
+        while await engine.callCount < 1 { await Task.yield() }
+        store.cancelCurrentOperation()
+        store.getStarted()
+        try await waitUntilIdle(store)
+        while !(await engine.oldCallFinished) { await Task.yield() }
+
+        XCTAssertEqual(store.phase, .waitingForDevice)
+        XCTAssertNil(store.lastError)
+    }
+
     private func waitUntilIdle(_ store: SetupStore, timeout: TimeInterval = 3) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while store.isRunning {
@@ -472,6 +520,89 @@ final class SetupStoreTests: XCTestCase {
             device: DeviceSummary(ready: !devices.isEmpty && runtimeActions.isEmpty, connected: !devices.isEmpty, devices: devices),
             actionsRequired: [],
             checks: checks
+        )
+    }
+}
+
+private actor RacingDoctorEngine: IOSSimSetupEngine {
+    enum OldResult: Sendable {
+        case success(DoctorStatus)
+        case failure
+    }
+
+    private let oldResult: OldResult
+    private let currentStatus: DoctorStatus
+    private(set) var callCount = 0
+    private(set) var oldCallFinished = false
+
+    init(oldResult: OldResult, currentStatus: DoctorStatus) {
+        self.oldResult = oldResult
+        self.currentStatus = currentStatus
+    }
+
+    func doctor() async throws -> DoctorStatus {
+        callCount += 1
+        guard callCount == 1 else { return currentStatus }
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                continuation.resume()
+            }
+        }
+        oldCallFinished = true
+        switch oldResult {
+        case .success(let status): return status
+        case .failure:
+            throw ProcessFailure(
+                commandName: "doctor",
+                result: .init(exitCode: 1, stdout: "", stderr: "stale failure")
+            )
+        }
+    }
+
+    func setup() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func build() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult {
+        .init(exitCode: 0, stdout: "", stderr: "")
+    }
+}
+
+private actor ConsumerDisconnectEngine: IOSSimSetupEngine {
+    nonisolated let consumerProvisioningEnabled = true
+
+    func doctor() async throws -> DoctorStatus {
+        let device = DetectedDevice(
+            name: "Fixture iPhone",
+            identifier: "A",
+            selectionIdentifier: "A",
+            osVersion: "26.6",
+            developerModeStatus: "enabled",
+            pairingState: "paired",
+            tunnelState: "connected"
+        )
+        return DoctorStatus(
+            ready: false,
+            mac: MacSummary(ready: true),
+            device: DeviceSummary(ready: true, connected: true, devices: [device]),
+            actionsRequired: [],
+            checks: []
+        )
+    }
+
+    func setup() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func build() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult {
+        .init(exitCode: 0, stdout: "", stderr: "")
+    }
+    func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] {
+        [.team("TEAM1")]
+    }
+    func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        throw ConsumerProvisioningFailure(
+            code: .deviceUnavailable,
+            stage: .waitingForDevice,
+            userMessage: "IOSSim is ready to continue when the selected iPhone reconnects.",
+            remediation: "Reconnect the same iPhone and choose Repair.",
+            developerDetail: "The selected device disconnected after local preparation."
         )
     }
 }

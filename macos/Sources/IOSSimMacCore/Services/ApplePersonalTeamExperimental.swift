@@ -241,17 +241,21 @@ public struct ExperimentalSigningIdentity: Equatable, Sendable {
     public let certificateFingerprint: String
     public let certificateExpiration: Date
     public let privateKeyPersistentReference: Data
+    /// Non-secret identifier for the permanent IOSSim-owned Keychain key.
+    public let keyApplicationTagIdentifier: String?
     public let reused: Bool
 
     public init(
         certificateFingerprint: String,
         certificateExpiration: Date,
         privateKeyPersistentReference: Data,
+        keyApplicationTagIdentifier: String? = nil,
         reused: Bool
     ) {
         self.certificateFingerprint = certificateFingerprint
         self.certificateExpiration = certificateExpiration
         self.privateKeyPersistentReference = privateKeyPersistentReference
+        self.keyApplicationTagIdentifier = keyApplicationTagIdentifier
         self.reused = reused
     }
 }

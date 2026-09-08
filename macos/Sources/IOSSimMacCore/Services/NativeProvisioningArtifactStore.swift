@@ -22,6 +22,9 @@ public struct NativeProvisioningArtifacts: Codable, Equatable, Sendable {
     public let teamIdentifier: String
     /// SHA-256 of the certificate whose private key remains in the IOSSim-managed keychain item.
     public let certificateFingerprint: String
+    /// Non-secret application tag used to query only the IOSSim-owned private key.
+    /// Optional for schema-1 artifacts written before this continuity field existed.
+    public let keyApplicationTagIdentifier: String?
     public let certificateExpiresAt: Date
     public let deviceIdentifierHash: String
     public let identifiers: PersonalTeamBundleIdentifierSet
@@ -36,6 +39,7 @@ public struct NativeProvisioningArtifacts: Codable, Equatable, Sendable {
         schemaVersion = Self.currentSchemaVersion
         teamIdentifier = preparation.team.id
         certificateFingerprint = preparation.identity.certificateFingerprint.uppercased()
+        keyApplicationTagIdentifier = preparation.identity.keyApplicationTagIdentifier
         certificateExpiresAt = preparation.identity.certificateExpiration
         deviceIdentifierHash = PersonalTeamProvisioningPOC.deviceIdentifierHash(selectedDeviceIdentifier)
         identifiers = preparation.derivedIdentifiers
@@ -154,32 +158,71 @@ public actor NativeProvisioningArtifactStore {
         return artifacts
     }
 
+    /// Loads the single prepared native context for local-only work while its
+    /// iPhone is temporarily disconnected. Device-bound operations still use
+    /// the normal overload and revalidate the physical UDID after reconnect.
+    public func load(teamIdentifier: String, now: Date = Date()) throws -> NativeProvisioningArtifacts {
+        guard fileManager.fileExists(atPath: artifactURL.path) else {
+            throw unavailable("Native Personal Team profiles were not preserved after provisioning.")
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: artifactURL)
+        } catch {
+            throw unavailable("Native Personal Team artifact handoff could not be read: \(error)")
+        }
+        guard data.count <= 4 * 1_024 * 1_024 else {
+            throw unavailable("Native Personal Team artifact handoff exceeds the size limit.")
+        }
+        let artifacts: NativeProvisioningArtifacts
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            artifacts = try decoder.decode(NativeProvisioningArtifacts.self, from: data)
+        } catch {
+            throw unavailable("Native Personal Team artifact handoff is corrupt: \(error)")
+        }
+        try validateEnvelope(
+            artifacts,
+            teamIdentifier: teamIdentifier,
+            selectedDeviceIdentifier: nil,
+            now: now
+        )
+        return artifacts
+    }
+
     private func validateEnvelope(
         _ artifacts: NativeProvisioningArtifacts,
         teamIdentifier: String,
-        selectedDeviceIdentifier: String,
+        selectedDeviceIdentifier: String?,
         now: Date
     ) throws {
         let expectedIdentifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: teamIdentifier)
-        let expectedDeviceHash = PersonalTeamProvisioningPOC.deviceIdentifierHash(selectedDeviceIdentifier)
+        let expectedDeviceHash = selectedDeviceIdentifier.map(PersonalTeamProvisioningPOC.deviceIdentifierHash)
         let requiredBundles = Set([expectedIdentifiers.main, expectedIdentifiers.runner])
         guard artifacts.schemaVersion == NativeProvisioningArtifacts.currentSchemaVersion,
               artifacts.teamIdentifier == teamIdentifier,
               artifacts.identifiers == expectedIdentifiers,
-              artifacts.deviceIdentifierHash == expectedDeviceHash,
+              artifacts.deviceIdentifierHash.count == 64,
+              artifacts.deviceIdentifierHash.allSatisfy(\.isHexDigit),
+              expectedDeviceHash.map({ artifacts.deviceIdentifierHash == $0 }) ?? true,
               artifacts.certificateFingerprint.count == 64,
               artifacts.certificateFingerprint.allSatisfy(\.isHexDigit),
+              artifacts.keyApplicationTagIdentifier.map({
+                  canonicalManagedKeyTag(Data($0.utf8), teamIdentifier: teamIdentifier) != nil
+              }) ?? true,
               artifacts.certificateExpiresAt > now,
               Set(artifacts.profiles.map(\.bundleIdentifier)) == requiredBundles,
               artifacts.profiles.allSatisfy({
                   $0.teamIdentifier == teamIdentifier
                       && $0.certificateFingerprint == artifacts.certificateFingerprint
-                      && $0.provisionedDeviceIdentifierHash == expectedDeviceHash
+                      && $0.provisionedDeviceIdentifierHash == artifacts.deviceIdentifierHash
                       && $0.applicationIdentifierEntitlement == "\(teamIdentifier).\($0.bundleIdentifier)"
                       && $0.applicationIdentifierPrefix == teamIdentifier
                       && $0.getTaskAllow
                       && $0.profileType == "development"
                       && $0.issuedAt <= now
+                      && $0.issuedAt >= artifacts.preparedAt.addingTimeInterval(-300)
                       && $0.expiresAt > now
                       && !$0.profileData.isEmpty
               }) else {

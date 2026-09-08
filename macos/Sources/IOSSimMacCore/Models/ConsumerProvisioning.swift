@@ -11,11 +11,26 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
     case discoveringAppleAccounts = "DISCOVERING_APPLE_ACCOUNTS"
     case waitingForTeamSelection = "WAITING_FOR_TEAM_SELECTION"
     case validatingTeam = "VALIDATING_TEAM"
+    case preparedNativeContextReused = "PREPARED_NATIVE_CONTEXT_REUSED"
     case preparingIdentities = "PREPARING_IDENTITIES"
+    case profileCertificatePresent = "PROFILE_CERTIFICATE_PRESENT"
+    case keychainCertificateFound = "KEYCHAIN_CERTIFICATE_FOUND"
+    case keychainPrivateKeyFound = "KEYCHAIN_PRIVATE_KEY_FOUND"
+    case certificatePublicKeyMatch = "CERTIFICATE_PUBLIC_KEY_MATCH"
+    case keychainIdentityFound = "KEYCHAIN_IDENTITY_FOUND"
+    case secIdentityResolutionSucceeded = "SECIDENTITY_RESOLUTION_SUCCEEDED"
+    case codesignIdentityVisible = "CODESIGN_IDENTITY_VISIBLE"
+    case codesignSignTestSucceeded = "CODESIGN_SIGN_TEST_SUCCEEDED"
+    case signingIdentityResolved = "SIGNING_IDENTITY_RESOLVED"
     case preparingArtifacts = "PREPARING_ARTIFACTS"
+    case signingNestedComponents = "SIGNING_NESTED_COMPONENTS"
     case signingMain = "SIGNING_MAIN"
     case signingRunner = "SIGNING_RUNNER"
     case verifyingSignatures = "VERIFYING_SIGNATURES"
+    case artifactValidationComplete = "ARTIFACT_VALIDATION_COMPLETE"
+    case installCommandsPrepared = "INSTALL_COMMANDS_PREPARED"
+    case runtimeConfigurationPrepared = "RUNTIME_CONFIGURATION_PREPARED"
+    case waitingForDevice = "WAITING_FOR_DEVICE"
     case installingMain = "INSTALLING_MAIN"
     case installingRunner = "INSTALLING_RUNNER"
     case verifyingInstallation = "VERIFYING_INSTALLATION"
@@ -34,9 +49,14 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
         case .discoveringDevices, .waitingForDeviceSelection: return "Finding your iPhone"
         case .checkingDevice, .checkingDeveloperMode: return "Preparing your iPhone"
         case .discoveringAppleAccounts, .waitingForTeamSelection, .validatingTeam: return "Checking Apple signing"
-        case .preparingIdentities, .preparingArtifacts: return "Preparing IOSSim"
-        case .signingMain, .signingRunner: return "Signing IOSSim"
-        case .verifyingSignatures: return "Verifying signed components"
+        case .preparedNativeContextReused, .preparingIdentities, .profileCertificatePresent,
+             .keychainCertificateFound, .keychainPrivateKeyFound, .certificatePublicKeyMatch,
+             .keychainIdentityFound, .secIdentityResolutionSucceeded, .codesignIdentityVisible,
+             .codesignSignTestSucceeded, .signingIdentityResolved, .preparingArtifacts,
+             .installCommandsPrepared, .runtimeConfigurationPrepared, .waitingForDevice:
+            return "Preparing IOSSim"
+        case .signingNestedComponents, .signingMain, .signingRunner: return "Signing IOSSim"
+        case .verifyingSignatures, .artifactValidationComplete: return "Verifying signed components"
         case .installingMain: return "Installing IOSSim"
         case .installingRunner: return "Installing support components"
         case .verifyingInstallation, .writingRuntimeConfiguration, .verifyingRuntimeConfiguration:
@@ -61,6 +81,17 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case personalTeamUnavailable = "PERSONAL_TEAM_UNAVAILABLE"
     case teamSelectionRequired = "TEAM_SELECTION_REQUIRED"
     case signingIdentityMissing = "SIGNING_IDENTITY_MISSING"
+    case signingPrivateKeyNotFound = "SIGNING_PRIVATE_KEY_NOT_FOUND"
+    case signingCertificateNotFound = "SIGNING_CERTIFICATE_NOT_FOUND"
+    case signingCertificateKeyMismatch = "SIGNING_CERTIFICATE_KEY_MISMATCH"
+    case signingIdentityNotFound = "SIGNING_IDENTITY_NOT_FOUND"
+    case signingKeyAccessDenied = "SIGNING_KEY_ACCESS_DENIED"
+    case signingIdentityAccessDenied = "SIGNING_IDENTITY_ACCESS_DENIED"
+    case signOperationFailed = "SIGN_OPERATION_FAILED"
+    case nestedSigningFailed = "NESTED_SIGNING_FAILED"
+    case signatureVerificationFailed = "SIGNATURE_VERIFICATION_FAILED"
+    case entitlementMismatch = "ENTITLEMENT_MISMATCH"
+    case profileCertificateMismatch = "PROFILE_CERTIFICATE_MISMATCH"
     case accountTeamMismatch = "ACCOUNT_TEAM_MISMATCH"
     case profileUnavailable = "PROFILE_UNAVAILABLE"
     case bundleIDRegistrationFailure = "BUNDLE_ID_REGISTRATION_FAILURE"
@@ -493,6 +524,13 @@ public enum ConsumerProvisioningErrorClassifier {
         }
         if lower.contains("device") && lower.contains("not") && lower.contains("profile") {
             return .deviceNotIncluded
+        }
+        if lower.contains("device unavailable") || lower.contains("device is unavailable")
+            || lower.contains("device disconnected") || lower.contains("iphone disconnected")
+            || lower.contains("lost connection") || lower.contains("no device found")
+            || lower.contains("device was not found") || lower.contains("failed to connect to device")
+            || lower.contains("connection invalidated") {
+            return .deviceUnavailable
         }
         return artifact == "main" ? .mainInstallFailure : .runnerInstallFailure
     }

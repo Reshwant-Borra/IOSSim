@@ -8,6 +8,8 @@ public actor ConsumerArtifactProvisioner {
     private let stateStore: ConsumerProvisioningStateStore
     private let refreshCoordinator: ConsumerRefreshCoordinator
     private let nativeArtifactStore: NativeProvisioningArtifactStore
+    private let nativeIdentityResolver: any NativeSigningIdentityResolving
+    private let faultInjector: any ConsumerProvisioningFaultInjecting
     private let fileManager: FileManager
     private let workspaceRootURL: URL?
 
@@ -16,6 +18,8 @@ public actor ConsumerArtifactProvisioner {
         stateStore: ConsumerProvisioningStateStore = ConsumerProvisioningStateStore(),
         refreshCoordinator: ConsumerRefreshCoordinator = ConsumerRefreshCoordinator(),
         nativeArtifactStore: NativeProvisioningArtifactStore = NativeProvisioningArtifactStore(),
+        nativeIdentityResolver: (any NativeSigningIdentityResolving)? = nil,
+        faultInjector: any ConsumerProvisioningFaultInjecting = NoConsumerProvisioningFaults(),
         fileManager: FileManager = .default,
         workspaceRootURL: URL? = nil
     ) {
@@ -23,6 +27,9 @@ public actor ConsumerArtifactProvisioner {
         self.stateStore = stateStore
         self.refreshCoordinator = refreshCoordinator
         self.nativeArtifactStore = nativeArtifactStore
+        self.nativeIdentityResolver = nativeIdentityResolver
+            ?? NativeSigningIdentityResolver(runner: context.runner, fileManager: fileManager)
+        self.faultInjector = faultInjector
         self.fileManager = fileManager
         self.workspaceRootURL = workspaceRootURL
     }
@@ -48,26 +55,62 @@ public actor ConsumerArtifactProvisioner {
                 try await stateStore.saveManifest(prior.recordingRefreshAttempt(at: started))
             }
             _ = try context.verifyArtifacts()
-            let rawDeviceIdentifier = try await resolveDevice(request.selectedDeviceIdentifier)
-            guard let signingDeviceIdentifier = await AppleDeviceTool.signingDeviceIdentifier(
-                matching: rawDeviceIdentifier,
+            let connectedRawDeviceIdentifier = await AppleDeviceTool.rawDeviceIdentifier(
+                matching: request.selectedDeviceIdentifier,
                 context: context
-            ) else {
-                throw ConsumerProvisioningFailure(
-                    code: .deviceUnavailable,
-                    stage: .preparingIdentities,
-                    userMessage: "IOSSim could not prepare signing for the selected iPhone.",
-                    remediation: "Reconnect and unlock that iPhone, then try again.",
-                    developerDetail: "Hardware UDID could not be resolved from the selected CoreDevice identifier."
-                )
-            }
+            )
+            let rawDeviceIdentifier: String
+            let signingDeviceIdentifier: String?
             let nativeArtifacts: NativeProvisioningArtifacts?
             if request.backend == .nativePersonalTeam {
-                nativeArtifacts = try await nativeArtifactStore.load(
-                    teamIdentifier: request.selectedTeamIdentifier,
-                    selectedDeviceIdentifier: signingDeviceIdentifier
+                if let connectedRawDeviceIdentifier,
+                   let physicalIdentifier = await AppleDeviceTool.signingDeviceIdentifier(
+                       matching: connectedRawDeviceIdentifier,
+                       context: context
+                   ) {
+                    rawDeviceIdentifier = connectedRawDeviceIdentifier
+                    signingDeviceIdentifier = physicalIdentifier
+                    nativeArtifacts = try await nativeArtifactStore.load(
+                        teamIdentifier: request.selectedTeamIdentifier,
+                        selectedDeviceIdentifier: physicalIdentifier
+                    )
+                } else {
+                    rawDeviceIdentifier = request.selectedDeviceIdentifier
+                    signingDeviceIdentifier = nil
+                    nativeArtifacts = try await nativeArtifactStore.load(
+                        teamIdentifier: request.selectedTeamIdentifier
+                    )
+                }
+                try await record(
+                    stage: .preparedNativeContextReused,
+                    device: rawDeviceIdentifier,
+                    result: .passed,
+                    detail: "Reused owner-only native profiles and public continuity metadata without reauthentication."
                 )
             } else {
+                guard let connectedRawDeviceIdentifier else {
+                    throw ConsumerProvisioningFailure(
+                        code: .deviceUnavailable,
+                        stage: .checkingDevice,
+                        userMessage: "The selected iPhone is not available.",
+                        remediation: "Reconnect and unlock that iPhone, then try again.",
+                        developerDetail: "Selected device could not be resolved uniquely."
+                    )
+                }
+                rawDeviceIdentifier = connectedRawDeviceIdentifier
+                guard let physicalIdentifier = await AppleDeviceTool.signingDeviceIdentifier(
+                    matching: connectedRawDeviceIdentifier,
+                    context: context
+                ) else {
+                    throw ConsumerProvisioningFailure(
+                        code: .deviceUnavailable,
+                        stage: .preparingIdentities,
+                        userMessage: "IOSSim could not prepare signing for the selected iPhone.",
+                        remediation: "Reconnect and unlock that iPhone, then try again.",
+                        developerDetail: "Hardware UDID could not be resolved from the selected CoreDevice identifier."
+                    )
+                }
+                signingDeviceIdentifier = physicalIdentifier
                 nativeArtifacts = nil
             }
             let team = try await resolveTeam(
@@ -77,6 +120,7 @@ public actor ConsumerArtifactProvisioner {
             )
             let nativeSigningIdentity: String?
             if let nativeArtifacts {
+                try await record(stage: .preparingIdentities, device: rawDeviceIdentifier, result: .started)
                 nativeSigningIdentity = try await preflightNativeArtifacts(
                     nativeArtifacts,
                     teamIdentifier: team.teamIdentifier,
@@ -85,11 +129,6 @@ public actor ConsumerArtifactProvisioner {
             } else {
                 nativeSigningIdentity = nil
             }
-            try await validateExistingState(
-                request: request,
-                selectedTeam: team,
-                rawDeviceIdentifier: rawDeviceIdentifier
-            )
             let prepared = try await prepareArtifacts(
                 team: team,
                 rawDeviceIdentifier: rawDeviceIdentifier,
@@ -99,6 +138,11 @@ public actor ConsumerArtifactProvisioner {
                 nativeSigningIdentity: nativeSigningIdentity
             )
             defer { try? fileManager.removeItem(at: prepared.workspaceURL) }
+            try await validateExistingState(
+                request: request,
+                selectedTeam: team,
+                rawDeviceIdentifier: rawDeviceIdentifier
+            )
             try await installAndVerify(prepared, rawDeviceIdentifier: rawDeviceIdentifier)
             try await launchMain(
                 rawDeviceIdentifier: rawDeviceIdentifier,
@@ -413,11 +457,12 @@ public actor ConsumerArtifactProvisioner {
     private func prepareArtifacts(
         team: PersonalTeamCandidate,
         rawDeviceIdentifier: String,
-        signingDeviceIdentifier: String,
+        signingDeviceIdentifier: String?,
         operation: ConsumerProvisioningOperation,
         nativeArtifacts: NativeProvisioningArtifacts?,
         nativeSigningIdentity: String?
     ) async throws -> PreparedConsumerArtifacts {
+        try faultInjector.check(.preparingArtifacts)
         try await record(stage: .preparingIdentities, device: rawDeviceIdentifier, result: .started)
         let identifiers = try Self.installedIdentifiers(
             teamIdentifier: team.teamIdentifier,
@@ -512,6 +557,7 @@ public actor ConsumerArtifactProvisioner {
             expectedTeam: team.teamIdentifier,
             expectedBundleIdentifier: identifiers.main,
             selectedDeviceIdentifier: signingDeviceIdentifier,
+            expectedDeviceIdentifierHash: nativeArtifacts?.deviceIdentifierHash,
             expectedCertificateFingerprint: nativeArtifacts?.certificateFingerprint
         )
         let runnerProfile = try profileState(
@@ -520,6 +566,7 @@ public actor ConsumerArtifactProvisioner {
             expectedTeam: team.teamIdentifier,
             expectedBundleIdentifier: identifiers.runner,
             selectedDeviceIdentifier: signingDeviceIdentifier,
+            expectedDeviceIdentifierHash: nativeArtifacts?.deviceIdentifierHash,
             expectedCertificateFingerprint: nativeArtifacts?.certificateFingerprint
         )
 
@@ -547,6 +594,7 @@ public actor ConsumerArtifactProvisioner {
             detail: "Prepared bundled main and XCTest runner artifacts with deterministic identifiers and exact profiles."
         )
 
+        try await signNestedComponents(in: [mainURL, runnerURL], identity: signingIdentity)
         try await signMain(mainURL, profileURL: mainProfileURL, identity: signingIdentity)
         try await signRunner(runnerURL, profileURL: runnerProfileURL, identity: signingIdentity)
         try await verifySignature(
@@ -565,13 +613,31 @@ public actor ConsumerArtifactProvisioner {
             artifact: "runner",
             nativeManaged: nativeArtifacts != nil
         )
-        try await verifyNestedSignatures(runnerURL, expectedTeam: team.teamIdentifier)
+        try await verifyNestedSignatures(in: [mainURL, runnerURL], expectedTeam: team.teamIdentifier)
         try verifyPreparedRunnerRelationship(runnerURL, identifiers: identifiers)
         try await record(
             stage: .verifyingSignatures,
             device: rawDeviceIdentifier,
             result: .passed,
             detail: "Main, runner, nested code, embedded profiles, entitlements, identifiers, and team continuity verified."
+        )
+        try await record(
+            stage: .artifactValidationComplete,
+            device: rawDeviceIdentifier,
+            result: .passed,
+            detail: "All prepared bundles, nested Mach-O code, profiles, identifiers, teams, and entitlements passed validation."
+        )
+        try await record(
+            stage: .installCommandsPrepared,
+            device: rawDeviceIdentifier,
+            result: .passed,
+            detail: "Prepared deterministic main-then-runner install commands for only the selected physical device."
+        )
+        try await record(
+            stage: .runtimeConfigurationPrepared,
+            device: rawDeviceIdentifier,
+            result: .passed,
+            detail: "Prepared the current main, runner, team, and selected-device runtime mapping."
         )
 
         let appInfo = try? readPlist(mainURL.appendingPathComponent("Info.plist"))
@@ -619,29 +685,41 @@ public actor ConsumerArtifactProvisioner {
 
     private func signMain(_ url: URL, profileURL: URL, identity: String) async throws {
         do {
+            try faultInjector.check(.mainSigning)
             let entitlements = try entitlementFile(profileURL: profileURL, in: url.deletingLastPathComponent())
             try await codesign(url, identity: identity, entitlements: entitlements)
             try await record(stage: .signingMain, artifact: "main", result: .passed)
         } catch {
-            throw signingFailure(error, code: .mainSigningFailure, stage: .signingMain, artifact: "main")
+            throw signingFailure(error, code: .signOperationFailed, stage: .signingMain, artifact: "main")
+        }
+    }
+
+    private func signNestedComponents(in roots: [URL], identity: String) async throws {
+        let nested = roots.flatMap(nestedSignables).sorted(by: signingOrder)
+        do {
+            try faultInjector.check(.nestedSigning)
+            for item in nested {
+                try await codesign(item, identity: identity, entitlements: nil)
+            }
+            try await record(
+                stage: .signingNestedComponents,
+                artifact: "nestedCode",
+                result: .passed,
+                detail: "Explicitly signed \(nested.count) nested code components deepest-first."
+            )
+        } catch {
+            throw signingFailure(error, code: .nestedSigningFailed, stage: .signingNestedComponents, artifact: "nested code")
         }
     }
 
     private func signRunner(_ url: URL, profileURL: URL, identity: String) async throws {
-        let nested = nestedSignables(in: url)
         do {
-            for item in nested {
-                try await codesign(item, identity: identity, entitlements: nil)
-            }
-        } catch {
-            throw signingFailure(error, code: .runnerNestedSignatureFailure, stage: .signingRunner, artifact: "runner nested code")
-        }
-        do {
+            try faultInjector.check(.runnerSigning)
             let entitlements = try entitlementFile(profileURL: profileURL, in: url.deletingLastPathComponent())
             try await codesign(url, identity: identity, entitlements: entitlements)
             try await record(stage: .signingRunner, artifact: "runner", result: .passed)
         } catch {
-            throw signingFailure(error, code: .runnerSigningFailure, stage: .signingRunner, artifact: "runner")
+            throw signingFailure(error, code: .signOperationFailed, stage: .signingRunner, artifact: "runner")
         }
     }
 
@@ -666,6 +744,7 @@ public actor ConsumerArtifactProvisioner {
         artifact: String,
         nativeManaged: Bool
     ) async throws {
+        try faultInjector.check(.signatureVerification)
         let verification = try await context.runner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
             arguments: ["--verify", "--deep", "--strict", url.path],
@@ -675,7 +754,7 @@ public actor ConsumerArtifactProvisioner {
         guard verification.exitCode == 0 else {
             throw signingFailure(
                 ProcessFailure(commandName: "codesign-verify", result: verification),
-                code: artifact == "main" ? .mainSigningFailure : .runnerNestedSignatureFailure,
+                code: .signatureVerificationFailed,
                 stage: .verifyingSignatures,
                 artifact: artifact
             )
@@ -689,7 +768,7 @@ public actor ConsumerArtifactProvisioner {
         let summary = CodeSignatureSummary.parseCodesignDisplayOutput(display.combinedOutput)
         guard summary.identifier == expectedIdentifier, summary.teamIdentifier == expectedTeam else {
             throw ConsumerProvisioningFailure(
-                code: artifact == "main" ? .mainSigningFailure : .runnerSigningFailure,
+                code: .signatureVerificationFailed,
                 stage: .verifyingSignatures,
                 userMessage: "IOSSim could not verify a signed component.",
                 remediation: SignatureVerificationRemediation.message(nativeManaged: nativeManaged),
@@ -702,21 +781,21 @@ public actor ConsumerArtifactProvisioner {
             workingDirectory: url.deletingLastPathComponent(),
             environment: RuntimeProvisioning.deterministicEnvironment()
         )
+        let expectedEntitlements = try signingEntitlements(profileURL: profileURL)
         guard entitlementResult.exitCode == 0,
               let signedEntitlements = plistDictionary(in: entitlementResult.combinedOutput),
-              let profileEntitlements = try decodedProfile(profileURL)["Entitlements"] as? [String: Any],
-              NSDictionary(dictionary: signedEntitlements).isEqual(to: profileEntitlements) else {
+              NSDictionary(dictionary: signedEntitlements).isEqual(to: expectedEntitlements) else {
             throw signingFailure(
                 ProcessFailure(commandName: "codesign-entitlements", result: entitlementResult),
-                code: artifact == "main" ? .mainSigningFailure : .runnerSigningFailure,
+                code: .entitlementMismatch,
                 stage: .verifyingSignatures,
                 artifact: "\(artifact) entitlements"
             )
         }
     }
 
-    private func verifyNestedSignatures(_ runnerURL: URL, expectedTeam: String) async throws {
-        for item in nestedSignables(in: runnerURL) {
+    private func verifyNestedSignatures(in roots: [URL], expectedTeam: String) async throws {
+        for item in roots.flatMap(nestedSignables).sorted(by: signingOrder) {
             let verification = try await context.runner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
                 arguments: ["--verify", "--strict", item.path],
@@ -726,7 +805,7 @@ public actor ConsumerArtifactProvisioner {
             guard verification.exitCode == 0 else {
                 throw signingFailure(
                     ProcessFailure(commandName: "codesign-nested-verify", result: verification),
-                    code: .runnerNestedSignatureFailure,
+                    code: .signatureVerificationFailed,
                     stage: .verifyingSignatures,
                     artifact: "runner nested code"
                 )
@@ -741,7 +820,7 @@ public actor ConsumerArtifactProvisioner {
                   CodeSignatureSummary.parseCodesignDisplayOutput(display.combinedOutput).teamIdentifier == expectedTeam else {
                 throw signingFailure(
                     ProcessFailure(commandName: "codesign-nested-display", result: display),
-                    code: .runnerNestedSignatureFailure,
+                    code: .signatureVerificationFailed,
                     stage: .verifyingSignatures,
                     artifact: "runner nested team"
                 )
@@ -750,6 +829,7 @@ public actor ConsumerArtifactProvisioner {
     }
 
     private func installAndVerify(_ prepared: PreparedConsumerArtifacts, rawDeviceIdentifier: String) async throws {
+        try faultInjector.check(.deviceDisconnected)
         let installedBefore = await AppleDeviceTool.isAppInstalled(
             bundleIdentifier: prepared.identifiers.main,
             rawDeviceIdentifier: rawDeviceIdentifier,
@@ -772,11 +852,12 @@ public actor ConsumerArtifactProvisioner {
             rawDeviceIdentifier: rawDeviceIdentifier
         )
 
+        try faultInjector.check(.installVerification)
         let mainInstalled = await AppleDeviceTool.isAppInstalled(
             bundleIdentifier: prepared.identifiers.main,
             rawDeviceIdentifier: rawDeviceIdentifier,
             context: context
-        ) == true
+        )
         let runnerCount = await AppleDeviceTool.installedAppCount(
             bundleIdentifier: prepared.identifiers.runner,
             rawDeviceIdentifier: rawDeviceIdentifier,
@@ -786,7 +867,14 @@ public actor ConsumerArtifactProvisioner {
             bundleIdentifier: ProtectedSourceBundleIdentifiers.default.runner,
             rawDeviceIdentifier: rawDeviceIdentifier,
             context: context
-        ) == true
+        )
+        guard let mainInstalled, let runnerCount, let canonicalRunnerInstalled else {
+            throw installFailure(
+                .deviceUnavailable,
+                stage: .waitingForDevice,
+                detail: "The selected iPhone became unavailable during installation verification; prepared native profiles remain reusable."
+            )
+        }
         guard mainInstalled else {
             throw installFailure(.mainInstallFailure, stage: .verifyingInstallation, detail: "Main app lookup failed after install.")
         }
@@ -814,6 +902,7 @@ public actor ConsumerArtifactProvisioner {
         failureCode: ConsumerProvisioningErrorCode,
         rawDeviceIdentifier: String
     ) async throws {
+        try faultInjector.check(stage == .installingMain ? .installMain : .installRunner)
         let component = DeviceArtifactComponent(
             role: role,
             bundleIdentifier: bundleIdentifier,
@@ -829,6 +918,15 @@ public actor ConsumerArtifactProvisioner {
         )
         guard result.exitCode == 0 else {
             let classified = ConsumerProvisioningErrorClassifier.installErrorCode(output: result.combinedOutput, artifact: role == "iosMain" ? "main" : "runner")
+            if classified == .deviceUnavailable {
+                throw ConsumerProvisioningFailure(
+                    code: .deviceUnavailable,
+                    stage: .waitingForDevice,
+                    userMessage: "IOSSim is ready to continue when the selected iPhone reconnects.",
+                    remediation: "Reconnect and unlock the same iPhone, then choose Repair; Apple authorization and prepared profiles remain valid.",
+                    developerDetail: result.combinedOutput
+                )
+            }
             if classified == .crossTeamUpgradeBlocked {
                 throw ConsumerProvisioningFailure(
                     code: .crossTeamUpgradeBlocked,
@@ -854,6 +952,13 @@ public actor ConsumerArtifactProvisioner {
         expectedMainBundleIdentifier: String,
         expectedRunnerBundleIdentifier: String
     ) async throws {
+        try faultInjector.check(.runtimeConfigWrite)
+        try await record(
+            stage: .writingRuntimeConfiguration,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Launching the current main bundle to write its deterministic runner mapping."
+        )
         let result = try await context.runner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
             arguments: [
@@ -866,14 +971,23 @@ public actor ConsumerArtifactProvisioner {
             environment: RuntimeProvisioning.deterministicEnvironment()
         )
         guard result.exitCode == 0 else {
+            let disconnected = ConsumerProvisioningErrorClassifier.installErrorCode(
+                output: result.combinedOutput,
+                artifact: "main"
+            ) == .deviceUnavailable
             throw ConsumerProvisioningFailure(
-                code: .runtimeVerificationFailed,
-                stage: .verifyingRuntimeConfiguration,
-                userMessage: "IOSSim was installed but could not be opened on your iPhone.",
-                remediation: "Unlock the iPhone, open IOSSim once, then choose Check Again.",
+                code: disconnected ? .deviceUnavailable : .runtimeVerificationFailed,
+                stage: disconnected ? .waitingForDevice : .verifyingRuntimeConfiguration,
+                userMessage: disconnected
+                    ? "IOSSim is ready to continue when the selected iPhone reconnects."
+                    : "IOSSim was installed but could not be opened on your iPhone.",
+                remediation: disconnected
+                    ? "Reconnect and unlock the same iPhone, then choose Repair; Apple authorization and prepared profiles remain valid."
+                    : "Unlock the iPhone, open IOSSim once, then choose Check Again.",
                 developerDetail: result.combinedOutput
             )
         }
+        try faultInjector.check(.runtimeConfigVerify)
         try await verifyPersistedRunnerMapping(
             rawDeviceIdentifier: rawDeviceIdentifier,
             expectedMainBundleIdentifier: expectedMainBundleIdentifier,
@@ -892,6 +1006,7 @@ public actor ConsumerArtifactProvisioner {
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: root) }
         var detail = "Preference readback did not complete."
+        var deviceUnavailable = false
 
         for attempt in 0..<3 {
             let destination = root.appendingPathComponent("attempt-\(attempt)", isDirectory: true)
@@ -933,13 +1048,21 @@ public actor ConsumerArtifactProvisioner {
                 return
             }
             detail = result.combinedOutput
+            deviceUnavailable = ConsumerProvisioningErrorClassifier.installErrorCode(
+                output: result.combinedOutput,
+                artifact: "main"
+            ) == .deviceUnavailable
             if attempt < 2 { try await Task.sleep(nanoseconds: 300_000_000) }
         }
         throw ConsumerProvisioningFailure(
-            code: .runnerMappingMissing,
-            stage: .verifyingRuntimeConfiguration,
-            userMessage: "IOSSim could not verify its support configuration on the iPhone.",
-            remediation: "Keep the iPhone unlocked, open IOSSim once, then choose Repair.",
+            code: deviceUnavailable ? .deviceUnavailable : .runnerMappingMissing,
+            stage: deviceUnavailable ? .waitingForDevice : .verifyingRuntimeConfiguration,
+            userMessage: deviceUnavailable
+                ? "IOSSim is ready to continue when the selected iPhone reconnects."
+                : "IOSSim could not verify its support configuration on the iPhone.",
+            remediation: deviceUnavailable
+                ? "Reconnect and unlock the same iPhone, then choose Repair; Apple authorization and prepared profiles remain valid."
+                : "Keep the iPhone unlocked, open IOSSim once, then choose Repair.",
             developerDetail: detail
         )
     }
@@ -984,7 +1107,8 @@ public actor ConsumerArtifactProvisioner {
         artifact: String,
         expectedTeam: String,
         expectedBundleIdentifier: String,
-        selectedDeviceIdentifier: String,
+        selectedDeviceIdentifier: String?,
+        expectedDeviceIdentifierHash: String? = nil,
         expectedCertificateFingerprint: String? = nil
     ) throws -> ConsumerProfileState {
         let plist = try decodedProfile(url)
@@ -1010,17 +1134,22 @@ public actor ConsumerArtifactProvisioner {
         }
         if let groups = entitlements?["keychain-access-groups"] as? [String],
            !groups.allSatisfy({ $0 == applicationIdentifier || $0 == "\(expectedTeam).*" }) {
-            throw nativeProfileFailure("Profile keychain access groups are incompatible with \(expectedBundleIdentifier).")
+            throw entitlementFailure("Profile keychain access groups are incompatible with \(expectedBundleIdentifier).")
         }
         if let expectedCertificateFingerprint {
             let certificates = plist["DeveloperCertificates"] as? [Data] ?? []
             guard certificates.contains(where: {
                 sha256Hex($0).caseInsensitiveCompare(expectedCertificateFingerprint) == .orderedSame
             }) else {
-                throw nativeProfileFailure("Profile certificate does not match the IOSSim-managed signing identity for \(artifact).")
+                throw profileCertificateFailure("Profile certificate does not match the IOSSim-managed signing identity for \(artifact).")
             }
         }
-        guard devices.contains(selectedDeviceIdentifier) else {
+        let selectedDeviceIncluded = selectedDeviceIdentifier.map(devices.contains)
+            ?? expectedDeviceIdentifierHash.map { expectedHash in
+                devices.contains { PersonalTeamProvisioningPOC.deviceIdentifierHash($0) == expectedHash }
+            }
+            ?? false
+        guard selectedDeviceIncluded else {
             throw ConsumerProvisioningFailure(
                 code: .deviceNotIncluded,
                 stage: .preparingIdentities,
@@ -1061,6 +1190,13 @@ public actor ConsumerArtifactProvisioner {
     }
 
     private func entitlementFile(profileURL: URL, in directory: URL) throws -> URL {
+        let signingEntitlements = try signingEntitlements(profileURL: profileURL)
+        let url = directory.appendingPathComponent("entitlements-\(UUID().uuidString).plist")
+        try writePlist(signingEntitlements, to: url)
+        return url
+    }
+
+    private func signingEntitlements(profileURL: URL) throws -> [String: Any] {
         let profile = try decodedProfile(profileURL)
         guard let entitlements = profile["Entitlements"] as? [String: Any] else {
             throw ConsumerProvisioningFailure(
@@ -1071,9 +1207,25 @@ public actor ConsumerArtifactProvisioner {
                 developerDetail: "Profile has no Entitlements dictionary."
             )
         }
-        let url = directory.appendingPathComponent("entitlements-\(UUID().uuidString).plist")
-        try writePlist(entitlements, to: url)
-        return url
+        let permittedKeys: Set<String> = [
+            "application-identifier",
+            "com.apple.developer.team-identifier",
+            "get-task-allow",
+            "keychain-access-groups",
+        ]
+        let signingEntitlements = entitlements.filter { permittedKeys.contains($0.key) }
+        guard signingEntitlements["application-identifier"] is String,
+              signingEntitlements["com.apple.developer.team-identifier"] is String,
+              signingEntitlements["get-task-allow"] as? Bool == true else {
+            throw ConsumerProvisioningFailure(
+                code: .entitlementMismatch,
+                stage: .preparingArtifacts,
+                userMessage: "IOSSim could not prepare safe signing entitlements.",
+                remediation: "Refresh Personal Team provisioning; Apple authorization remains valid.",
+                developerDetail: "Required application, team, or development entitlements are missing from the profile."
+            )
+        }
+        return signingEntitlements
     }
 
     private func decodedProfile(_ url: URL) throws -> [String: Any] {
@@ -1115,7 +1267,14 @@ public actor ConsumerArtifactProvisioner {
                 values.append(url)
             }
         }
-        return values.sorted { $0.pathComponents.count > $1.pathComponents.count }
+        return values.sorted(by: signingOrder)
+    }
+
+    private func signingOrder(_ lhs: URL, _ rhs: URL) -> Bool {
+        if lhs.pathComponents.count != rhs.pathComponents.count {
+            return lhs.pathComponents.count > rhs.pathComponents.count
+        }
+        return lhs.path < rhs.path
     }
 
     private func nestedTestBundle(in runnerURL: URL) -> URL? {
@@ -1137,18 +1296,18 @@ public actor ConsumerArtifactProvisioner {
         try data.write(to: url, options: [.atomic])
     }
 
-    private func developmentCertificateSHA1(
+    private func developmentCertificateDER(
         profileURL: URL,
         expectedSHA256: String
-    ) throws -> String {
+    ) throws -> Data {
         let profile = try decodedProfile(profileURL)
         let certificates = profile["DeveloperCertificates"] as? [Data] ?? []
         guard let certificate = certificates.first(where: {
             sha256Hex($0).caseInsensitiveCompare(expectedSHA256) == .orderedSame
         }) else {
-            throw nativeProfileFailure("Prepared profile does not contain the IOSSim-managed certificate.")
+            throw profileCertificateFailure("Prepared profile does not contain the IOSSim-managed certificate.")
         }
-        return Insecure.SHA1.hash(data: certificate).map { String(format: "%02X", $0) }.joined()
+        return certificate
     }
 
     /// Validates every native input before a confirmed Fresh Install removes an
@@ -1157,7 +1316,7 @@ public actor ConsumerArtifactProvisioner {
     private func preflightNativeArtifacts(
         _ artifacts: NativeProvisioningArtifacts,
         teamIdentifier: String,
-        signingDeviceIdentifier: String
+        signingDeviceIdentifier: String?
     ) async throws -> String {
         let directory = fileManager.temporaryDirectory
             .appendingPathComponent("iossim-native-preflight-\(UUID().uuidString)", isDirectory: true)
@@ -1168,7 +1327,7 @@ public actor ConsumerArtifactProvisioner {
         )
         defer { try? fileManager.removeItem(at: directory) }
         let expected = try PersonalTeamBundleIdentifierSet(teamIdentifier: teamIdentifier)
-        var identities: [String] = []
+        var certificates: [Data] = []
         for (artifact, bundleIdentifier) in [("main", expected.main), ("runner", expected.runner)] {
             guard let profile = artifacts.profiles.first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
                 throw nativeProfileFailure("Native preflight is missing the \(artifact) profile.")
@@ -1182,34 +1341,59 @@ public actor ConsumerArtifactProvisioner {
                 expectedTeam: teamIdentifier,
                 expectedBundleIdentifier: bundleIdentifier,
                 selectedDeviceIdentifier: signingDeviceIdentifier,
+                expectedDeviceIdentifierHash: artifacts.deviceIdentifierHash,
                 expectedCertificateFingerprint: artifacts.certificateFingerprint
             )
-            identities.append(try developmentCertificateSHA1(
+            certificates.append(try developmentCertificateDER(
                 profileURL: url,
                 expectedSHA256: artifacts.certificateFingerprint
             ))
         }
-        guard Set(identities).count == 1, let identity = identities.first else {
-            throw nativeProfileFailure("Main and runner profiles do not contain the same development certificate.")
+        guard Set(certificates).count == 1, let certificate = certificates.first else {
+            throw profileCertificateFailure("Main and runner profiles do not contain the same development certificate.")
         }
-        try await verifyKeychainSigningIdentity(identity, expectedTeam: teamIdentifier)
-        return identity
+        do {
+            try faultInjector.check(.signingIdentityResolution)
+            let resolution = try await nativeIdentityResolver.resolve(
+                certificateDER: certificate,
+                expectedSHA256: artifacts.certificateFingerprint,
+                expectedKeyApplicationTagIdentifier: artifacts.keyApplicationTagIdentifier,
+                teamIdentifier: teamIdentifier,
+                workingDirectory: context.resourcesURL
+            )
+            try await recordIdentityDiagnostics(resolution.diagnostics)
+            try await record(
+                stage: .signingIdentityResolved,
+                result: .passed,
+                detail: "Resolved the prepared certificate to the IOSSim-owned private key, SecIdentity, and external codesign."
+            )
+            return resolution.certificateSHA1
+        } catch let error as NativeSigningIdentityResolutionFailure {
+            try? await recordIdentityDiagnostics(error.diagnostics)
+            throw error.failure
+        }
     }
 
-    private func verifyKeychainSigningIdentity(_ sha1: String, expectedTeam: String) async throws {
-        let result = try await context.runner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/security"),
-            arguments: ["find-identity", "-v", "-p", "codesigning"],
-            workingDirectory: context.resourcesURL,
-            environment: RuntimeProvisioning.deterministicEnvironment()
-        )
-        guard result.exitCode == 0, result.combinedOutput.uppercased().contains(sha1.uppercased()) else {
-            throw ConsumerProvisioningFailure(
-                code: .signingIdentityMissing,
-                stage: .preparingIdentities,
-                userMessage: "IOSSim could not use its managed signing identity.",
-                remediation: "Restore IOSSim's managed signing key, then try Personal Team provisioning again.",
-                developerDetail: "The keychain has no codesigning identity matching the prepared profile for team \(expectedTeam)."
+    private func recordIdentityDiagnostics(_ diagnostics: NativeSigningIdentityDiagnostics) async throws {
+        let fingerprint = diagnostics.certificateFingerprint ?? "unavailable"
+        let keyFingerprint = diagnostics.publicKeyFingerprint ?? "unavailable"
+        let tag = diagnostics.keyApplicationTagIdentifier ?? "unavailable"
+        let values: [(ConsumerProvisioningStage, Bool, OSStatus?, String)] = [
+            (.profileCertificatePresent, diagnostics.profileCertificatePresent, nil, "certificateSHA256=\(fingerprint)"),
+            (.keychainCertificateFound, diagnostics.keychainCertificateFound, diagnostics.certificateQueryStatus, "certificateSHA256=\(fingerprint) inserted=\(diagnostics.certificateInserted)"),
+            (.keychainPrivateKeyFound, diagnostics.keychainPrivateKeyFound, diagnostics.privateKeyQueryStatus, "applicationTag=\(tag)"),
+            (.certificatePublicKeyMatch, diagnostics.certificatePublicKeyMatch, nil, "publicKeySHA256=\(keyFingerprint)"),
+            (.keychainIdentityFound, diagnostics.keychainIdentityFound, diagnostics.identityQueryStatus, "certificateSHA256=\(fingerprint)"),
+            (.secIdentityResolutionSucceeded, diagnostics.secIdentityResolutionSucceeded, diagnostics.secIdentityResolutionStatus, "certificateSHA256=\(fingerprint)"),
+            (.codesignIdentityVisible, diagnostics.codesignIdentityVisible, nil, "certificateSHA256=\(fingerprint)"),
+            (.codesignSignTestSucceeded, diagnostics.codesignSignTestSucceeded, nil, "certificateSHA256=\(fingerprint)"),
+        ]
+        for (stage, passed, status, detail) in values {
+            guard passed || status != nil else { continue }
+            try await record(
+                stage: stage,
+                result: passed ? .passed : .failed,
+                detail: status.map { "\(detail) osStatus=\($0)" } ?? detail
             )
         }
     }
@@ -1234,6 +1418,26 @@ public actor ConsumerArtifactProvisioner {
             stage: .preparingIdentities,
             userMessage: "IOSSim could not use its prepared iPhone signing profiles.",
             remediation: "Try Personal Team provisioning again; your Apple authorization remains valid.",
+            developerDetail: detail
+        )
+    }
+
+    private func profileCertificateFailure(_ detail: String) -> ConsumerProvisioningFailure {
+        ConsumerProvisioningFailure(
+            code: .profileCertificateMismatch,
+            stage: .preparingIdentities,
+            userMessage: "IOSSim could not validate the certificate in its prepared signing profiles.",
+            remediation: "Try Personal Team provisioning again; your Apple authorization remains valid.",
+            developerDetail: detail
+        )
+    }
+
+    private func entitlementFailure(_ detail: String) -> ConsumerProvisioningFailure {
+        ConsumerProvisioningFailure(
+            code: .entitlementMismatch,
+            stage: .preparingArtifacts,
+            userMessage: "IOSSim could not validate its prepared signing entitlements.",
+            remediation: "Refresh Personal Team provisioning; your Apple authorization remains valid.",
             developerDetail: detail
         )
     }

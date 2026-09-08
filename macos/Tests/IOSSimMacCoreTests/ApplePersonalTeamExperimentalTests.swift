@@ -482,6 +482,46 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         XCTAssertEqual(teams, [.personal])
     }
 
+    func testSlowerStaleAuthorizationSuccessCannotOverwriteNewerFailure() async throws {
+        let backend = ExperimentalBackendMock(
+            auth: .success,
+            authSequence: [.delayedSuccess(150_000_000), .failure(.badPassword)]
+        )
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
+        let older = Task {
+            try await coordinator.begin(
+                account: "fixture@example.invalid",
+                password: SensitiveInput("older-attempt")
+            )
+        }
+        while await backend.observedAuthorizationAttempts() < 1 {
+            await Task.yield()
+        }
+
+        do {
+            _ = try await coordinator.begin(
+                account: "fixture@example.invalid",
+                password: SensitiveInput("newer-attempt")
+            )
+            XCTFail("Expected the current authorization failure")
+        } catch ExperimentalBackendError.badPassword {
+            // Expected.
+        }
+        do {
+            _ = try await older.value
+            XCTFail("Expected stale authorization success to be discarded")
+        } catch is CancellationError {
+            // Expected: the newer generation remains authoritative.
+        }
+
+        let authorization = await coordinator.authorization
+        let teams = await coordinator.teams
+        XCTAssertEqual(authorization.stage, .failed)
+        XCTAssertFalse(authorization.sessionValid)
+        XCTAssertEqual(authorization.safeErrorCode, "APPLE_AUTH_REJECTED")
+        XCTAssertTrue(teams.isEmpty)
+    }
+
     @MainActor
     func testUnavailableLiveBoundaryShowsConsumerSafeAuthorizationError() async throws {
         let store = SetupStore(engine: MockIOSSimSetupEngine(scenario: .ready))
@@ -496,6 +536,7 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
 
 private enum AuthMode: Sendable {
     case success
+    case delayedSuccess(UInt64)
     case verification
     case failure(ExperimentalBackendError)
     case delayedFailure(ExperimentalBackendError, UInt64)
@@ -555,6 +596,9 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
         guard !account.isEmpty, !password.isEmpty else { throw ExperimentalBackendError.badPassword }
         switch auth {
         case .success: return .authorized([.personal])
+        case .delayedSuccess(let nanoseconds):
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            return .authorized([.personal])
         case .verification:
             return .verificationRequired(.init(method: .trustedDevice, safeDestinationHint: "trusted device"))
         case .failure(let error): throw error
