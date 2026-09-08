@@ -80,7 +80,7 @@ public actor MockIOSSimSetupEngine: IOSSimSetupEngine {
     private static func device(pairingState: String, developerMode: String) -> DetectedDevice {
         DetectedDevice(
             name: "iPhone",
-            identifier: "ABC123...7890",
+            identifier: "00008150-0000000000000000",
             udidRedacted: "ABC123...7890",
             osVersion: "26.0",
             developerModeStatus: developerMode,

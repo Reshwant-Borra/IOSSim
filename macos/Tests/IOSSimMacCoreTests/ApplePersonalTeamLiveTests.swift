@@ -542,6 +542,270 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.url?.path.hasSuffix("/ios/addAppId.action") == true })
     }
 
+    func testExistingRegisteredDeviceIsReusedWithoutAddIncludingNormalization() async throws {
+        for returned in ["00008150-00022D581E12401C", " 0000815000022d581e12401c \n"] {
+            let transport = ScriptedAppleTransport([
+                .plist(teamResponse()),
+                .plist(["resultCode": 0, "devices": [["deviceNumber": returned]]])
+            ])
+            let diagnostics = temporaryDiagnostics()
+            defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+            let backend = makeRegistrationBackend(transport: transport, diagnostics: diagnostics.store)
+            _ = try await backend.resumeSession()
+
+            try await backend.registerDevice(.physicalFixture, team: .fixturePersonal)
+
+            let requests = await transport.requests()
+            XCTAssertEqual(requests.count, 2)
+            XCTAssertFalse(requests.contains { $0.url?.path.hasSuffix("/ios/addDevice.action") == true })
+            let events = try XCTUnwrap(diagnostics.store.load()?.events)
+            XCTAssertTrue(events.contains { $0.checkpoint == "DEVICE_ALREADY_REGISTERED" })
+            XCTAssertEqual(events.last { $0.checkpoint == "REGISTERED_DEVICE_MATCH_RESULT" }?.continuity?["matched"], true)
+        }
+    }
+
+    func testRegisteredDeviceInventoryRejectsNonStringIdentifierWithoutAdding() async throws {
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": [["deviceNumber": Data([1, 2, 3])]]])
+        ])
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: temporaryDiagnostics().store)
+        _ = try await backend.resumeSession()
+
+        await assertAsyncThrows({
+            try await backend.registerDevice(.physicalFixture, team: .fixturePersonal)
+        }) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .responseChanged)
+        }
+
+        let requests = await transport.requests()
+        XCTAssertFalse(requests.contains { $0.url?.path.hasSuffix("/ios/addDevice.action") == true })
+    }
+
+    func testNewDeviceUsesPhysicalUDIDAndExactReferencePlistTypes() async throws {
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": []]),
+            .plist(["resultCode": 0, "device": ["deviceNumber": "00008150-00022D581E12401C"]])
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        try await backend.registerDevice(.physicalFixture, team: .fixturePersonal)
+
+        let requests = await transport.requests()
+        let add = try XCTUnwrap(requests.first { $0.url?.path.hasSuffix("/ios/addDevice.action") == true })
+        let body = try XCTUnwrap(try parseApplePlist(XCTUnwrap(add.httpBody)))
+        XCTAssertEqual(body["deviceNumber"] as? String, "00008150-00022D581E12401C")
+        XCTAssertEqual(body["name"] as? String, "Rishi Borra")
+        XCTAssertEqual(body["teamId"] as? String, "ABCDEFGHIJ")
+        XCTAssertEqual(Set(body.keys), Set(["clientId", "protocolVersion", "requestId", "teamId", "deviceNumber", "name", "userLocale"]))
+        XCTAssertEqual(safeFieldTypes(body), [
+            "clientId": "String", "protocolVersion": "String", "requestId": "String",
+            "teamId": "String", "deviceNumber": "String", "name": "String",
+            "userLocale": "Array<String>"
+        ])
+        let prepared = diagnostics.store.load()?.events.last {
+            $0.checkpoint == "DEVICE_REGISTRATION_REQUEST_PREPARED"
+        }
+        XCTAssertEqual(prepared?.deviceIdentifierSource, "physicalUDID")
+        XCTAssertEqual(prepared?.structuralLengths?["deviceIdentifierLength"], 25)
+        XCTAssertEqual(prepared?.structuralLengths?["deviceNameLength"], 11)
+        XCTAssertEqual(prepared?.continuity?["authorizedTeamMatchesAddDeviceTeam"], true)
+        XCTAssertEqual(prepared?.continuity?["deviceNamePresent"], true)
+        XCTAssertEqual(prepared?.continuity?["deviceNameWhitespaceOnly"], false)
+    }
+
+    func testDeviceNameValidationRejectsMissingEmptyAndWhitespaceButAcceptsValidName() throws {
+        XCTAssertThrowsError(try validatedDeviceName(nil)) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .deviceNameRequired)
+        }
+        XCTAssertThrowsError(try validatedDeviceName("")) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .deviceNameRequired)
+        }
+        XCTAssertThrowsError(try validatedDeviceName(" \t\n")) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .deviceNameRequired)
+        }
+        XCTAssertEqual(try validatedDeviceName("Fixture iPhone !"), "Fixture iPhone")
+    }
+
+    func testCoreDeviceUUIDIsRejectedWhilePhysicalUDIDIsAccepted() throws {
+        XCTAssertThrowsError(try validatedDeviceRegistrationIdentifier(
+            "812EB0E1-DB40-5E49-9347-08079A74CBAF", source: .coreDeviceIdentifier
+        )) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .invalidDeviceIdentifier)
+        }
+        XCTAssertThrowsError(try validatedDeviceRegistrationIdentifier("not-a-udid", source: .other))
+        XCTAssertEqual(
+            try validatedDeviceRegistrationIdentifier("00008150-00022d581e12401c", source: .physicalUDID),
+            "00008150-00022D581E12401C"
+        )
+    }
+
+    func testAuthorizedTeamContinuityRejectsStaleHistoricalTeamBeforeDeviceRequest() async throws {
+        let transport = ScriptedAppleTransport([.plist(teamResponse())])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+        let stale = ExperimentalAppleTeam(
+            id: "5337SALD55", name: "Historical", isPersonalTeam: true, isPaidDeveloperTeam: false
+        )
+
+        await assertAsyncThrows({ try await backend.registerDevice(.physicalFixture, team: stale) }) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .invalidTeam)
+        }
+
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.count, 1)
+        let rejected = diagnostics.store.load()?.events.last { $0.checkpoint == "DEVICE_REGISTRATION_REJECTED" }
+        XCTAssertEqual(rejected?.safeErrorCode, "INVALID_TEAM")
+        XCTAssertEqual(rejected?.continuity?["authorizedTeamMatchesAddDeviceTeam"], false)
+    }
+
+    func testAuthorizedTeamPropagatesThroughDeviceAppIDAndProfileRequests() async throws {
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: "ABCDEFGHIJ")
+        let appIDs = [identifiers.main, identifiers.uiTests, identifiers.runner].enumerated().map { index, bundle in
+            ["appIdId": "app-\(index)", "identifier": bundle]
+        }
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": [["deviceNumber": "00008150-00022D581E12401C"]]]),
+            .plist(["resultCode": 0, "appIds": appIDs, "availableQuantity": 5]),
+            .plist(["resultCode": 0, "provisioningProfile": ["encodedProfile": Data([1, 2, 3])]])
+        ])
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: temporaryDiagnostics().store)
+        _ = try await backend.resumeSession()
+        try await backend.registerDevice(.physicalFixture, team: .fixturePersonal)
+        try await backend.registerIdentifiers(identifiers, team: .fixturePersonal)
+        let identity = ExperimentalSigningIdentity(
+            certificateFingerprint: String(repeating: "A", count: 64),
+            certificateExpiration: Date().addingTimeInterval(86_400),
+            privateKeyPersistentReference: Data([1]),
+            reused: true
+        )
+        await assertAsyncThrows({
+            try await backend.obtainProfiles(
+                identifiers: identifiers,
+                identity: identity,
+                request: .physicalFixture,
+                team: .fixturePersonal
+            )
+        }) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .invalidProfile)
+        }
+
+        let requests = await transport.requests()
+        let teamBodies = try requests.dropFirst().map { request -> [String: Any] in
+            try XCTUnwrap(try parseApplePlist(XCTUnwrap(request.httpBody)))
+        }
+        XCTAssertTrue(teamBodies.allSatisfy { $0["teamId"] as? String == "ABCDEFGHIJ" })
+        XCTAssertFalse(teamBodies.contains { $0["teamId"] as? String == "5337SALD55" })
+        XCTAssertTrue(requests.contains {
+            $0.url?.path.hasSuffix("/ios/downloadTeamProvisioningProfile.action") == true
+        })
+    }
+
+    func testCode35AlreadyRegisteredRelistsVerifiesAndReuses() async throws {
+        let device = ["deviceNumber": "00008150-00022D581E12401C"]
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": []]),
+            .plist(["resultCode": 35, "userString": "Device is already registered."]),
+            .plist(["resultCode": 0, "devices": [device]])
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        try await backend.registerDevice(.physicalFixture, team: .fixturePersonal)
+
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.filter { $0.url?.path.hasSuffix("/ios/addDevice.action") == true }.count, 1)
+        XCTAssertEqual(requests.filter { $0.url?.path.hasSuffix("/ios/listDevices.action") == true }.count, 2)
+        XCTAssertTrue(diagnostics.store.load()?.events.contains {
+            $0.checkpoint == "DEVICE_REGISTRATION_RECONCILIATION_STARTED"
+                && $0.safeErrorCode == "ALREADY_REGISTERED"
+        } == true)
+    }
+
+    func testSameCode35MessagesHaveDistinctClassificationsAndMissingNameIsNotDuplicate() async throws {
+        XCTAssertEqual(classifyDeviceRegistrationRejection(
+            code: 35, response: ["userString": "Device is already registered."]
+        ), .alreadyRegistered)
+        XCTAssertEqual(classifyDeviceRegistrationRejection(
+            code: 35, response: ["userString": "No value was provided for the parameter 'name'."]
+        ), .missingRequiredField)
+        XCTAssertEqual(classifyDeviceRegistrationRejection(
+            code: 35, response: ["userString": "An invalid value was provided for the parameter 'deviceNumber'."]
+        ), .invalidDeviceIdentifier)
+
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": []]),
+            .plist(["resultCode": 35, "userString": "No value was provided for the parameter 'name'."])
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+        await assertAsyncThrows({ try await backend.registerDevice(.physicalFixture, team: .fixturePersonal) }) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .deviceNameRequired)
+        }
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.filter {
+            $0.url?.path.hasSuffix("/ios/listDevices.action") == true
+        }.count, 1, "Malformed requests must not be reconciled as duplicates")
+        let response = diagnostics.store.load()?.events.last {
+            $0.checkpoint == "DEVICE_REGISTRATION_RESPONSE_RECEIVED"
+        }
+        XCTAssertEqual(response?.safeErrorCode, "MISSING_REQUIRED_FIELD")
+        XCTAssertEqual(response?.safeMessagePresent, true)
+        XCTAssertEqual(response?.safeServerMessage, "No value was provided for the parameter 'name'.")
+        XCTAssertEqual(response?.fieldTypes?["resultCode"], "Number")
+        XCTAssertEqual(response?.fieldTypes?["userString"], "String")
+        XCTAssertEqual(Set(response?.responseFieldNames ?? []), Set(["resultCode", "userString"]))
+    }
+
+    func testCapacityExceededAndHTTP200ApplicationFailureNeverDeleteDevices() async throws {
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": []]),
+            .plist(["resultCode": 35, "userString": "Maximum device limit reached."])
+        ])
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: temporaryDiagnostics().store)
+        _ = try await backend.resumeSession()
+        await assertAsyncThrows({ try await backend.registerDevice(.physicalFixture, team: .fixturePersonal) }) {
+            XCTAssertEqual($0 as? ExperimentalBackendError, .deviceLimit)
+        }
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.filter { $0.url?.path.hasSuffix("/ios/addDevice.action") == true }.count, 1)
+        XCTAssertFalse(requests.contains {
+            let path = $0.url?.path.lowercased() ?? ""
+            return path.contains("delete") || path.contains("remove") || path.contains("disable")
+        })
+    }
+
+    func testAmbiguousAddResponseRelistsBeforeRetryAndAvoidsDuplicateSideEffects() async throws {
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(["resultCode": 0, "devices": []]),
+            .plist(["resultCode": 0], status: 503),
+            .plist(["resultCode": 0, "devices": [["deviceNumber": "00008150-00022D581E12401C"]]])
+        ])
+        let backend = makeRegistrationBackend(transport: transport, diagnostics: temporaryDiagnostics().store)
+        _ = try await backend.resumeSession()
+
+        try await backend.registerDevice(.physicalFixture, team: .fixturePersonal)
+
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.filter { $0.url?.path.hasSuffix("/ios/addDevice.action") == true }.count, 1)
+        XCTAssertEqual(requests.filter { $0.url?.path.hasSuffix("/ios/listDevices.action") == true }.count, 2)
+    }
+
     func testLiveChallengeStateAndRequestConstructionWithSyntheticResponses() async throws {
         let challenge: [String: Any] = [
             "Status": ["ec": 0], "sp": "s2k", "s": Data(repeating: 1, count: 16),
@@ -1087,6 +1351,42 @@ private extension ExperimentalAppleTeam {
         isPersonalTeam: true,
         isPaidDeveloperTeam: false
     )
+}
+
+private extension ExperimentalProvisioningRequest {
+    static let physicalFixture = ExperimentalProvisioningRequest(
+        selectedDeviceIdentifier: "812EB0E1-DB40-5E49-9347-08079A74CBAF",
+        selectedDeviceRegistrationIdentifier: "00008150-00022D581E12401C",
+        deviceIdentifierSource: .physicalUDID,
+        selectedDeviceName: "Rishi Borra",
+        operation: .install
+    )
+}
+
+private func makeRegistrationBackend(
+    transport: ScriptedAppleTransport,
+    diagnostics: ApplePersonalTeamDiagnosticsStore
+) -> LiveApplePersonalTeamBackend {
+    LiveApplePersonalTeamBackend(
+        transport: transport,
+        machineIdentity: FixtureMachineIdentity(),
+        sessionStore: MemoryAuthorizationSessionStore(session: fixtureSession()),
+        diagnostics: diagnostics
+    )
+}
+
+private func assertAsyncThrows<T>(
+    _ expression: () async throws -> T,
+    verify: (Error) -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("Expected expression to throw", file: file, line: line)
+    } catch {
+        verify(error)
+    }
 }
 
 private func canonicalFixtureTag() -> Data {

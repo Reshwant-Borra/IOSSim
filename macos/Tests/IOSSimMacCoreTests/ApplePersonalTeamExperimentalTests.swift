@@ -112,6 +112,28 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         )
     }
 
+    func testProfileValidationUsesPhysicalUDIDRatherThanCoreDeviceIdentifier() async throws {
+        let backend = ExperimentalBackendMock(auth: .success)
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
+        _ = try await coordinator.begin(account: "fixture@example.invalid", password: SensitiveInput("secret"))
+        let request = ExperimentalProvisioningRequest(
+            selectedDeviceIdentifier: "812EB0E1-DB40-5E49-9347-08079A74CBAF",
+            selectedDeviceRegistrationIdentifier: "00008150-00022D581E12401C",
+            deviceIdentifierSource: .physicalUDID,
+            selectedDeviceName: "Test iPhone",
+            operation: .install
+        )
+
+        let prepared = try await coordinator.prepareProvisioning(request)
+
+        XCTAssertTrue(prepared.profiles.allSatisfy {
+            $0.provisionedDeviceIdentifiers.contains("00008150-00022D581E12401C")
+        })
+        XCTAssertFalse(prepared.profiles.contains {
+            $0.provisionedDeviceIdentifiers.contains("812EB0E1-DB40-5E49-9347-08079A74CBAF")
+        })
+    }
+
     func testReturningUserRefreshReusesSessionIdentityAndDerivedIDs() async throws {
         let backend = ExperimentalBackendMock(auth: .success, resumedTeams: [.personal])
         let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
@@ -511,7 +533,9 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
         let now = Date()
         let profileTeam = profileMode == .invalidTeam ? "WRONGTEAM" : team.id
         let fingerprint = profileMode == .invalidCertificate ? "wrong-certificate" : identity.certificateFingerprint
-        let devices = profileMode == .wrongDevice ? Set(["different-device"]) : Set([request.selectedDeviceIdentifier])
+        let devices = profileMode == .wrongDevice
+            ? Set(["different-device"])
+            : Set([request.selectedDeviceRegistrationIdentifier])
         let expiration = profileMode == .expired ? now.addingTimeInterval(-60) : now.addingTimeInterval(6 * 86_400)
         return [identifiers.main, identifiers.runner].map {
             ExperimentalProfile(

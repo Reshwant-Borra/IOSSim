@@ -40,6 +40,10 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let nonSecretIntegers: [String: Int]?
     public let continuity: [String: Bool]?
     public let safeServerMessage: String?
+    public let safeMessagePresent: Bool?
+    public let deviceIdentifierSource: String?
+    public let endpoint: String?
+    public let httpMethod: String?
     public let generationID: UInt64?
     public let setupPhase: String?
     public let authorizationStage: String?
@@ -73,6 +77,10 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         nonSecretIntegers: [String: Int]? = nil,
         continuity: [String: Bool]? = nil,
         safeServerMessage: String? = nil,
+        safeMessagePresent: Bool? = nil,
+        deviceIdentifierSource: String? = nil,
+        endpoint: String? = nil,
+        httpMethod: String? = nil,
         generationID: UInt64? = nil,
         setupPhase: String? = nil,
         authorizationStage: String? = nil,
@@ -105,6 +113,10 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         self.nonSecretIntegers = nonSecretIntegers
         self.continuity = continuity
         self.safeServerMessage = safeServerMessage
+        self.safeMessagePresent = safeMessagePresent
+        self.deviceIdentifierSource = deviceIdentifierSource
+        self.endpoint = endpoint
+        self.httpMethod = httpMethod
         self.generationID = generationID
         self.setupPhase = setupPhase
         self.authorizationStage = authorizationStage
@@ -1268,33 +1280,203 @@ extension LiveApplePersonalTeamBackend {
         _ request: ExperimentalProvisioningRequest,
         team: ExperimentalAppleTeam
     ) async throws {
-        let listed = try await developerRequest(operation: "ios/listDevices", parameters: ["teamId": team.id])
-        guard let devices = listed["devices"] as? [[String: Any]], devices.count <= 500 else {
-            throw ExperimentalBackendError.responseChanged
+        let generation = identityGeneration
+        let teamMatches = authorizedTeamIdentifier == team.id
+        guard teamMatches else {
+            recordDeviceRegistration(
+                .deviceRegistrationRejected,
+                generation: generation,
+                request: request,
+                team: team,
+                category: .invalidTeam,
+                flags: ["authorizedTeamMatchesAddDeviceTeam": false]
+            )
+            throw ExperimentalBackendError.invalidTeam
         }
-        if devices.contains(where: { string($0["deviceNumber"]) == request.selectedDeviceIdentifier }) {
-            record(.deviceAlreadyRegistered, stage: "deviceRegistration")
-            diagnostics.update(adapterVersion: adapter.version) { $0.deviceRegistrationStatus = "ALREADY_REGISTERED" }
+        let deviceNumber: String
+        let deviceName: String
+        do {
+            deviceNumber = try validatedDeviceRegistrationIdentifier(
+                request.selectedDeviceRegistrationIdentifier,
+                source: request.deviceIdentifierSource
+            )
+            deviceName = try validatedDeviceName(request.selectedDeviceName)
+        } catch let error as ExperimentalBackendError {
+            let category: AppleDeviceRegistrationCategory = error == .invalidDeviceIdentifier
+                ? .invalidDeviceIdentifier : .missingRequiredField
+            recordDeviceRegistration(
+                .deviceRegistrationRejected,
+                generation: generation,
+                request: request,
+                team: team,
+                category: category,
+                safeMessage: error == .invalidDeviceIdentifier
+                    ? "The physical device registration identifier is missing or has an invalid form."
+                    : "A non-empty device name is required."
+            )
+            throw error
+        }
+
+        recordDeviceRegistration(
+            .deviceRegistrationCheckStarted,
+            generation: generation,
+            request: request,
+            team: team,
+            flags: ["authorizedTeamMatchesDeviceListTeam": true]
+        )
+        var devices = try await listRegisteredDevices(teamID: team.id)
+        recordDeviceRegistration(
+            .registeredDeviceListReceived,
+            generation: generation,
+            request: request,
+            team: team,
+            counts: ["registeredDeviceCount": devices.count],
+            flags: ["authorizedTeamMatchesDeviceListTeam": true]
+        )
+        var matched = devices.contains { registeredDeviceNumber($0).map {
+            normalizedDeviceIdentifier($0) == normalizedDeviceIdentifier(deviceNumber)
+        } ?? false }
+        recordDeviceRegistration(
+            .registeredDeviceMatchResult,
+            generation: generation,
+            request: request,
+            team: team,
+            flags: ["matched": matched]
+        )
+        if matched {
+            finishDeviceRegistrationReuse(generation: generation, request: request, team: team)
             return
         }
+
+        recordDeviceRegistration(
+            .deviceRegistrationRequired,
+            generation: generation,
+            request: request,
+            team: team
+        )
+        let requestContext = DeviceRegistrationDiagnosticContext(
+            generation: generation,
+            request: request,
+            team: team,
+            teamMatches: true,
+            deviceName: deviceName,
+            deviceNumber: deviceNumber
+        )
         do {
-            _ = try await developerRequest(operation: "ios/addDevice", parameters: [
-                "teamId": team.id,
-                "name": sanitizedDeviceName(request.selectedDeviceName),
-                "deviceNumber": request.selectedDeviceIdentifier
-            ])
+            _ = try await developerRequest(
+                operation: "ios/addDevice",
+                parameters: ["teamId": team.id, "name": deviceName, "deviceNumber": deviceNumber],
+                deviceRegistrationContext: requestContext
+            )
         } catch let failure as AppleServiceFailure {
+            let shouldReconcile = failure.deviceRegistrationCategory == .alreadyRegistered
+                || failure.retryable || failure.error == .networkFailure
+            if shouldReconcile {
+                recordDeviceRegistration(
+                    .deviceRegistrationReconciliationStarted,
+                    generation: generation,
+                    request: request,
+                    team: team,
+                    category: failure.deviceRegistrationCategory,
+                    safeMessage: failure.safeMessage
+                )
+                devices = try await listRegisteredDevices(teamID: team.id)
+                matched = devices.contains { registeredDeviceNumber($0).map {
+                    normalizedDeviceIdentifier($0) == normalizedDeviceIdentifier(deviceNumber)
+                } ?? false }
+                recordDeviceRegistration(
+                    .registeredDeviceListReceived,
+                    generation: generation,
+                    request: request,
+                    team: team,
+                    counts: ["registeredDeviceCount": devices.count],
+                    flags: ["authorizedTeamMatchesDeviceListTeam": true]
+                )
+                recordDeviceRegistration(
+                    .registeredDeviceMatchResult,
+                    generation: generation,
+                    request: request,
+                    team: team,
+                    flags: ["matched": matched]
+                )
+                if matched {
+                    finishDeviceRegistrationReuse(generation: generation, request: request, team: team)
+                    return
+                }
+            }
+            recordDeviceRegistration(
+                .deviceRegistrationRejected,
+                generation: generation,
+                request: request,
+                team: team,
+                category: failure.deviceRegistrationCategory ?? .otherAppleRejection,
+                safeMessage: failure.safeMessage,
+                httpStatus: failure.status,
+                appleCode: failure.appleCode
+            )
             if failure.error == .deviceLimit { throw ExperimentalBackendError.deviceLimit }
+            if failure.error == .sessionExpired { throw ExperimentalBackendError.sessionExpired }
+            if failure.error == .invalidDeviceIdentifier { throw ExperimentalBackendError.invalidDeviceIdentifier }
+            if failure.error == .invalidTeam { throw ExperimentalBackendError.invalidTeam }
+            if failure.error == .deviceNameRequired { throw ExperimentalBackendError.deviceNameRequired }
             throw ExperimentalBackendError.deviceRegistrationFailed
         }
         record(.deviceRegistered, stage: "deviceRegistration")
+        recordDeviceRegistration(
+            .deviceRegistrationSucceeded,
+            generation: generation,
+            request: request,
+            team: team
+        )
+        recordDeviceRegistration(
+            .provisioningDeviceReady,
+            generation: generation,
+            request: request,
+            team: team
+        )
         diagnostics.update(adapterVersion: adapter.version) { $0.deviceRegistrationStatus = "REGISTERED" }
+    }
+
+    private func listRegisteredDevices(teamID: String) async throws -> [[String: Any]] {
+        guard authorizedTeamIdentifier == teamID else { throw ExperimentalBackendError.invalidTeam }
+        let listed = try await developerRequest(operation: "ios/listDevices", parameters: ["teamId": teamID])
+        guard let devices = listed["devices"] as? [[String: Any]], devices.count <= 500,
+              devices.allSatisfy({
+                  guard let number = registeredDeviceNumber($0) else { return false }
+                  return !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              }) else {
+            throw ExperimentalBackendError.responseChanged
+        }
+        return devices
+    }
+
+    private func finishDeviceRegistrationReuse(
+        generation: UInt64,
+        request: ExperimentalProvisioningRequest,
+        team: ExperimentalAppleTeam
+    ) {
+        recordDeviceRegistration(
+            .deviceAlreadyRegistered,
+            generation: generation,
+            request: request,
+            team: team
+        )
+        recordDeviceRegistration(
+            .provisioningDeviceReady,
+            generation: generation,
+            request: request,
+            team: team
+        )
+        diagnostics.update(adapterVersion: adapter.version) {
+            $0.deviceRegistrationStatus = "ALREADY_REGISTERED"
+        }
     }
 
     public func registerIdentifiers(
         _ identifiers: PersonalTeamBundleIdentifierSet,
         team: ExperimentalAppleTeam
     ) async throws {
+        guard authorizedTeamIdentifier == team.id else { throw ExperimentalBackendError.invalidTeam }
         let required: [(String, String, ApplePersonalTeamCheckpoint)] = [
             (identifiers.main, "IOSSim Main", .mainIDReady),
             (identifiers.uiTests, "IOSSim UI Tests", .uiTestIDReady),
@@ -1337,6 +1519,7 @@ extension LiveApplePersonalTeamBackend {
         request: ExperimentalProvisioningRequest,
         team: ExperimentalAppleTeam
     ) async throws -> [ExperimentalProfile] {
+        guard authorizedTeamIdentifier == team.id else { throw ExperimentalBackendError.invalidTeam }
         var profiles: [ExperimentalProfile] = []
         for (bundleIdentifier, checkpoint) in [
             (identifiers.main, ApplePersonalTeamCheckpoint.mainProfileReady),
@@ -1359,7 +1542,7 @@ extension LiveApplePersonalTeamBackend {
                 encoded,
                 expectedBundleIdentifier: bundleIdentifier,
                 expectedTeamIdentifier: team.id,
-                selectedDeviceIdentifier: request.selectedDeviceIdentifier,
+                selectedDeviceIdentifier: request.selectedDeviceRegistrationIdentifier,
                 certificateFingerprint: identity.certificateFingerprint
             )
             profiles.append(profile)
@@ -1424,10 +1607,95 @@ extension LiveApplePersonalTeamBackend {
     }
 }
 
-private func sanitizedDeviceName(_ value: String) -> String {
+func validatedDeviceName(_ value: String?) throws -> String {
+    guard let value, !value.isEmpty,
+          !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ExperimentalBackendError.deviceNameRequired
+    }
     let allowed = value.unicodeScalars.filter { CharacterSet.alphanumerics.union(.whitespaces).contains($0) }
     let result = String(String.UnicodeScalarView(allowed)).trimmingCharacters(in: .whitespacesAndNewlines)
-    return String((result.isEmpty ? "IOSSim iPhone" : result).prefix(100))
+    guard !result.isEmpty else { throw ExperimentalBackendError.deviceNameRequired }
+    return String(result.prefix(100))
+}
+
+func normalizedDeviceIdentifier(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines)
+        .filter { $0 != "-" && !$0.isWhitespace }
+        .uppercased()
+}
+
+func validatedDeviceRegistrationIdentifier(
+    _ value: String,
+    source: ExperimentalProvisioningRequest.DeviceIdentifierSource
+) throws -> String {
+    let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    guard source != .coreDeviceIdentifier else { throw ExperimentalBackendError.invalidDeviceIdentifier }
+    let pieces = candidate.split(separator: "-", omittingEmptySubsequences: false)
+    let modern = pieces.count == 2 && pieces[0].count == 8 && pieces[1].count == 16
+    let legacy = pieces.count == 1 && pieces[0].count == 40
+    guard modern || legacy,
+          candidate.unicodeScalars.allSatisfy({
+              CharacterSet(charactersIn: "0123456789ABCDEF-").contains($0)
+          }) else {
+        throw ExperimentalBackendError.invalidDeviceIdentifier
+    }
+    return candidate
+}
+
+private func registeredDeviceNumber(_ value: [String: Any]) -> String? {
+    if let number = value["deviceNumber"] as? String { return number }
+    if let attributes = value["attributes"] as? [String: Any],
+       let number = attributes["deviceNumber"] as? String { return number }
+    return nil
+}
+
+private func appleDeveloperMessageCandidates(_ response: [String: Any]) -> [String] {
+    let direct = ["userString", "statusString", "resultString"]
+        .compactMap { response[$0] as? String }
+    let validation = response["validationMessages"] as? [String] ?? []
+    return (direct + validation).filter {
+        !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private func safeAppleDeveloperMessage(_ response: [String: Any]) -> String? {
+    appleDeveloperMessageCandidates(response).first
+        .map(Redactor.redact)
+        .flatMap { $0.utf8.count <= 512 ? $0 : nil }
+}
+
+func classifyDeviceRegistrationRejection(
+    code: Int,
+    response: [String: Any]
+) -> AppleDeviceRegistrationCategory {
+    let message = appleDeveloperMessageCandidates(response).joined(separator: " ").lowercased()
+    if message.contains("session") || message.contains("authenticate") || message.contains("token") {
+        return .sessionRejected
+    }
+    if message.contains("maximum") || message.contains("capacity") || message.contains("limit") {
+        return .deviceCapacityExceeded
+    }
+    if message.contains("team")
+        && (message.contains("invalid") || message.contains("not found") || message.contains("access")) {
+        return .invalidTeam
+    }
+    if message.contains("already")
+        && (message.contains("register") || message.contains("added") || message.contains("exist")) {
+        return .alreadyRegistered
+    }
+    if (message.contains("no value") || message.contains("missing") || message.contains("required"))
+        && message.contains("parameter") {
+        return .missingRequiredField
+    }
+    if message.contains("devicenumber")
+        && (message.contains("invalid") || message.contains("format")) {
+        return .invalidDeviceIdentifier
+    }
+    if message.contains("malformed") || message.contains("parameter") || message.contains("plist") {
+        return .malformedRequest
+    }
+    _ = code // The numeric code is deliberately not treated as a universal mapping.
+    return .otherAppleRejection
 }
 
 func certificateData(_ dictionary: [String: Any]) -> Data? {
@@ -1671,6 +1939,64 @@ private struct AppleServiceFailure: Error {
     let retryAfter: Int?
     let retryable: Bool
     let reauthorizationRequired: Bool
+    let safeMessage: String?
+    let deviceRegistrationCategory: AppleDeviceRegistrationCategory?
+
+    init(
+        error: ExperimentalBackendError,
+        status: Int?,
+        appleCode: Int?,
+        retryAfter: Int?,
+        retryable: Bool,
+        reauthorizationRequired: Bool,
+        safeMessage: String? = nil,
+        deviceRegistrationCategory: AppleDeviceRegistrationCategory? = nil
+    ) {
+        self.error = error
+        self.status = status
+        self.appleCode = appleCode
+        self.retryAfter = retryAfter
+        self.retryable = retryable
+        self.reauthorizationRequired = reauthorizationRequired
+        self.safeMessage = safeMessage
+        self.deviceRegistrationCategory = deviceRegistrationCategory
+    }
+}
+
+private struct DeviceRegistrationDiagnosticContext {
+    let generation: UInt64
+    let request: ExperimentalProvisioningRequest
+    let team: ExperimentalAppleTeam
+    let teamMatches: Bool
+    let deviceName: String
+    let deviceNumber: String
+
+    init(
+        generation: UInt64,
+        request: ExperimentalProvisioningRequest,
+        team: ExperimentalAppleTeam,
+        teamMatches: Bool,
+        deviceName: String,
+        deviceNumber: String
+    ) {
+        self.generation = generation
+        self.request = request
+        self.team = team
+        self.teamMatches = teamMatches
+        self.deviceName = deviceName
+        self.deviceNumber = deviceNumber
+    }
+}
+
+enum AppleDeviceRegistrationCategory: String, Equatable, Sendable {
+    case alreadyRegistered = "ALREADY_REGISTERED"
+    case missingRequiredField = "MISSING_REQUIRED_FIELD"
+    case invalidDeviceIdentifier = "INVALID_DEVICE_IDENTIFIER"
+    case invalidTeam = "INVALID_TEAM"
+    case deviceCapacityExceeded = "DEVICE_CAPACITY_EXCEEDED"
+    case sessionRejected = "SESSION_REJECTED"
+    case malformedRequest = "MALFORMED_REQUEST"
+    case otherAppleRejection = "OTHER_APPLE_REJECTION"
 }
 
 enum AppleHTTPFailureClassifier {
@@ -1764,6 +2090,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
     private var pendingTwoFactor: PendingTwoFactor?
     private var appIdentifierIDs: [String: String] = [:]
     private var identityGeneration: UInt64 = 0
+    private var authorizedTeamIdentifier: String?
 
     public init(
         adapter: PrivateAppleProtocolAdapter = .researched2026,
@@ -1825,6 +2152,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             return teams
         } catch {
             session = nil
+            authorizedTeamIdentifier = nil
             try? sessionStore.remove()
             diagnostics.update(adapterVersion: adapter.version) { $0.sessionValid = false }
             throw ExperimentalBackendError.sessionExpired
@@ -1905,6 +2233,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         pendingTwoFactor?.password.clear()
         pendingTwoFactor = nil
         session = nil
+        authorizedTeamIdentifier = nil
         appIdentifierIDs = [:]
         try? sessionStore.remove()
         diagnostics.update(adapterVersion: adapter.version) { $0.sessionValid = false }
@@ -2308,13 +2637,15 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             $0.personalTeamFound = true
             $0.teamIdentifier = personal[0].id
         }
+        authorizedTeamIdentifier = personal[0].id
         return validated
     }
 
     private func developerRequest(
         operation: String,
         parameters: [String: Any],
-        session explicitSession: LiveSessionEnvelope? = nil
+        session explicitSession: LiveSessionEnvelope? = nil,
+        deviceRegistrationContext: DeviceRegistrationDiagnosticContext? = nil
     ) async throws -> [String: Any] {
         guard let active = explicitSession ?? session else { throw ExperimentalBackendError.sessionExpired }
         var url = try adapter.developerURL(operation: operation)
@@ -2329,16 +2660,58 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             "userLocale": [Locale.current.identifier]
         ]
         parameters.forEach { payload[$0.key] = $0.value }
+        if let context = deviceRegistrationContext {
+            recordDeviceRegistration(
+                .deviceRegistrationRequestPrepared,
+                generation: context.generation,
+                request: context.request,
+                team: context.team,
+                counts: [
+                    "deviceIdentifierLength": context.deviceNumber.utf8.count,
+                    "deviceNameLength": context.deviceName.utf8.count
+                ],
+                flags: [
+                    "authorizedTeamMatchesAddDeviceTeam": context.teamMatches,
+                    "deviceNamePresent": !context.deviceName.isEmpty,
+                    "deviceNameWhitespaceOnly": !context.deviceName.isEmpty
+                        && context.deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ],
+                requestFields: payload
+            )
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = try serializePlist(payload)
         try await applyMachineAndServiceHeaders(to: &request, dsid: active.dsid, token: active.xcodeToken)
+        if let context = deviceRegistrationContext {
+            recordDeviceRegistration(
+                .deviceRegistrationRequestSent,
+                generation: context.generation,
+                request: context.request,
+                team: context.team
+            )
+        }
         let http = try await send(request, maximumBytes: 8_388_608, stage: "developerServices/\(operation)")
         guard let response = try parseApplePlist(http.body) else { throw ExperimentalBackendError.responseChanged }
-        let resultCode = integer(response["resultCode"]) ?? 0
+        let resultCode = integer(response["resultCode"] ?? response["statusCode"] ?? response["ec"]) ?? 0
+        let safeMessage = safeAppleDeveloperMessage(response)
+        let deviceCategory = operation == "ios/addDevice" && resultCode != 0
+            ? classifyDeviceRegistrationRejection(code: resultCode, response: response) : nil
+        if let context = deviceRegistrationContext {
+            recordDeviceRegistration(
+                .deviceRegistrationResponseReceived,
+                generation: context.generation,
+                request: context.request,
+                team: context.team,
+                category: deviceCategory,
+                safeMessage: safeMessage,
+                httpStatus: http.statusCode,
+                appleCode: resultCode,
+                responseFields: response
+            )
+        }
         guard resultCode == 0 else {
-            let safeText = [response["userString"] as? String, response["resultString"] as? String]
-                .compactMap { $0 }.joined(separator: " ").lowercased()
+            let safeText = appleDeveloperMessageCandidates(response).joined(separator: " ").lowercased()
             let error: ExperimentalBackendError
             if operation.contains("submitDevelopmentCSR")
                 && (safeText.contains("maximum") || safeText.contains("limit")) {
@@ -2346,6 +2719,13 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             } else if operation.contains("addDevice")
                 && (safeText.contains("maximum") || safeText.contains("limit")) {
                 error = .deviceLimit
+            } else if operation.contains("addDevice") && deviceCategory == .invalidDeviceIdentifier {
+                error = .invalidDeviceIdentifier
+            } else if operation.contains("addDevice") && deviceCategory == .invalidTeam {
+                error = .invalidTeam
+            } else if operation.contains("addDevice") && deviceCategory == .missingRequiredField
+                && safeText.contains("name") {
+                error = .deviceNameRequired
             } else if operation.contains("addAppId") && resultCode == 9120 {
                 error = .appIDLimit
             } else if operation.contains("addAppId") && resultCode == 9401 {
@@ -2361,7 +2741,9 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                 appleCode: resultCode,
                 retryAfter: retryAfter(http.headers),
                 retryable: false,
-                reauthorizationRequired: error == .sessionExpired
+                reauthorizationRequired: error == .sessionExpired,
+                safeMessage: safeMessage,
+                deviceRegistrationCategory: deviceCategory
             )
             recordFailure(failure, stage: "developerServices/\(operation)")
             throw failure
@@ -2504,6 +2886,56 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         }
     }
 
+    private func recordDeviceRegistration(
+        _ checkpoint: ApplePersonalTeamCheckpoint,
+        generation: UInt64,
+        request: ExperimentalProvisioningRequest,
+        team: ExperimentalAppleTeam,
+        category: AppleDeviceRegistrationCategory? = nil,
+        safeMessage: String? = nil,
+        httpStatus: Int? = nil,
+        appleCode: Int? = nil,
+        counts: [String: Int] = [:],
+        flags: [String: Bool] = [:],
+        requestFields: [String: Any]? = nil,
+        responseFields: [String: Any]? = nil
+    ) {
+        var safeCounts = counts
+        safeCounts["deviceIdentifierLength"] = request.selectedDeviceRegistrationIdentifier.utf8.count
+        safeCounts["deviceNameLength"] = request.selectedDeviceName.utf8.count
+        var continuity = flags
+        continuity["authorizedTeamMatchesCurrentTeam"] = authorizedTeamIdentifier == team.id
+        continuity["deviceNamePresent"] = !request.selectedDeviceName.isEmpty
+        continuity["deviceNameWhitespaceOnly"] = !request.selectedDeviceName.isEmpty
+            && request.selectedDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        diagnostics.update(adapterVersion: adapter.version) {
+            $0.events.append(.init(
+                timestamp: Date(),
+                checkpoint: checkpoint.rawValue,
+                stage: checkpoint == .deviceRegistrationResponseReceived
+                    ? "ADD_DEVICE_RESPONSE" : "deviceRegistration",
+                safeErrorCode: category?.rawValue,
+                httpStatus: httpStatus,
+                appleErrorCode: appleCode,
+                retryAfterSeconds: nil,
+                retryable: false,
+                reauthorizationRequired: category == .sessionRejected,
+                structuralLengths: safeCounts,
+                requestFieldNames: requestFields.map { safeFieldNames($0.keys) },
+                responseFieldNames: responseFields.map { safeFieldNames($0.keys) },
+                fieldTypes: requestFields.map(safeFieldTypes) ?? responseFields.map(safeFieldTypes),
+                continuity: continuity,
+                safeServerMessage: safeMessage,
+                safeMessagePresent: httpStatus == nil ? nil : safeMessage != nil,
+                deviceIdentifierSource: request.deviceIdentifierSource.rawValue,
+                endpoint: requestFields == nil && responseFields == nil
+                    ? nil : "developerServices/ios/addDevice",
+                httpMethod: requestFields == nil && responseFields == nil ? nil : "POST",
+                generationID: generation
+            ))
+        }
+    }
+
     private func recordSRPStructure(
         stage: String,
         parameters: [String: Any],
@@ -2629,7 +3061,9 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                 timestamp: Date(), checkpoint: nil, stage: stage,
                 safeErrorCode: failure.error.safeCode, httpStatus: failure.status,
                 appleErrorCode: failure.appleCode, retryAfterSeconds: failure.retryAfter,
-                retryable: failure.retryable, reauthorizationRequired: failure.reauthorizationRequired
+                retryable: failure.retryable, reauthorizationRequired: failure.reauthorizationRequired,
+                safeServerMessage: failure.safeMessage,
+                safeMessagePresent: failure.status == nil ? nil : failure.safeMessage != nil
             ))
         }
     }
@@ -2652,14 +3086,14 @@ private func safeFieldNames(_ names: Dictionary<String, Any>.Keys) -> [String] {
     }.sorted()
 }
 
-private func safeFieldTypes(_ dictionary: [String: Any]) -> [String: String] {
+func safeFieldTypes(_ dictionary: [String: Any]) -> [String: String] {
     dictionary.reduce(into: [:]) { result, item in
         guard safeFieldNames([item.key: item.value].keys).count == 1 else { return }
         switch item.value {
         case is Data: result[item.key] = "Data"
         case is String: result[item.key] = "String"
-        case is Bool: result[item.key] = "Bool"
-        case is NSNumber: result[item.key] = "Number"
+        case let number as NSNumber:
+            result[item.key] = CFGetTypeID(number) == CFBooleanGetTypeID() ? "Bool" : "Number"
         case is [String]: result[item.key] = "Array<String>"
         case is [Any]: result[item.key] = "Array"
         case is [String: Any]: result[item.key] = "Dictionary"

@@ -378,9 +378,25 @@ public final class SetupStore: ObservableObject {
               let identifier = selectedDeviceIdentifier else {
             throw ExperimentalBackendError.deviceRegistrationFailed
         }
+        let physicalUDID: String
+        if let alreadyPhysical = try? validatedDeviceRegistrationIdentifier(
+            identifier,
+            source: .physicalUDID
+        ) {
+            physicalUDID = alreadyPhysical
+        } else if let resolved = await AppleDeviceTool.signingDeviceIdentifier(
+            matching: identifier,
+            context: RuntimeProvisioningContext(resourcesURL: FileManager.default.temporaryDirectory)
+        ) {
+            physicalUDID = resolved
+        } else {
+            throw ExperimentalBackendError.invalidDeviceIdentifier
+        }
         consumerStage = .preparingIdentities
         let prepared = try await authorizationCoordinator.prepareProvisioning(.init(
             selectedDeviceIdentifier: identifier,
+            selectedDeviceRegistrationIdentifier: physicalUDID,
+            deviceIdentifierSource: .physicalUDID,
             selectedDeviceName: selected.name,
             operation: .install
         ))

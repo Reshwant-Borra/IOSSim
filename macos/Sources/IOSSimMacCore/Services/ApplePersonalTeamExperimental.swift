@@ -326,16 +326,33 @@ public enum ExperimentalAuthorizationResult: Sendable {
 }
 
 public struct ExperimentalProvisioningRequest: Equatable, Sendable {
+    public enum DeviceIdentifierSource: String, Codable, Equatable, Sendable {
+        case physicalUDID = "physicalUDID"
+        case coreDeviceIdentifier = "coreDeviceIdentifier"
+        case other
+    }
+
+    /// CoreDevice/device-transport selector. This is not necessarily the UDID
+    /// accepted by Apple Developer Services.
     public let selectedDeviceIdentifier: String
+    /// Hardware registration identifier used by Developer Services and
+    /// ProvisionedDevices profile validation.
+    public let selectedDeviceRegistrationIdentifier: String
+    public let deviceIdentifierSource: DeviceIdentifierSource
     public let selectedDeviceName: String
     public let operation: ConsumerProvisioningOperation
 
     public init(
         selectedDeviceIdentifier: String,
+        selectedDeviceRegistrationIdentifier: String? = nil,
+        deviceIdentifierSource: DeviceIdentifierSource = .other,
         selectedDeviceName: String,
         operation: ConsumerProvisioningOperation
     ) {
         self.selectedDeviceIdentifier = selectedDeviceIdentifier
+        self.selectedDeviceRegistrationIdentifier = selectedDeviceRegistrationIdentifier
+            ?? selectedDeviceIdentifier
+        self.deviceIdentifierSource = deviceIdentifierSource
         self.selectedDeviceName = selectedDeviceName
         self.operation = operation
     }
@@ -404,6 +421,9 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
     case certificateLimit
     case missingPrivateKey
     case deviceLimit
+    case deviceNameRequired
+    case invalidDeviceIdentifier
+    case invalidTeam
     case appIDLimit
     case appIDCollision
     case invalidProfile
@@ -442,6 +462,9 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
         case .certificateLimit: return "CERTIFICATE_LIMIT_REACHED"
         case .certificateRequestFailed: return "CERTIFICATE_REQUEST_FAILED"
         case .deviceLimit: return "DEVICE_LIMIT_REACHED"
+        case .deviceNameRequired: return "DEVICE_NAME_REQUIRED"
+        case .invalidDeviceIdentifier: return "INVALID_DEVICE_IDENTIFIER"
+        case .invalidTeam: return "INVALID_TEAM"
         case .deviceRegistrationFailed: return "DEVICE_REGISTRATION_FAILED"
         case .appIDLimit: return "APP_ID_LIMIT_REACHED"
         case .appIDCollision: return "APP_ID_COLLISION"
@@ -487,7 +510,18 @@ public enum ApplePersonalTeamCheckpoint: String, Codable, CaseIterable, Sendable
     case provisioningPreparationContinued = "PROVISIONING_PREPARATION_CONTINUED"
     case signingIdentityReused = "SIGNING_IDENTITY_REUSED"
     case signingIdentityCreated = "SIGNING_IDENTITY_CREATED"
+    case deviceRegistrationCheckStarted = "DEVICE_REGISTRATION_CHECK_STARTED"
+    case registeredDeviceListReceived = "REGISTERED_DEVICE_LIST_RECEIVED"
+    case registeredDeviceMatchResult = "REGISTERED_DEVICE_MATCH_RESULT"
     case deviceAlreadyRegistered = "DEVICE_ALREADY_REGISTERED"
+    case deviceRegistrationRequired = "DEVICE_REGISTRATION_REQUIRED"
+    case deviceRegistrationRequestPrepared = "DEVICE_REGISTRATION_REQUEST_PREPARED"
+    case deviceRegistrationRequestSent = "DEVICE_REGISTRATION_REQUEST_SENT"
+    case deviceRegistrationResponseReceived = "DEVICE_REGISTRATION_RESPONSE_RECEIVED"
+    case deviceRegistrationReconciliationStarted = "DEVICE_REGISTRATION_RECONCILIATION_STARTED"
+    case deviceRegistrationSucceeded = "DEVICE_REGISTRATION_SUCCEEDED"
+    case deviceRegistrationRejected = "DEVICE_REGISTRATION_REJECTED"
+    case provisioningDeviceReady = "PROVISIONING_DEVICE_READY"
     case deviceRegistered = "DEVICE_REGISTERED"
     case mainIDReady = "MAIN_ID_READY"
     case uiTestIDReady = "UITEST_ID_READY"
@@ -676,7 +710,7 @@ public actor ExperimentalConsumerProvisioningCoordinator {
             identifiers: identifiers,
             teamIdentifier: team.id,
             certificateFingerprint: identity.certificateFingerprint,
-            selectedDeviceIdentifier: request.selectedDeviceIdentifier,
+            selectedDeviceIdentifier: request.selectedDeviceRegistrationIdentifier,
             now: Date()
         )
         return ExperimentalProvisioningPreparation(
