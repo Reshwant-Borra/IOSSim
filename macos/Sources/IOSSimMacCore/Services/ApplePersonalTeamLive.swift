@@ -714,10 +714,16 @@ struct AppleSRPClient {
     }
 
     static func verifyServerProof(_ received: Data, expected: Data) throws {
-        guard received.count == expected.count else { throw ExperimentalBackendError.srpAuthFailed }
+        guard serverProofMatches(received, expected: expected) else {
+            throw ExperimentalBackendError.srpAuthFailed
+        }
+    }
+
+    static func serverProofMatches(_ received: Data, expected: Data) -> Bool {
+        guard received.count == expected.count else { return false }
         var difference: UInt8 = 0
         for index in received.indices { difference |= received[index] ^ expected[index] }
-        guard difference == 0 else { throw ExperimentalBackendError.srpAuthFailed }
+        return difference == 0
     }
 
     static func pad(_ value: BigUInt, to count: Int) -> Data {
@@ -1451,6 +1457,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
     private let machineIdentity: any AppleMachineIdentityProviding
     private let sessionStore: any AppleAuthorizationSessionStoring
     private let diagnostics: ApplePersonalTeamDiagnosticsStore
+    private let srpRandomBytesForTesting: Data?
     private var session: LiveSessionEnvelope?
     private var pendingTwoFactor: PendingTwoFactor?
     private var appIdentifierIDs: [String: String] = [:]
@@ -1467,6 +1474,24 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         self.machineIdentity = machineIdentity
         self.sessionStore = sessionStore
         self.diagnostics = diagnostics
+        srpRandomBytesForTesting = nil
+        clientIdentityVersion = adapter.version
+    }
+
+    init(
+        adapter: PrivateAppleProtocolAdapter = .researched2026,
+        transport: any AppleHTTPTransport,
+        machineIdentity: any AppleMachineIdentityProviding,
+        sessionStore: any AppleAuthorizationSessionStoring,
+        diagnostics: ApplePersonalTeamDiagnosticsStore,
+        srpRandomBytesForTesting: Data
+    ) {
+        self.adapter = adapter
+        self.transport = transport
+        self.machineIdentity = machineIdentity
+        self.sessionStore = sessionStore
+        self.diagnostics = diagnostics
+        self.srpRandomBytesForTesting = srpRandomBytesForTesting
         clientIdentityVersion = adapter.version
     }
 
@@ -1585,7 +1610,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
     }
 
     private func authenticate(account: String, password: Data) async throws -> AuthenticationOutcome {
-        let srp = try AppleSRPClient()
+        let srp = try AppleSRPClient(randomBytes: srpRandomBytesForTesting)
         let machineHeaders = try await machineIdentity.headers(for: URLRequest(url: adapter.grandSlamService))
         let cpd = clientProvidedData(machineHeaders)
         let initial = try await grandSlam([
@@ -1607,22 +1632,132 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             "o": "complete"
         ], machineHeaders: machineHeaders, stage: "srpComplete",
            srpProtocol: challenge.scheme, closeConnection: true)
+        recordPostComplete(
+            stage: "SRP_COMPLETE_ACCEPTED",
+            response: completed.response,
+            status: completed.status,
+            flags: ["applicationStatusAccepted": true]
+        )
         guard let serverProof = completed.response["M2"] as? Data else {
+            recordPostComplete(
+                stage: "M2_REJECTED",
+                response: completed.response,
+                status: completed.status,
+                lengths: ["localM2": proof.expectedServerProof.count],
+                flags: ["serverM2Present": false, "m2Match": false],
+                safeErrorCode: ExperimentalBackendError.authenticationProtocolMismatch.safeCode
+            )
             throw ExperimentalBackendError.authenticationProtocolMismatch
         }
-        try AppleSRPClient.verifyServerProof(serverProof, expected: proof.expectedServerProof)
+        recordPostComplete(
+            stage: "M2_RECEIVED",
+            response: completed.response,
+            status: completed.status,
+            lengths: ["serverM2": serverProof.count, "localM2": proof.expectedServerProof.count],
+            flags: ["serverM2Present": true]
+        )
+        let m2Matches = AppleSRPClient.serverProofMatches(serverProof, expected: proof.expectedServerProof)
+        recordPostComplete(
+            stage: m2Matches ? "M2_VERIFIED" : "M2_REJECTED",
+            response: completed.response,
+            status: completed.status,
+            lengths: ["serverM2": serverProof.count, "localM2": proof.expectedServerProof.count],
+            flags: ["serverM2Present": true, "m2Match": m2Matches],
+            safeErrorCode: m2Matches ? nil : ExperimentalBackendError.srpAuthFailed.safeCode
+        )
+        guard m2Matches else { throw ExperimentalBackendError.srpAuthFailed }
         guard let encrypted = completed.response["spd"] as? Data, encrypted.count <= 1_048_576 else {
             throw ExperimentalBackendError.authenticationProtocolMismatch
         }
-        try validateNegotiationProof(
+        recordPostComplete(
+            stage: "NEGOTIATION_PROOF_RECEIVED",
             response: completed.response,
-            scheme: challenge.scheme,
-            sessionKey: proof.sessionKey
+            status: completed.status,
+            lengths: [
+                "spdCiphertext": encrypted.count,
+                "np": (completed.response["np"] as? Data)?.count ?? 0,
+                "sc": (completed.response["sc"] as? Data)?.count ?? 0
+            ],
+            flags: [
+                "spdPresent": true,
+                "npPresent": completed.response["np"] is Data,
+                "scPresent": completed.response["sc"] is Data
+            ]
         )
-        var plaintext = try decryptCBC(encrypted, sessionKey: proof.sessionKey)
+        do {
+            try validateNegotiationProof(
+                response: completed.response,
+                scheme: challenge.scheme,
+                sessionKey: proof.sessionKey
+            )
+            recordPostComplete(
+                stage: "NEGOTIATION_PROOF_VERIFIED",
+                response: completed.response,
+                status: completed.status,
+                flags: ["npProcessingSucceeded": true]
+            )
+        } catch let error as ExperimentalBackendError {
+            recordPostComplete(
+                stage: "NEGOTIATION_PROOF_REJECTED",
+                response: completed.response,
+                status: completed.status,
+                flags: ["npProcessingSucceeded": false],
+                safeErrorCode: error.safeCode
+            )
+            throw error
+        }
+        recordPostComplete(
+            stage: "SPD_DECRYPTION_STARTED",
+            response: completed.response,
+            status: completed.status,
+            lengths: ["spdCiphertext": encrypted.count],
+            flags: ["spdDecryptionAttempted": true]
+        )
+        var plaintext: Data
+        do {
+            plaintext = try decryptCBC(encrypted, sessionKey: proof.sessionKey)
+        } catch let error as ExperimentalBackendError {
+            recordPostComplete(
+                stage: "SPD_DECRYPTION_FAILED",
+                response: completed.response,
+                status: completed.status,
+                lengths: ["spdCiphertext": encrypted.count],
+                flags: ["spdDecryptionAttempted": true, "spdDecryptionSucceeded": false],
+                safeErrorCode: error.safeCode
+            )
+            throw error
+        }
+        recordPostComplete(
+            stage: "SPD_DECRYPTION_SUCCEEDED",
+            response: completed.response,
+            status: completed.status,
+            lengths: ["spdCiphertext": encrypted.count, "spdPlaintext": plaintext.count],
+            flags: ["spdDecryptionAttempted": true, "spdDecryptionSucceeded": true]
+        )
         defer { plaintext.resetBytes(in: 0..<plaintext.count) }
-        guard let secret = try parseApplePlist(plaintext),
-              let dsid = string(secret["adsid"]), !dsid.isEmpty, dsid.count <= 128,
+        let secret: [String: Any]
+        do {
+            guard let parsed = try parseApplePlist(plaintext) else {
+                throw ExperimentalBackendError.authenticationProtocolMismatch
+            }
+            secret = parsed
+        } catch {
+            recordPostComplete(
+                stage: "SPD_PARSE_FAILED",
+                response: completed.response,
+                status: completed.status,
+                flags: ["spdPlistDecoded": false],
+                safeErrorCode: ExperimentalBackendError.authenticationProtocolMismatch.safeCode
+            )
+            throw ExperimentalBackendError.authenticationProtocolMismatch
+        }
+        recordPostComplete(
+            stage: "SPD_PARSED",
+            response: secret,
+            status: completed.status,
+            flags: ["spdPlistDecoded": true]
+        )
+        guard let dsid = string(secret["adsid"]), !dsid.isEmpty, dsid.count <= 128,
               let idmsToken = secret["GsIdmsToken"] as? String, !idmsToken.isEmpty,
               idmsToken.count <= 16_384 else {
             throw ExperimentalBackendError.authenticationProtocolMismatch
@@ -1646,6 +1781,12 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             if method == .trustedDevice {
                 try await requestTrustedDeviceCode(pending)
             }
+            recordPostComplete(
+                stage: "TWO_FACTOR_REQUIRED",
+                response: completed.response,
+                status: completed.status,
+                flags: ["twoFactorRequired": true]
+            )
             return .verification(pending)
         }
 
@@ -1653,14 +1794,21 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
               let continuation = secret["c"] as? Data, !continuation.isEmpty else {
             throw ExperimentalBackendError.authenticationProtocolMismatch
         }
-        return .session(try await fetchXcodeToken(
+        let envelope = try await fetchXcodeToken(
             dsid: dsid,
             idmsToken: idmsToken,
             continuation: continuation,
             appTokenKey: sk,
             cpd: cpd,
             machineHeaders: machineHeaders
-        ))
+        )
+        recordPostComplete(
+            stage: "AUTH_SESSION_CREATED",
+            response: completed.response,
+            status: completed.status,
+            flags: ["authSessionCreated": true]
+        )
+        return .session(envelope)
     }
 
     private func establishSession(
@@ -2101,6 +2249,42 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         }
     }
 
+    private func recordPostComplete(
+        stage: String,
+        response: [String: Any],
+        status: [String: Any],
+        lengths extraLengths: [String: Int] = [:],
+        flags: [String: Bool] = [:],
+        safeErrorCode: String? = nil
+    ) {
+        var lengths = extraLengths
+        for name in ["M2", "np", "spd", "sc"] {
+            if lengths[name] == nil, let data = response[name] as? Data {
+                lengths[name] = data.count
+            }
+        }
+        diagnostics.update(adapterVersion: adapter.version) {
+            $0.events.append(.init(
+                timestamp: Date(),
+                checkpoint: nil,
+                stage: stage,
+                safeErrorCode: safeErrorCode,
+                httpStatus: nil,
+                appleErrorCode: integer(status["ec"]),
+                retryAfterSeconds: nil,
+                retryable: false,
+                reauthorizationRequired: safeErrorCode != nil,
+                srpVersion: "1.0.1",
+                structuralLengths: lengths.isEmpty ? nil : lengths,
+                responseFieldNames: safeFieldNames(response.keys),
+                responseStatusCode: integer(status["hsc"]),
+                fieldTypes: safeFieldTypes(response),
+                responseStatusFieldNames: safeFieldNames(status.keys),
+                continuity: flags.isEmpty ? nil : flags
+            ))
+        }
+    }
+
     private func recordFailure(_ failure: AppleServiceFailure, stage: String) {
         diagnostics.update(adapterVersion: adapter.version) {
             $0.events.append(.init(
@@ -2168,7 +2352,7 @@ func parseApplePlist(_ data: Data) throws -> [String: Any]? {
     return try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
 }
 
-private func integer(_ value: Any?) -> Int? {
+func integer(_ value: Any?) -> Int? {
     if let number = value as? NSNumber { return number.intValue }
     if let string = value as? String { return Int(string) }
     return nil
@@ -2186,7 +2370,7 @@ private func string(_ value: Any?) -> String? {
     return nil
 }
 
-private func validateNegotiationProof(
+func validateNegotiationProof(
     response: [String: Any],
     scheme: String,
     sessionKey: Data
@@ -2196,7 +2380,10 @@ private func validateNegotiationProof(
         throw ExperimentalBackendError.authenticationProtocolMismatch
     }
     let sc = response["sc"] as? Data
-    var transcript = Data("s2k,s2k_fo|\(scheme)|".utf8)
+    // AppleIDAuthSupport retains the negotiation transcript incrementally:
+    // one separator after the offered list and another before the selected
+    // scheme. Omitting the empty field changes np even when M2 is valid.
+    var transcript = Data("s2k,s2k_fo||\(scheme)|".utf8)
     transcript.appendLengthPrefixed(spd)
     transcript.append(Data("|".utf8))
     if let sc { transcript.appendLengthPrefixed(sc) }
@@ -2209,7 +2396,7 @@ private func validateNegotiationProof(
     }
 }
 
-private func decryptCBC(_ encrypted: Data, sessionKey: Data) throws -> Data {
+func decryptCBC(_ encrypted: Data, sessionKey: Data) throws -> Data {
     guard !encrypted.isEmpty, encrypted.count % kCCBlockSizeAES128 == 0 else {
         throw ExperimentalBackendError.authenticationProtocolMismatch
     }

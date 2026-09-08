@@ -1,4 +1,6 @@
 import Foundation
+import CommonCrypto
+import CryptoKit
 import XCTest
 @testable import IOSSimMacCore
 
@@ -62,6 +64,108 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         }
         XCTAssertThrowsError(try AppleSRPClient(randomBytes: Data(repeating: 0, count: 32)))
         XCTAssertThrowsError(try AppleSRPClient(randomBytes: Data(repeating: 1, count: 31)))
+    }
+
+    func testM2MatchesAppleCoreCryptoFormulaAndRejectsMutation() throws {
+        let client = try AppleSRPClient(randomBytes: Data((1...32).map(UInt8.init)))
+        let challenge = try AppleSRPClient.parseChallenge([
+            "sp": "s2k",
+            "s": Data(repeating: 0x5a, count: 16),
+            "i": 20_000,
+            "B": Data(repeating: 0x7b, count: 256),
+            "c": "synthetic-cookie"
+        ])
+        let proof = try client.proof(
+            account: "fixture@example.invalid",
+            password: Data("synthetic-password".utf8),
+            challenge: challenge
+        )
+        let referenceM2 = Data(SHA256.hash(
+            data: client.clientPublicKey + proof.clientProof + proof.sessionKey
+        ))
+
+        XCTAssertNoThrow(try AppleSRPClient.verifyServerProof(
+            referenceM2,
+            expected: proof.expectedServerProof
+        ))
+        var mutation = referenceM2
+        mutation[mutation.startIndex] ^= 0x01
+        XCTAssertThrowsError(try AppleSRPClient.verifyServerProof(
+            mutation,
+            expected: proof.expectedServerProof
+        )) { error in
+            XCTAssertEqual(error as? ExperimentalBackendError, .srpAuthFailed)
+        }
+    }
+
+    func testNegotiationProofMatchesAltSignTranscriptWithAndWithoutSC() throws {
+        let sessionKey = Data(0...31)
+        let spd = Data(0...15)
+
+        for sc in [Data([0xa1, 0xb2, 0xc3, 0xd4]), nil] as [Data?] {
+            let np = referenceNegotiationProof(
+                scheme: "s2k",
+                spd: spd,
+                sc: sc,
+                sessionKey: sessionKey
+            )
+            var response: [String: Any] = ["spd": spd, "np": np]
+            if let sc { response["sc"] = sc }
+
+            XCTAssertNoThrow(try validateNegotiationProof(
+                response: response,
+                scheme: "s2k",
+                sessionKey: sessionKey
+            ))
+        }
+    }
+
+    func testNegotiationProofRejectsMutation() throws {
+        let sessionKey = Data(0...31)
+        let spd = Data(0...15)
+        var np = referenceNegotiationProof(
+            scheme: "s2k",
+            spd: spd,
+            sc: nil,
+            sessionKey: sessionKey
+        )
+        np[np.startIndex] ^= 0x01
+
+        XCTAssertThrowsError(try validateNegotiationProof(
+            response: ["spd": spd, "np": np],
+            scheme: "s2k",
+            sessionKey: sessionKey
+        )) { error in
+            XCTAssertEqual(error as? ExperimentalBackendError, .srpAuthFailed)
+        }
+    }
+
+    func testFoundationPlistStatusIntegerBridging() throws {
+        let data = try plistData([
+            "false": false,
+            "true": true,
+            "integer": 200,
+            "numericString": "0"
+        ])
+        let parsed = try XCTUnwrap(try parseApplePlist(data))
+
+        XCTAssertEqual(integer(parsed["false"]), 0)
+        XCTAssertEqual(integer(parsed["true"]), 1)
+        XCTAssertEqual(integer(parsed["integer"]), 200)
+        XCTAssertEqual(integer(parsed["numericString"]), 0)
+        XCTAssertTrue(parsed["false"] is Bool)
+        XCTAssertTrue(parsed["false"] is NSNumber)
+    }
+
+    func testSPDDecryptionMatchesReferenceAESCBCKDF() throws {
+        let sessionKey = Data(0...31)
+        let plaintext = try plistData(["fixture": "non-secret-value"])
+        let encrypted = try referenceEncryptSPD(plaintext, sessionKey: sessionKey)
+        let decrypted = try decryptCBC(encrypted, sessionKey: sessionKey)
+
+        XCTAssertEqual(decrypted.count, plaintext.count)
+        XCTAssertTrue(decrypted.elementsEqual(plaintext))
+        XCTAssertEqual(try parseApplePlist(decrypted)?.keys.sorted(), ["fixture"])
     }
 
     func testMalformedAndOversizedPlistsFailClosed() throws {
@@ -434,6 +538,102 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         }
     }
 
+    func testSuccessfulCompleteWithBooleanStatusAdvancesToTwoFactor() async throws {
+        let account = "fixture@example.invalid"
+        let passwordBytes = Data("synthetic-password".utf8)
+        let randomBytes = Data((1...32).map(UInt8.init))
+        let challenge: [String: Any] = [
+            "Status": ["ec": false, "hsc": 200],
+            "sp": "s2k",
+            "s": Data(repeating: 0x5a, count: 16),
+            "i": 20_000,
+            "B": Data(repeating: 0x7b, count: 256),
+            "c": "synthetic-cookie",
+            "ptxid": "synthetic-transaction-id"
+        ]
+        let client = try AppleSRPClient(randomBytes: randomBytes)
+        let proof = try client.proof(
+            account: account,
+            password: passwordBytes,
+            challenge: AppleSRPClient.parseChallenge(challenge)
+        )
+        let spdPlaintext = try plistData([
+            "adsid": "123456789",
+            "GsIdmsToken": "synthetic-idms-token"
+        ])
+        let encryptedSPD = try referenceEncryptSPD(spdPlaintext, sessionKey: proof.sessionKey)
+        let np = referenceNegotiationProof(
+            scheme: "s2k",
+            spd: encryptedSPD,
+            sc: nil,
+            sessionKey: proof.sessionKey
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(["Response": challenge]),
+            .plist(["Response": [
+                "M2": proof.expectedServerProof,
+                "Status": ["ec": false, "hsc": 200, "au": "trustedDeviceSecondaryAuth"],
+                "np": np,
+                "ptxid": "synthetic-transaction-id",
+                "spd": encryptedSPD
+            ]]),
+            .empty()
+        ])
+        let diagnosticsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-live-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: diagnosticsURL) }
+        let diagnostics = ApplePersonalTeamDiagnosticsStore(url: diagnosticsURL)
+        let backend = LiveApplePersonalTeamBackend(
+            transport: transport,
+            machineIdentity: FixtureMachineIdentity(),
+            sessionStore: MemoryAuthorizationSessionStore(),
+            diagnostics: diagnostics,
+            srpRandomBytesForTesting: randomBytes
+        )
+
+        let result = try await backend.beginAuthorization(
+            account: account,
+            password: SensitiveInput(data: passwordBytes)
+        )
+        guard case .verificationRequired(let verification) = result else {
+            return XCTFail("Expected a trusted-device verification transition")
+        }
+        XCTAssertEqual(verification.method, .trustedDevice)
+
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.count, 3)
+        let completeRoot = try XCTUnwrap(try parseApplePlist(XCTUnwrap(requests[1].httpBody)))
+        let complete = try XCTUnwrap(completeRoot["Request"] as? [String: Any])
+        XCTAssertTrue((complete["M1"] as? Data)?.elementsEqual(proof.clientProof) == true)
+
+        let events = try XCTUnwrap(diagnostics.load()?.events)
+        for stage in [
+            "SRP_COMPLETE_ACCEPTED",
+            "M2_RECEIVED",
+            "M2_VERIFIED",
+            "NEGOTIATION_PROOF_RECEIVED",
+            "NEGOTIATION_PROOF_VERIFIED",
+            "SPD_DECRYPTION_STARTED",
+            "SPD_DECRYPTION_SUCCEEDED",
+            "SPD_PARSED",
+            "TWO_FACTOR_REQUIRED"
+        ] {
+            XCTAssertTrue(events.contains(where: { $0.stage == stage }), "Missing safe stage \(stage)")
+        }
+        let m2Event = try XCTUnwrap(events.first(where: { $0.stage == "M2_VERIFIED" }))
+        XCTAssertEqual(m2Event.structuralLengths?["serverM2"], 32)
+        XCTAssertEqual(m2Event.structuralLengths?["localM2"], 32)
+        XCTAssertEqual(m2Event.continuity?["serverM2Present"], true)
+        XCTAssertEqual(m2Event.continuity?["m2Match"], true)
+        let parsedEvent = try XCTUnwrap(events.first(where: { $0.stage == "SPD_PARSED" }))
+        XCTAssertEqual(parsedEvent.responseFieldNames, ["GsIdmsToken", "adsid"])
+        XCTAssertEqual(parsedEvent.continuity?["spdPlistDecoded"], true)
+        let serializedDiagnostics = try String(contentsOf: diagnosticsURL, encoding: .utf8)
+        for secret in syntheticSecrets {
+            XCTAssertFalse(serializedDiagnostics.contains(secret))
+        }
+    }
+
     func testDiagnosticsAndRedactorNeverSerializeInjectedSecrets() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("iossim-redaction-test-\(UUID().uuidString).json")
@@ -461,7 +661,76 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
 
     private var syntheticSecrets: [String] {
         ["synthetic-password", "123456", "synthetic-session-token", "synthetic-cookie", "gs-secret",
-         "123456789", "private-key-secret", "pairing-material-secret", "synthetic-private-key"]
+         "synthetic-idms-token", "123456789", "private-key-secret", "pairing-material-secret",
+         "synthetic-private-key"]
+    }
+}
+
+private func referenceNegotiationProof(
+    scheme: String,
+    spd: Data,
+    sc: Data?,
+    sessionKey: Data
+) -> Data {
+    var transcript = Data("s2k,s2k_fo||\(scheme)|".utf8)
+    transcript.appendReferenceLengthPrefixed(spd)
+    transcript.append(Data("|".utf8))
+    if let sc { transcript.appendReferenceLengthPrefixed(sc) }
+    transcript.append(Data("|".utf8))
+    let transcriptHash = Data(SHA256.hash(data: transcript))
+    let hmacKey = Data(HMAC<SHA256>.authenticationCode(
+        for: Data("HMAC key:".utf8),
+        using: SymmetricKey(data: sessionKey)
+    ))
+    return Data(HMAC<SHA256>.authenticationCode(
+        for: transcriptHash,
+        using: SymmetricKey(data: hmacKey)
+    ))
+}
+
+private func referenceEncryptSPD(_ plaintext: Data, sessionKey: Data) throws -> Data {
+    let key = Data(HMAC<SHA256>.authenticationCode(
+        for: Data("extra data key:".utf8),
+        using: SymmetricKey(data: sessionKey)
+    ))
+    let iv = Data(HMAC<SHA256>.authenticationCode(
+        for: Data("extra data iv:".utf8),
+        using: SymmetricKey(data: sessionKey)
+    )).prefix(kCCBlockSizeAES128)
+    var output = Data(count: plaintext.count + kCCBlockSizeAES128)
+    let outputCapacity = output.count
+    var outputLength = 0
+    let status = output.withUnsafeMutableBytes { outputBytes in
+        plaintext.withUnsafeBytes { inputBytes in
+            key.withUnsafeBytes { keyBytes in
+                iv.withUnsafeBytes { ivBytes in
+                    CCCrypt(
+                        CCOperation(kCCEncrypt),
+                        CCAlgorithm(kCCAlgorithmAES),
+                        CCOptions(kCCOptionPKCS7Padding),
+                        keyBytes.baseAddress,
+                        key.count,
+                        ivBytes.baseAddress,
+                        inputBytes.baseAddress,
+                        plaintext.count,
+                        outputBytes.baseAddress,
+                        outputCapacity,
+                        &outputLength
+                    )
+                }
+            }
+        }
+    }
+    guard status == kCCSuccess else { throw ExperimentalBackendError.srpAuthFailed }
+    output.removeSubrange(outputLength..<output.count)
+    return output
+}
+
+private extension Data {
+    mutating func appendReferenceLengthPrefixed(_ value: Data) {
+        var length = UInt32(value.count).littleEndian
+        Swift.withUnsafeBytes(of: &length) { append(contentsOf: $0) }
+        append(value)
     }
 }
 
@@ -485,6 +754,10 @@ private actor ScriptedAppleTransport: AppleHTTPTransport {
             var merged = headers
             merged["Content-Type"] = "text/x-xml-plist"
             return Response(status: status, headers: merged, body: try! plistData(value))
+        }
+
+        static func empty(status: Int = 200, headers: [AnyHashable: Any] = [:]) -> Response {
+            Response(status: status, headers: headers, body: Data())
         }
     }
 
