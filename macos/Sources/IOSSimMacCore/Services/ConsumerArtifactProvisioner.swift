@@ -554,14 +554,16 @@ public actor ConsumerArtifactProvisioner {
             profileURL: mainProfileURL,
             expectedIdentifier: identifiers.main,
             expectedTeam: team.teamIdentifier,
-            artifact: "main"
+            artifact: "main",
+            nativeManaged: nativeArtifacts != nil
         )
         try await verifySignature(
             runnerURL,
             profileURL: runnerProfileURL,
             expectedIdentifier: identifiers.runner,
             expectedTeam: team.teamIdentifier,
-            artifact: "runner"
+            artifact: "runner",
+            nativeManaged: nativeArtifacts != nil
         )
         try await verifyNestedSignatures(runnerURL, expectedTeam: team.teamIdentifier)
         try verifyPreparedRunnerRelationship(runnerURL, identifiers: identifiers)
@@ -661,7 +663,8 @@ public actor ConsumerArtifactProvisioner {
         profileURL: URL,
         expectedIdentifier: String,
         expectedTeam: String,
-        artifact: String
+        artifact: String,
+        nativeManaged: Bool
     ) async throws {
         let verification = try await context.runner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
@@ -689,7 +692,7 @@ public actor ConsumerArtifactProvisioner {
                 code: artifact == "main" ? .mainSigningFailure : .runnerSigningFailure,
                 stage: .verifyingSignatures,
                 userMessage: "IOSSim could not verify a signed component.",
-                remediation: "Refresh the selected Apple account in Xcode and try again.",
+                remediation: SignatureVerificationRemediation.message(nativeManaged: nativeManaged),
                 developerDetail: "\(artifact) signature identifier/team mismatch: \(summary.identifier ?? "missing") / \(summary.teamIdentifier ?? "missing")."
             )
         }
@@ -1022,7 +1025,7 @@ public actor ConsumerArtifactProvisioner {
                 code: .deviceNotIncluded,
                 stage: .preparingIdentities,
                 userMessage: "The selected iPhone is not included in the signing profile.",
-                remediation: "Reconnect the iPhone, confirm it appears in Xcode, then try again.",
+                remediation: "Reconnect the iPhone and refresh provisioning, then try again.",
                 developerDetail: "ProvisionedDevices does not contain \(RuntimeProvisioning.shortIdentifier(selectedDeviceIdentifier))."
             )
         }
@@ -1317,6 +1320,14 @@ enum SigningShellBuildPlan {
             "DEVELOPMENT_TEAM=\(teamIdentifier)",
             "CODE_SIGN_STYLE=Automatic"
         ]
+    }
+}
+
+enum SignatureVerificationRemediation {
+    static func message(nativeManaged: Bool) -> String {
+        nativeManaged
+            ? "Try Personal Team provisioning again; your Apple authorization remains valid."
+            : "Refresh the selected account in Xcode and try again."
     }
 }
 

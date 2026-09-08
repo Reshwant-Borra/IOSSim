@@ -327,6 +327,14 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
     }
 
+    func testNativeSignatureVerificationFailureDoesNotSuggestXcodeAccountOrReauthorization() {
+        let remediation = SignatureVerificationRemediation.message(nativeManaged: true)
+        XCTAssertFalse(remediation.localizedCaseInsensitiveContains("Xcode"))
+        XCTAssertFalse(remediation.localizedCaseInsensitiveContains("authorize again"))
+        XCTAssertTrue(remediation.localizedCaseInsensitiveContains("authorization remains valid"))
+        XCTAssertTrue(SignatureVerificationRemediation.message(nativeManaged: false).contains("Xcode"))
+    }
+
     func testNativePersonalTeamDownstreamSucceedsWithoutXcodeAccountOrAutomaticProvisioning() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("iossim-native-downstream-\(UUID().uuidString)", isDirectory: true)
