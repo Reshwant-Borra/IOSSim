@@ -46,6 +46,24 @@ final class ProvisioningBackendTests: XCTestCase {
             ProvisioningBackendKind.selected(
                 environment: ["IOSSIM_PROVISIONING_BACKEND": "ZERO_XCODE"]
             ),
+            .devicectl
+        )
+    }
+
+    func testNativePersonalTeamProvisioningStillUsesDevicectlDeviceDiscoveryByDefault() {
+        XCTAssertEqual(
+            ProvisioningBackendKind.selected(
+                environment: ["IOSSIM_PROVISIONING_BACKEND": "NATIVE_PERSONAL_TEAM"]
+            ),
+            .devicectl
+        )
+        XCTAssertEqual(
+            ProvisioningBackendKind.selected(
+                environment: [
+                    "IOSSIM_PROVISIONING_BACKEND": "NATIVE_PERSONAL_TEAM",
+                    "IOSSIM_DEVICE_BACKEND": "idevice"
+                ]
+            ),
             .idevice
         )
     }
@@ -131,6 +149,56 @@ final class ProvisioningBackendTests: XCTestCase {
         XCTAssertTrue(result.stderr.contains("IDEVICE_BACKEND_UNAVAILABLE"))
     }
 
+    func testDevicectlDiscoveryKeepsPairedPhysicalIPhoneWhenLockStateSucceeds() async throws {
+        guard RuntimeProvisioning.xcrunURL() != nil else {
+            throw XCTSkip("/usr/bin/xcrun is unavailable on this Mac.")
+        }
+        let observedIdentifier = "812EB0E1-DB40-5E49-9347-08079A74CBAF"
+        let staleIdentifier = "E08CABAF-0FC4-5000-91E8-146F2E99B3EA"
+        let runner = ProcessRunner { _, arguments, _, environment, _ in
+            XCTAssertEqual(environment, RuntimeProvisioning.deterministicEnvironment())
+            guard let outputIndex = arguments.firstIndex(of: "--json-output"),
+                  arguments.indices.contains(arguments.index(after: outputIndex)) else {
+                return ProcessResult(exitCode: 2, stdout: "", stderr: "missing --json-output")
+            }
+            let outputURL = URL(fileURLWithPath: arguments[arguments.index(after: outputIndex)])
+            if arguments.prefix(3) == ["devicectl", "list", "devices"] {
+                try Self.writeJSON(Self.deviceListJSON(
+                    observedIdentifier: observedIdentifier,
+                    staleIdentifier: staleIdentifier
+                ), to: outputURL)
+                return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.prefix(4) == ["devicectl", "device", "info", "lockState"],
+               let deviceIndex = arguments.firstIndex(of: "--device"),
+               arguments.indices.contains(arguments.index(after: deviceIndex)) {
+                let identifier = arguments[arguments.index(after: deviceIndex)]
+                if identifier == observedIdentifier {
+                    try Self.writeJSON(Self.lockStateJSON(identifier: observedIdentifier), to: outputURL)
+                    return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+                }
+                if identifier == staleIdentifier {
+                    try Self.writeJSON(Self.lockStateFailureJSON(identifier: staleIdentifier), to: outputURL)
+                    return ProcessResult(exitCode: 1, stdout: "", stderr: "device unavailable")
+                }
+            }
+            return ProcessResult(exitCode: 2, stdout: "", stderr: "unexpected arguments: \(arguments.joined(separator: " "))")
+        }
+        let devices = await DevicectlProvisioningBackend().discoverDevices(
+            context: RuntimeProvisioningContext(
+                resourcesURL: FileManager.default.temporaryDirectory,
+                runner: runner
+            )
+        )
+        XCTAssertEqual(devices.map(\.selectionIdentifier), [observedIdentifier])
+        XCTAssertEqual(devices[0].name, "Rishi Borra")
+        XCTAssertEqual(devices[0].model, "iPhone 17 Pro")
+        XCTAssertEqual(devices[0].pairingState, "paired")
+        XCTAssertEqual(devices[0].developerModeStatus, "enabled")
+        XCTAssertEqual(devices[0].tunnelState, "connected")
+        XCTAssertEqual(devices[0].isLocked, false)
+    }
+
     private func capabilities(
         native: Bool,
         xcodePresent: Bool,
@@ -144,5 +212,95 @@ final class ProvisioningBackendTests: XCTestCase {
             xcodePresent: xcodePresent,
             headlessXcodeAuthenticationReady: headlessXcodeAuth
         )
+    }
+
+    private static func writeJSON(_ text: String, to url: URL) throws {
+        try text.data(using: .utf8)?.write(to: url)
+    }
+
+    private static func deviceListJSON(observedIdentifier: String, staleIdentifier: String) -> String {
+        """
+        {
+          "info": {
+            "commandType": "devicectl.list.devices",
+            "jsonVersion": 3,
+            "outcome": "success"
+          },
+          "result": {
+            "devices": [
+              {
+                "connectionProperties": {
+                  "pairingState": "paired",
+                  "tunnelState": "unavailable"
+                },
+                "deviceProperties": {
+                  "developerModeStatus": "enabled",
+                  "name": "Stale iPhone",
+                  "osVersionNumber": "26.6"
+                },
+                "hardwareProperties": {
+                  "deviceType": "iPhone",
+                  "marketingName": "iPhone 17",
+                  "platform": "iOS",
+                  "udid": "00008150-001C5C463A7B401C"
+                },
+                "identifier": "\(staleIdentifier)"
+              },
+              {
+                "connectionProperties": {
+                  "pairingState": "paired",
+                  "transportType": "wired",
+                  "tunnelState": "connected"
+                },
+                "deviceProperties": {
+                  "developerModeStatus": "enabled",
+                  "name": "Rishi Borra",
+                  "osVersionNumber": "26.6"
+                },
+                "hardwareProperties": {
+                  "deviceType": "iPhone",
+                  "marketingName": "iPhone 17 Pro",
+                  "platform": "iOS",
+                  "udid": "00008150-001C5C463A7B401C"
+                },
+                "identifier": "\(observedIdentifier)"
+              }
+            ]
+          }
+        }
+        """
+    }
+
+    private static func lockStateJSON(identifier: String) -> String {
+        """
+        {
+          "info": {
+            "commandType": "devicectl.device.info.lockState",
+            "jsonVersion": 3,
+            "outcome": "success"
+          },
+          "result": {
+            "deviceIdentifier": "\(identifier)",
+            "passcodeRequired": false,
+            "unlockedSinceBoot": true
+          }
+        }
+        """
+    }
+
+    private static func lockStateFailureJSON(identifier: String) -> String {
+        """
+        {
+          "error": {
+            "code": 1011,
+            "domain": "com.apple.dt.CoreDeviceError"
+          },
+          "info": {
+            "commandType": "devicectl.device.info.lockState",
+            "jsonVersion": 3,
+            "outcome": "failed"
+          }
+        }
+        """
     }
 }

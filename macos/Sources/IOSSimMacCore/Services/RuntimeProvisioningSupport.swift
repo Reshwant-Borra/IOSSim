@@ -96,11 +96,9 @@ public enum ProvisioningBackendKind: String, Sendable {
         if raw == "devicectl" {
             return .devicectl
         }
-        if [.zeroXcode, .nativePersonalTeam].contains(
-            ConsumerProvisioningBackendPreference.selected(environment: environment)
-        ) {
-            return .idevice
-        }
+        // Consumer authorization backend selection is independent from the
+        // physical-device transport. Keep using the proven CoreDevice
+        // devicectl path until a native macOS idevice backend has parity.
         return .devicectl
     }
 }
