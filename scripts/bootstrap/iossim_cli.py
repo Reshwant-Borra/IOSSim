@@ -2105,6 +2105,21 @@ def scan_file_for_bytes(path: Path, needles: list[bytes]) -> list[str]:
     return found
 
 
+def scan_file_for_text_labels(path: Path, labels: list[bytes]) -> list[str]:
+    """Find credential labels in printable text, excluding binary entropy matches."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    printable_runs = re.findall(rb"[\x09\x0a\x0d\x20-\x7e]{4,}", data)
+    found: list[str] = []
+    for label in labels:
+        pattern = re.compile(rb"(?<![A-Za-z0-9_])" + re.escape(label))
+        if any(pattern.search(run) for run in printable_runs):
+            found.append(label.decode("utf-8"))
+    return found
+
+
 def audit_app(app_dir: Path, verbose: bool = False) -> bool:
     ok = True
     contents = app_dir / "Contents"
@@ -2220,11 +2235,13 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
         b"DevelopmentRepositoryRoot.txt",
         b"IOSSIM_REPOSITORY_ROOT",
     ]
-    secret_needles = [
+    secret_block_needles = [
         b"-----BEGIN PRIVATE KEY-----",
         b"-----BEGIN RSA PRIVATE KEY-----",
         b"-----BEGIN EC PRIVATE KEY-----",
         b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+    ]
+    secret_label_needles = [
         b"auth_blob =",
         b"auth_blob:",
         b"auth token=",
@@ -2256,7 +2273,8 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
         if mode & 0o002:
             world_writable.append(relative)
         path_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_bytes(path, path_needles))
-        secret_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_bytes(path, secret_needles))
+        secret_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_bytes(path, secret_block_needles))
+        secret_hits.extend(f"{relative}: {hit}" for hit in scan_file_for_text_labels(path, secret_label_needles))
     ok &= audit_pass("No source-like files") if not source_like else audit_fail("No source-like files", ", ".join(source_like[:10]))
     ok &= audit_pass("No forbidden development material") if not forbidden_material else audit_fail("No forbidden development material", ", ".join(sorted(set(forbidden_material))[:10]))
     ok &= audit_pass("No developer provisioning profiles packaged") if not mobileprovisions else audit_fail("No developer provisioning profiles packaged", ", ".join(mobileprovisions[:10]))
