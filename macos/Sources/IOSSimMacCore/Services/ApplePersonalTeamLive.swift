@@ -25,6 +25,11 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let challengeFieldNames: [String]?
     public let responseFieldNames: [String]?
     public let responseStatusCode: Int?
+    public let fieldTypes: [String: String]?
+    public let responseStatusFieldNames: [String]?
+    public let nonSecretIntegers: [String: Int]?
+    public let continuity: [String: Bool]?
+    public let safeServerMessage: String?
 
     public init(
         timestamp: Date,
@@ -42,7 +47,12 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         requestFieldNames: [String]? = nil,
         challengeFieldNames: [String]? = nil,
         responseFieldNames: [String]? = nil,
-        responseStatusCode: Int? = nil
+        responseStatusCode: Int? = nil,
+        fieldTypes: [String: String]? = nil,
+        responseStatusFieldNames: [String]? = nil,
+        nonSecretIntegers: [String: Int]? = nil,
+        continuity: [String: Bool]? = nil,
+        safeServerMessage: String? = nil
     ) {
         self.timestamp = timestamp
         self.checkpoint = checkpoint
@@ -60,11 +70,16 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         self.challengeFieldNames = challengeFieldNames
         self.responseFieldNames = responseFieldNames
         self.responseStatusCode = responseStatusCode
+        self.fieldTypes = fieldTypes
+        self.responseStatusFieldNames = responseStatusFieldNames
+        self.nonSecretIntegers = nonSecretIntegers
+        self.continuity = continuity
+        self.safeServerMessage = safeServerMessage
     }
 }
 
 public struct ApplePersonalTeamDiagnosticSnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
     public let schemaVersion: Int
     public let adapterVersion: String
     public var events: [ApplePersonalTeamDiagnosticEvent]
@@ -467,6 +482,24 @@ struct AppleSRPProof {
     let clientProof: Data
     let sessionKey: Data
     let expectedServerProof: Data
+    let structuralLengths: [String: Int]
+}
+
+#if DEBUG
+/// Debug-only inspection material for deterministic interoperability checks.
+/// Release builds cannot construct or expose this trace, and tests compare only
+/// SHA-256 fingerprints and lengths of synthetic fixture values.
+struct AppleSRPParityTrace {
+    let bytes: [String: Data]
+    let metadata: [String: String]
+}
+#endif
+
+private struct AppleSRPComputation {
+    let proof: AppleSRPProof
+#if DEBUG
+    let trace: AppleSRPParityTrace
+#endif
 }
 
 struct AppleSRPClient {
@@ -519,6 +552,20 @@ struct AppleSRPClient {
     }
 
     func proof(account: String, password: Data, challenge: AppleSRPChallenge) throws -> AppleSRPProof {
+        try compute(account: account, password: password, challenge: challenge).proof
+    }
+
+#if DEBUG
+    func parityTrace(account: String, password: Data, challenge: AppleSRPChallenge) throws -> AppleSRPParityTrace {
+        try compute(account: account, password: password, challenge: challenge).trace
+    }
+#endif
+
+    private func compute(
+        account: String,
+        password: Data,
+        challenge: AppleSRPChallenge
+    ) throws -> AppleSRPComputation {
         guard !account.isEmpty, account.utf8.count <= 1_024, !password.isEmpty, password.count <= 4_096 else {
             throw ExperimentalBackendError.srpAuthFailed
         }
@@ -557,25 +604,113 @@ struct AppleSRPClient {
         guard server % modulus != 0 else { throw ExperimentalBackendError.srpAuthFailed }
         let scrambling = BigUInt(Data(SHA256.hash(data: clientPublicKey + Self.pad(server, to: 256))))
         guard scrambling != 0 else { throw ExperimentalBackendError.srpAuthFailed }
-        let x = BigUInt(derived)
+
+        // GrandSlam gives the PBKDF2 output to CoreCrypto as the SRP
+        // "password" with noUsernameInX enabled. CoreCrypto still performs
+        // RFC 5054 x derivation: x = H(s || H(":" || passwordKey)). Treating
+        // the PBKDF2 output itself as x produces a different verifier and M1.
+        var xInnerDigest = Data(SHA256.hash(data: Data([0x3A]) + derived))
+        var xDigest = Data(SHA256.hash(data: challenge.salt + xInnerDigest))
+        defer {
+            xInnerDigest.resetBytes(in: 0..<xInnerDigest.count)
+            xDigest.resetBytes(in: 0..<xDigest.count)
+        }
+        let x = BigUInt(xDigest)
         let verifier = generator.power(x, modulus: modulus)
-        let base = server.subtracting(multiplier * verifier % modulus, modulus: modulus)
+        let multiplierTimesVerifier = multiplier * verifier
+        let reducedMultiplierTimesVerifier = multiplierTimesVerifier % modulus
+        let base = server.subtracting(reducedMultiplierTimesVerifier, modulus: modulus)
         let exponent = privateKey + scrambling * x
         let shared = base.power(exponent, modulus: modulus)
-        let sessionKey = Data(SHA256.hash(data: Self.pad(shared, to: 256)))
+        let sharedEncoding = Self.pad(shared, to: 256)
+        let sessionKey = Data(SHA256.hash(data: sharedEncoding))
 
-        var xor = Data(SHA256.hash(data: nData))
+        let nHash = Data(SHA256.hash(data: nData))
         // Corecrypto's default RFC 5054 variant hashes group elements at the
         // modulus width. Hashing the one-byte encoding of g here changes every
         // M1 proof and GrandSlam reports the mismatch as Status.ec = -22406.
         let gHash = Data(SHA256.hash(data: gData))
+        var xor = nHash
         for index in xor.indices { xor[index] ^= gHash[index] }
         let userHash = Data(SHA256.hash(data: Data(account.utf8)))
-        let proof = Data(SHA256.hash(
-            data: xor + userHash + challenge.salt + clientPublicKey + Self.pad(server, to: 256) + sessionKey
+        let paddedServer = Self.pad(server, to: 256)
+        let proofInput = xor + userHash + challenge.salt + clientPublicKey + paddedServer + sessionKey
+        let proof = Data(SHA256.hash(data: proofInput))
+        let serverProofInput = clientPublicKey + proof + sessionKey
+        let serverProof = Data(SHA256.hash(data: serverProofInput))
+        let result = AppleSRPProof(
+            clientProof: proof,
+            sessionKey: sessionKey,
+            expectedServerProof: serverProof,
+            structuralLengths: [
+                "modulus": nData.count,
+                "paddedGenerator": gData.count,
+                "paddedA": clientPublicKey.count,
+                "paddedB": paddedServer.count,
+                "passwordPreprocessing": processed.count,
+                "pbkdf2Output": derived.count,
+                "xDigest": xDigest.count,
+                "sharedMinimal": shared.serialize().count,
+                "sharedPadded": sharedEncoding.count,
+                "sessionKey": sessionKey.count,
+                "M1": proof.count,
+                "M2": serverProof.count
+            ]
+        )
+#if DEBUG
+        return AppleSRPComputation(proof: result, trace: AppleSRPParityTrace(
+            bytes: [
+                "username_utf8": Data(account.utf8),
+                "password_input": password,
+                "password_sha256": digest,
+                "password_preprocessing_output": processed,
+                "pbkdf2_input": processed,
+                "pbkdf2_salt": challenge.salt,
+                "derived_password_key": derived,
+                "N": nData,
+                "g": generator.serialize(),
+                "PAD_g": gData,
+                "H_N": nHash,
+                "H_PAD_g": gHash,
+                "H_N_xor_H_PAD_g": xor,
+                "k": multiplier.serialize(),
+                "a": privateKey.serialize(),
+                "A": clientPublicKey,
+                "encoded_A": clientPublicKey,
+                "decoded_B": server.serialize(),
+                "padded_B": paddedServer,
+                "u": scrambling.serialize(),
+                "x_inner_hash": xInnerDigest,
+                "x": xDigest,
+                "g_pow_x": Self.pad(verifier, to: 256),
+                "k_times_g_pow_x": multiplierTimesVerifier.serialize(),
+                "B_minus_k_times_g_pow_x": Self.pad(base, to: 256),
+                "exponent_a_plus_u_times_x": exponent.serialize(),
+                "S": Self.pad(shared, to: 256),
+                "S_encoding": sharedEncoding,
+                "session_key_derivation_input": sharedEncoding,
+                "K": sessionKey,
+                "H_username": userHash,
+                "M1_input": proofInput,
+                "M1": proof,
+                "M2_input": serverProofInput,
+                "M2": serverProof
+            ],
+            metadata: [
+                "username_before_normalization": account,
+                "username_after_normalization": account,
+                "scheme": challenge.scheme,
+                "pbkdf2_iterations": String(challenge.iterations),
+                "pbkdf2_prf": "HMAC-SHA256",
+                "pbkdf2_output_length": String(derived.count),
+                "N_byte_width": String(nData.count),
+                "integer_encoding": "unsigned-big-endian",
+                "group_element_encoding": "fixed-256-byte"
+            ]
         ))
-        let serverProof = Data(SHA256.hash(data: clientPublicKey + proof + sessionKey))
-        return AppleSRPProof(clientProof: proof, sessionKey: sessionKey, expectedServerProof: serverProof)
+#else
+        return AppleSRPComputation(proof: result)
+#endif
     }
 
     static func verifyServerProof(_ received: Data, expected: Data) throws {
@@ -585,9 +720,10 @@ struct AppleSRPClient {
         guard difference == 0 else { throw ExperimentalBackendError.srpAuthFailed }
     }
 
-    private static func pad(_ value: BigUInt, to count: Int) -> Data {
+    static func pad(_ value: BigUInt, to count: Int) -> Data {
         let serialized = value.serialize()
-        if serialized.count >= count { return serialized }
+        precondition(serialized.count <= count, "SRP integer exceeds its fixed-width encoding")
+        if serialized.count == count { return serialized }
         return Data(repeating: 0, count: count - serialized.count) + serialized
     }
 
@@ -1462,6 +1598,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         let challenge = try AppleSRPClient.parseChallenge(initial.response)
         record(.authChallengeReceived, stage: "challengeReceived")
         let proof = try srp.proof(account: account, password: password, challenge: challenge)
+        recordSRPDerivation(proof: proof, challenge: challenge)
         let completed = try await grandSlam([
             "M1": proof.clientProof,
             "c": challenge.cookie,
@@ -1895,6 +2032,28 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         if let value = response["s"] as? Data { lengths["salt"] = value.count }
         if let value = response["B"] as? Data { lengths["B"] = value.count }
         let isChallenge = stage == "srpInit"
+        var types: [String: String] = [:]
+        safeFieldTypes(parameters).forEach { types["request.\($0.key)"] = $0.value }
+        safeFieldTypes(response).forEach { types["response.\($0.key)"] = $0.value }
+        safeFieldTypes(status).forEach { types["status.\($0.key)"] = $0.value }
+        var nonSecretIntegers: [String: Int] = [:]
+        if let iterations = integer(response["i"]) { nonSecretIntegers["iterations"] = iterations }
+        var continuity: [String: Bool]?
+        if stage == "srpComplete" {
+            continuity = [
+                "challengeTokenPresent": (parameters["c"] as? String)?.isEmpty == false,
+                "cpdPresent": parameters["cpd"] is [String: Any],
+                "cpdStable": true,
+                "anisetteHeadersStable": true,
+                "usernameStable": true,
+                "srpInstanceStable": true,
+                "ptxidSent": parameters["ptxid"] != nil,
+                "httpCookiePersistenceEnabled": false
+            ]
+        }
+        let safeMessage = (status["em"] as? String)
+            .map(Redactor.redact)
+            .flatMap { $0.utf8.count <= 512 ? $0 : nil }
         diagnostics.update(adapterVersion: adapter.version) {
             $0.events.append(.init(
                 timestamp: Date(),
@@ -1912,7 +2071,32 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                 requestFieldNames: safeFieldNames(parameters.keys),
                 challengeFieldNames: isChallenge ? safeFieldNames(response.keys) : nil,
                 responseFieldNames: isChallenge ? nil : safeFieldNames(response.keys),
-                responseStatusCode: integer(status["hsc"])
+                responseStatusCode: integer(status["hsc"]),
+                fieldTypes: types.isEmpty ? nil : types,
+                responseStatusFieldNames: safeFieldNames(status.keys),
+                nonSecretIntegers: nonSecretIntegers.isEmpty ? nil : nonSecretIntegers,
+                continuity: continuity,
+                safeServerMessage: safeMessage
+            ))
+        }
+    }
+
+    private func recordSRPDerivation(proof: AppleSRPProof, challenge: AppleSRPChallenge) {
+        diagnostics.update(adapterVersion: adapter.version) {
+            $0.events.append(.init(
+                timestamp: Date(),
+                checkpoint: nil,
+                stage: "srpDerivation",
+                safeErrorCode: nil,
+                httpStatus: nil,
+                appleErrorCode: nil,
+                retryAfterSeconds: nil,
+                retryable: false,
+                reauthorizationRequired: false,
+                srpProtocol: challenge.scheme,
+                srpVersion: "1.0.1",
+                structuralLengths: proof.structuralLengths,
+                nonSecretIntegers: ["iterations": challenge.iterations]
             ))
         }
     }
@@ -1944,6 +2128,22 @@ private func safeFieldNames(_ names: Dictionary<String, Any>.Keys) -> [String] {
               }) else { return nil }
         return name
     }.sorted()
+}
+
+private func safeFieldTypes(_ dictionary: [String: Any]) -> [String: String] {
+    dictionary.reduce(into: [:]) { result, item in
+        guard safeFieldNames([item.key: item.value].keys).count == 1 else { return }
+        switch item.value {
+        case is Data: result[item.key] = "Data"
+        case is String: result[item.key] = "String"
+        case is Bool: result[item.key] = "Bool"
+        case is NSNumber: result[item.key] = "Number"
+        case is [String]: result[item.key] = "Array<String>"
+        case is [Any]: result[item.key] = "Array"
+        case is [String: Any]: result[item.key] = "Dictionary"
+        default: result[item.key] = "Other"
+        }
+    }
 }
 
 private extension PrivateAppleProtocolAdapter {

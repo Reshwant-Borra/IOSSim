@@ -34,7 +34,8 @@ let package = Package(
         ),
         .testTarget(
             name: "IOSSimMacCoreTests",
-            dependencies: ["IOSSimMacCore"]
+            dependencies: ["IOSSimMacCore", "BigInt"],
+            exclude: ["Fixtures"]
         )
     ]
 )

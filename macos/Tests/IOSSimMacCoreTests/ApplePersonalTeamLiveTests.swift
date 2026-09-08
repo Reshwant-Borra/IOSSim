@@ -42,36 +42,6 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         }
     }
 
-    func testSRPProofMatchesCoreCryptoCompatiblePaddedGeneratorVector() throws {
-        let client = try AppleSRPClient(randomBytes: Data((1...32).map(UInt8.init)))
-        let challenge = try AppleSRPClient.parseChallenge([
-            "sp": "s2k",
-            "s": Data(repeating: 0x5A, count: 16),
-            "i": 20_000,
-            "B": Data(repeating: 0x7B, count: 256),
-            "c": "synthetic-cookie"
-        ])
-
-        let proof = try client.proof(
-            account: "fixture@example.invalid",
-            password: Data("synthetic-password".utf8),
-            challenge: challenge
-        )
-
-        XCTAssertEqual(
-            proof.sessionKey,
-            Data(base64Encoded: "xRnScCRsxURCMxy9ERCQcj8tvhUWtMHtQUdTraYFycc=")
-        )
-        XCTAssertEqual(
-            proof.clientProof,
-            Data(base64Encoded: "71u6+3TM/Mxhb7+hn1BU1LZKSl6uBvt6dJutfOfVSV8=")
-        )
-        XCTAssertEqual(
-            proof.expectedServerProof,
-            Data(base64Encoded: "GQxhwR2hRI3nOjPmiKMpoh82I8Fn0zdjDu+NKxCAWuQ=")
-        )
-    }
-
     func testSRPRejectsMalformedOrUnsafeChallengeParameters() throws {
         let valid: [String: Any] = [
             "sp": "s2k", "s": Data(repeating: 1, count: 16), "i": 10_000,
@@ -291,7 +261,8 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
             "s": Data(repeating: 1, count: 16),
             "i": 1_000,
             "B": Data(repeating: 2, count: 256),
-            "c": "fixture-cookie"
+            "c": "fixture-cookie",
+            "ptxid": "synthetic-transaction-id"
         ]
         let transport = ScriptedAppleTransport([
             .plist(["Response": challenge]),
@@ -331,6 +302,23 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         let complete = try XCTUnwrap(completeRoot["Request"] as? [String: Any])
         XCTAssertEqual(complete["o"] as? String, "complete")
         XCTAssertEqual((complete["M1"] as? Data)?.count, 32)
+        XCTAssertEqual(complete["c"] as? String, "fixture-cookie")
+        XCTAssertNil(complete["ptxid"])
+        let initialRoot = try XCTUnwrap(try parseApplePlist(XCTUnwrap(requests[0].httpBody)))
+        let initialRequest = try XCTUnwrap(initialRoot["Request"] as? [String: Any])
+        XCTAssertEqual(initialRequest["u"] as? String, complete["u"] as? String)
+        XCTAssertEqual(
+            initialRequest["cpd"] as? NSDictionary,
+            complete["cpd"] as? NSDictionary
+        )
+        XCTAssertEqual(
+            requests[0].value(forHTTPHeaderField: "X-Apple-I-MD"),
+            requests[1].value(forHTTPHeaderField: "X-Apple-I-MD")
+        )
+        XCTAssertEqual(
+            requests[0].value(forHTTPHeaderField: "X-Apple-I-MD-M"),
+            requests[1].value(forHTTPHeaderField: "X-Apple-I-MD-M")
+        )
 
         let events = try XCTUnwrap(diagnostics.load()?.events)
         XCTAssertEqual(events.compactMap(\.checkpoint), [
@@ -350,11 +338,32 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertEqual(initStructure.srpVersion, "1.0.1")
         XCTAssertEqual(initStructure.structuralLengths, ["A": 256, "B": 256, "salt": 16])
         XCTAssertEqual(initStructure.requestFieldNames, ["A2k", "cpd", "o", "ps", "u"])
-        XCTAssertEqual(initStructure.challengeFieldNames, ["B", "Status", "c", "i", "s", "sp"])
+        XCTAssertEqual(initStructure.challengeFieldNames, ["B", "Status", "c", "i", "ptxid", "s", "sp"])
         XCTAssertNil(initStructure.responseFieldNames)
         XCTAssertEqual(initStructure.httpStatus, 200)
         XCTAssertEqual(initStructure.appleErrorCode, 0)
         XCTAssertEqual(initStructure.responseStatusCode, 200)
+        XCTAssertEqual(initStructure.nonSecretIntegers, ["iterations": 1_000])
+        XCTAssertEqual(initStructure.fieldTypes?["request.A2k"], "Data")
+        XCTAssertEqual(initStructure.fieldTypes?["request.ps"], "Array<String>")
+        XCTAssertEqual(initStructure.fieldTypes?["request.cpd"], "Dictionary")
+        XCTAssertEqual(initStructure.fieldTypes?["response.B"], "Data")
+        XCTAssertEqual(initStructure.fieldTypes?["response.s"], "Data")
+        XCTAssertEqual(initStructure.fieldTypes?["response.i"], "Number")
+        XCTAssertEqual(initStructure.fieldTypes?["response.ptxid"], "String")
+
+        let derivation = try XCTUnwrap(events.first(where: { $0.stage == "srpDerivation" }))
+        XCTAssertEqual(derivation.srpProtocol, "s2k_fo")
+        XCTAssertEqual(derivation.nonSecretIntegers, ["iterations": 1_000])
+        XCTAssertEqual(derivation.structuralLengths?["modulus"], 256)
+        XCTAssertEqual(derivation.structuralLengths?["paddedGenerator"], 256)
+        XCTAssertEqual(derivation.structuralLengths?["paddedA"], 256)
+        XCTAssertEqual(derivation.structuralLengths?["paddedB"], 256)
+        XCTAssertEqual(derivation.structuralLengths?["passwordPreprocessing"], 64)
+        XCTAssertEqual(derivation.structuralLengths?["pbkdf2Output"], 32)
+        XCTAssertEqual(derivation.structuralLengths?["xDigest"], 32)
+        XCTAssertEqual(derivation.structuralLengths?["sharedPadded"], 256)
+        XCTAssertEqual(derivation.structuralLengths?["sessionKey"], 32)
 
         let completeStructure = try XCTUnwrap(events.first(where: { $0.stage == "srpComplete" }))
         XCTAssertEqual(completeStructure.srpProtocol, "s2k_fo")
@@ -366,6 +375,21 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertEqual(completeStructure.httpStatus, 200)
         XCTAssertEqual(completeStructure.appleErrorCode, -22406)
         XCTAssertEqual(completeStructure.responseStatusCode, 401)
+        XCTAssertEqual(completeStructure.fieldTypes?["request.M1"], "Data")
+        XCTAssertEqual(completeStructure.fieldTypes?["request.c"], "String")
+        XCTAssertEqual(completeStructure.fieldTypes?["request.cpd"], "Dictionary")
+        XCTAssertEqual(completeStructure.responseStatusFieldNames, ["ec", "em", "hsc"])
+        XCTAssertEqual(completeStructure.safeServerMessage, "Enter the correct password for this Apple Account.")
+        XCTAssertEqual(completeStructure.continuity, [
+            "challengeTokenPresent": true,
+            "cpdPresent": true,
+            "cpdStable": true,
+            "anisetteHeadersStable": true,
+            "usernameStable": true,
+            "srpInstanceStable": true,
+            "ptxidSent": false,
+            "httpCookiePersistenceEnabled": false
+        ])
     }
 
     func testMixedCaseAccountIsCanonicalizedForEntireSRPExchange() async throws {
