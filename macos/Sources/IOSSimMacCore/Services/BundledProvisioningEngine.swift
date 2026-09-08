@@ -88,7 +88,8 @@ public struct BundledProvisioningEngine: IOSSimSetupEngine {
             "consumer-provision",
             "--operation", request.operation.rawValue.lowercased(),
             "--device", request.selectedDeviceIdentifier,
-            "--team", request.selectedTeamIdentifier
+            "--team", request.selectedTeamIdentifier,
+            "--backend", request.backend.rawValue
         ]
         if request.allowFreshInstallAfterCrossTeamConflict {
             arguments.append("--confirm-fresh-install")

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import IOSSimMacCore
@@ -265,6 +266,19 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertTrue(project.contains("PRODUCT_BUNDLE_IDENTIFIER = \(identifiers.uiTests);"))
     }
 
+    func testLegacyXcodeManagedSigningShellRetainsAutomaticProvisioning() {
+        let arguments = SigningShellBuildPlan.arguments(
+            projectURL: URL(fileURLWithPath: "/fixture/SigningShell.xcodeproj"),
+            derivedDataURL: URL(fileURLWithPath: "/fixture/DerivedData"),
+            teamIdentifier: "LEGACYTEAM"
+        )
+        XCTAssertEqual(arguments.first, "xcodebuild")
+        XCTAssertTrue(arguments.contains("build-for-testing"))
+        XCTAssertTrue(arguments.contains("-allowProvisioningUpdates"))
+        XCTAssertTrue(arguments.contains("CODE_SIGN_STYLE=Automatic"))
+        XCTAssertTrue(arguments.contains("DEVELOPMENT_TEAM=LEGACYTEAM"))
+    }
+
     func testCrossTeamInstallErrorIsFirstClass() {
         XCTAssertEqual(
             ConsumerProvisioningErrorClassifier.installErrorCode(
@@ -313,6 +327,252 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
     }
 
+    func testNativePersonalTeamDownstreamSucceedsWithoutXcodeAccountOrAutomaticProvisioning() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-native-downstream-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("Resources", isDirectory: true)
+        let state = root.appendingPathComponent("State", isDirectory: true)
+        let nativeState = root.appendingPathComponent("NativeState", isDirectory: true)
+        let workspaces = root.appendingPathComponent("Workspaces", isDirectory: true)
+        let team = "T8SL4SG87F"
+        let physicalUDID = "00008150-00022D581E12401C"
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
+        XCTAssertEqual(identifiers.main, "com.personalteam.iossim.t026e0910b111.on-device-dvt-poc")
+        XCTAssertEqual(identifiers.runner, "com.personalteam.iossim.t026e0910b111.location-control-uitests.xctrunner")
+        let certificate = Data("fixture-development-certificate".utf8)
+        let certificateSHA256 = SHA256.hash(data: certificate).map { String(format: "%02X", $0) }.joined()
+        let certificateSHA1 = Insecure.SHA1.hash(data: certificate).map { String(format: "%02X", $0) }.joined()
+        let profiles = try makeNativeProfiles(
+            team: team,
+            physicalUDID: physicalUDID,
+            identifiers: identifiers,
+            certificate: certificate,
+            certificateFingerprint: certificateSHA256
+        )
+        let preparation = ExperimentalProvisioningPreparation(
+            team: ExperimentalAppleTeam(id: team, name: "Personal Team", isPersonalTeam: true, isPaidDeveloperTeam: false),
+            identity: ExperimentalSigningIdentity(
+                certificateFingerprint: certificateSHA256,
+                certificateExpiration: Date().addingTimeInterval(30 * 24 * 60 * 60),
+                privateKeyPersistentReference: Data("keychain-reference".utf8),
+                reused: true
+            ),
+            derivedIdentifiers: identifiers,
+            profiles: profiles
+        )
+        let nativeStore = NativeProvisioningArtifactStore(directoryURL: nativeState)
+        try await nativeStore.save(preparation, selectedDeviceIdentifier: physicalUDID)
+        try makeConsumerArtifactFixture(at: resources)
+
+        let recorder = NativePipelineRecorder(
+            team: team,
+            physicalUDID: physicalUDID,
+            identifiers: identifiers,
+            certificateSHA1: certificateSHA1,
+            profileDataByBundle: Dictionary(uniqueKeysWithValues: profiles.map { ($0.bundleIdentifier, $0.profileData) })
+        )
+        let runner = ProcessRunner { executable, arguments, _, _, _ in
+            try await recorder.run(executable: executable, arguments: arguments)
+        }
+        let provisioner = ConsumerArtifactProvisioner(
+            context: RuntimeProvisioningContext(resourcesURL: resources, runner: runner),
+            stateStore: ConsumerProvisioningStateStore(directoryURL: state),
+            nativeArtifactStore: nativeStore,
+            workspaceRootURL: workspaces
+        )
+
+        let result = try await provisioner.provision(ConsumerProvisioningRequest(
+            operation: .install,
+            selectedDeviceIdentifier: physicalUDID,
+            selectedTeamIdentifier: team,
+            allowFreshInstallAfterCrossTeamConflict: true,
+            backend: .nativePersonalTeam
+        ))
+
+        XCTAssertEqual(result.finalStage, .complete)
+        XCTAssertEqual(result.manifest.teamID, team)
+        XCTAssertEqual(result.manifest.installedMainBundleID, identifiers.main)
+        XCTAssertEqual(result.manifest.installedRunnerBundleID, identifiers.runner)
+        let evidence = await recorder.evidence()
+        XCTAssertFalse(evidence.commands.contains { $0.executable.lastPathComponent == "xcodebuild" || $0.arguments.first == "xcodebuild" })
+        XCTAssertFalse(evidence.commands.flatMap(\.arguments).contains("-allowProvisioningUpdates"))
+        XCTAssertFalse(evidence.commands.flatMap(\.arguments).contains("CODE_SIGN_STYLE=Automatic"))
+        XCTAssertTrue(evidence.commands.contains { $0.arguments.contains(certificateSHA1) && $0.arguments.contains("--sign") })
+        XCTAssertTrue(evidence.commands.contains { $0.arguments.contains(where: { $0.hasSuffix(".xctest") }) && $0.arguments.contains("--sign") })
+        XCTAssertTrue(evidence.commands.contains { $0.arguments.contains(where: { $0.hasSuffix(".xctest") }) && $0.arguments.contains("--verify") })
+        XCTAssertEqual(evidence.installedProfiles[identifiers.main], profiles.first(where: { $0.bundleIdentifier == identifiers.main })?.profileData)
+        XCTAssertEqual(evidence.installedProfiles[identifiers.runner], profiles.first(where: { $0.bundleIdentifier == identifiers.runner })?.profileData)
+        XCTAssertEqual(evidence.runtimeRunnerMapping, identifiers.runner)
+        XCTAssertEqual(Set(evidence.installedBundleIdentifiers), Set([identifiers.main, identifiers.runner]))
+        XCTAssertTrue(evidence.uninstalledBundleIdentifiers.allSatisfy(ConsumerInstalledIdentityPolicy.isIOSSimOwnedMainOrRunner))
+    }
+
+    func testNativeArtifactStoreRejectsHistoricalTeamDeviceAndExpiredProfilesAsProvisioningFailures() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-native-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let team = "T8SL4SG87F"
+        let udid = "00008150-00022D581E12401C"
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
+        let certificate = Data("certificate".utf8)
+        let fingerprint = SHA256.hash(data: certificate).map { String(format: "%02X", $0) }.joined()
+        let profiles = try makeNativeProfiles(
+            team: team,
+            physicalUDID: udid,
+            identifiers: identifiers,
+            certificate: certificate,
+            certificateFingerprint: fingerprint
+        )
+        let preparation = ExperimentalProvisioningPreparation(
+            team: .init(id: team, name: "Personal Team", isPersonalTeam: true, isPaidDeveloperTeam: false),
+            identity: .init(
+                certificateFingerprint: fingerprint,
+                certificateExpiration: Date().addingTimeInterval(86_400),
+                privateKeyPersistentReference: Data([1]),
+                reused: true
+            ),
+            derivedIdentifiers: identifiers,
+            profiles: profiles
+        )
+        let store = NativeProvisioningArtifactStore(directoryURL: root)
+        try await store.save(preparation, selectedDeviceIdentifier: udid)
+        _ = try await store.load(teamIdentifier: team, selectedDeviceIdentifier: udid)
+
+        for (otherTeam, otherDevice) in [("OLDRTEAM01", udid), (team, "00008150-OTHERDEVICE000") ] {
+            do {
+                _ = try await store.load(teamIdentifier: otherTeam, selectedDeviceIdentifier: otherDevice)
+                XCTFail("Expected scoped native artifact rejection")
+            } catch let failure as ConsumerProvisioningFailure {
+                XCTAssertEqual(failure.code, .profileUnavailable)
+                XCTAssertFalse(failure.userMessage.localizedCaseInsensitiveContains("authorization"))
+            }
+        }
+        do {
+            _ = try await store.load(
+                teamIdentifier: team,
+                selectedDeviceIdentifier: udid,
+                now: Date().addingTimeInterval(8 * 24 * 60 * 60)
+            )
+            XCTFail("Expected expired profile rejection")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .profileUnavailable)
+        }
+    }
+
+    func testInvalidNativeCertificateProfileContinuityFailsBeforeFreshInstallDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-native-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("Resources", isDirectory: true)
+        let team = "T8SL4SG87F"
+        let physicalUDID = "00008150-00022D581E12401C"
+        let identifiers = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
+        let profileCertificate = Data("profile-certificate".utf8)
+        let differentIdentityCertificate = Data("different-identity-certificate".utf8)
+        let identityFingerprint = SHA256.hash(data: differentIdentityCertificate)
+            .map { String(format: "%02X", $0) }.joined()
+        let profiles = try makeNativeProfiles(
+            team: team,
+            physicalUDID: physicalUDID,
+            identifiers: identifiers,
+            certificate: profileCertificate,
+            certificateFingerprint: identityFingerprint
+        )
+        let preparation = ExperimentalProvisioningPreparation(
+            team: .init(id: team, name: "Personal Team", isPersonalTeam: true, isPaidDeveloperTeam: false),
+            identity: .init(
+                certificateFingerprint: identityFingerprint,
+                certificateExpiration: Date().addingTimeInterval(86_400),
+                privateKeyPersistentReference: Data([1]),
+                reused: true
+            ),
+            derivedIdentifiers: identifiers,
+            profiles: profiles
+        )
+        let nativeStore = NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("NativeState"))
+        try await nativeStore.save(preparation, selectedDeviceIdentifier: physicalUDID)
+        try makeConsumerArtifactFixture(at: resources)
+        let recorder = NativePipelineRecorder(
+            team: team,
+            physicalUDID: physicalUDID,
+            identifiers: identifiers,
+            certificateSHA1: Insecure.SHA1.hash(data: differentIdentityCertificate)
+                .map { String(format: "%02X", $0) }.joined(),
+            profileDataByBundle: Dictionary(uniqueKeysWithValues: profiles.map { ($0.bundleIdentifier, $0.profileData) })
+        )
+        let provisioner = ConsumerArtifactProvisioner(
+            context: RuntimeProvisioningContext(resourcesURL: resources, runner: ProcessRunner { executable, arguments, _, _, _ in
+                try await recorder.run(executable: executable, arguments: arguments)
+            }),
+            stateStore: ConsumerProvisioningStateStore(directoryURL: root.appendingPathComponent("State")),
+            nativeArtifactStore: nativeStore,
+            workspaceRootURL: root.appendingPathComponent("Workspaces")
+        )
+
+        do {
+            _ = try await provisioner.provision(.init(
+                operation: .install,
+                selectedDeviceIdentifier: physicalUDID,
+                selectedTeamIdentifier: team,
+                allowFreshInstallAfterCrossTeamConflict: true,
+                backend: .nativePersonalTeam
+            ))
+            XCTFail("Expected native certificate continuity failure")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .profileUnavailable)
+            XCTAssertFalse(failure.userMessage.localizedCaseInsensitiveContains("authorization"))
+        }
+        let evidence = await recorder.evidence()
+        XCTAssertTrue(evidence.uninstalledBundleIdentifiers.isEmpty)
+        XCTAssertTrue(evidence.installedBundleIdentifiers.isEmpty)
+        XCTAssertFalse(evidence.commands.contains { $0.arguments.contains("--sign") })
+    }
+
+    func testExplicitNestedCodesignFixturePassesStrictVerificationAndEntitlementInspection() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-explicit-codesign-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = root.appendingPathComponent("Fixture-Runner.app", isDirectory: true)
+        let test = runner.appendingPathComponent("PlugIns/Fixture.xctest", isDirectory: true)
+        try FileManager.default.createDirectory(at: test, withIntermediateDirectories: true)
+        try writeExecutableBundle(runner, identifier: "com.example.fixture.xctrunner", executable: "Runner")
+        try writeExecutableBundle(test, identifier: "com.example.fixture", executable: "Fixture")
+        let entitlements: [String: Any] = ["get-task-allow": true]
+        let entitlementsURL = root.appendingPathComponent("runner-entitlements.plist")
+        let entitlementData = try PropertyListSerialization.data(fromPropertyList: entitlements, format: .xml, options: 0)
+        try entitlementData.write(to: entitlementsURL)
+        let processRunner = ProcessRunner()
+
+        var result = try await processRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
+            arguments: ["--force", "--sign", "-", "--timestamp=none", "--generate-entitlement-der", test.path],
+            workingDirectory: root
+        )
+        XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+        result = try await processRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
+            arguments: ["--force", "--sign", "-", "--timestamp=none", "--generate-entitlement-der", "--entitlements", entitlementsURL.path, runner.path],
+            workingDirectory: root
+        )
+        XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+        for bundle in [test, runner] {
+            result = try await processRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
+                arguments: ["--verify", "--strict", bundle.path],
+                workingDirectory: root
+            )
+            XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+        }
+        result = try await processRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/codesign"),
+            arguments: ["-d", "--entitlements", ":-", runner.path],
+            workingDirectory: root
+        )
+        XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+        XCTAssertTrue(result.combinedOutput.contains("get-task-allow"))
+    }
+
     private func makeManifest(team: String, device: String) throws -> ConsumerProvisioningManifest {
         let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
         let expiration = Date().addingTimeInterval(7 * 24 * 60 * 60)
@@ -350,6 +610,260 @@ final class ConsumerProvisioningTests: XCTestCase {
             profileFingerprint: "fingerprint",
             refreshRecommended: false
         )
+    }
+
+    private func makeNativeProfiles(
+        team: String,
+        physicalUDID: String,
+        identifiers: PersonalTeamBundleIdentifierSet,
+        certificate: Data,
+        certificateFingerprint: String
+    ) throws -> [ExperimentalProfile] {
+        let issuedAt = Date().addingTimeInterval(-60)
+        let expiresAt = Date().addingTimeInterval(7 * 24 * 60 * 60)
+        return try [identifiers.main, identifiers.runner].map { bundleIdentifier in
+            let applicationIdentifier = "\(team).\(bundleIdentifier)"
+            let entitlements: [String: Any] = [
+                "application-identifier": applicationIdentifier,
+                "com.apple.developer.team-identifier": team,
+                "get-task-allow": true,
+                "keychain-access-groups": [applicationIdentifier]
+            ]
+            let profile: [String: Any] = [
+                "UUID": UUID().uuidString,
+                "TeamIdentifier": [team],
+                "ApplicationIdentifierPrefix": [team],
+                "CreationDate": issuedAt,
+                "ExpirationDate": expiresAt,
+                "ProvisionedDevices": [physicalUDID],
+                "DeveloperCertificates": [certificate],
+                "Entitlements": entitlements
+            ]
+            let data = try PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0)
+            return ExperimentalProfile(
+                bundleIdentifier: bundleIdentifier,
+                teamIdentifier: team,
+                certificateFingerprint: certificateFingerprint,
+                provisionedDeviceIdentifiers: [physicalUDID],
+                applicationIdentifierEntitlement: applicationIdentifier,
+                applicationIdentifierPrefix: team,
+                getTaskAllow: true,
+                profileType: "development",
+                issuedAt: issuedAt,
+                expiresAt: expiresAt,
+                profileData: data
+            )
+        }
+    }
+
+    private func makeConsumerArtifactFixture(at resources: URL) throws {
+        let artifacts = resources.appendingPathComponent("DeviceArtifacts", isDirectory: true)
+        let main = artifacts.appendingPathComponent("IOSSim.app", isDirectory: true)
+        let runner = artifacts.appendingPathComponent("IOSSimUITests-Runner.app", isDirectory: true)
+        let test = runner.appendingPathComponent("PlugIns/IOSSimUITests.xctest", isDirectory: true)
+        try FileManager.default.createDirectory(at: main, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: test, withIntermediateDirectories: true)
+        try writeFixtureBundle(main, identifier: ProtectedSourceBundleIdentifiers.default.main, executable: "IOSSim")
+        try writeFixtureBundle(runner, identifier: ProtectedSourceBundleIdentifiers.default.runner, executable: "IOSSimUITests-Runner")
+        try writeFixtureBundle(test, identifier: ProtectedSourceBundleIdentifiers.default.uiTests, executable: "IOSSimUITests")
+        let release = ReleaseManifest(
+            sourceCommit: "fixture",
+            sourceDirty: false,
+            buildTimestamp: "2026-09-08T16:55:20Z",
+            macVersion: "0.1.0",
+            buildNumber: "1",
+            variant: "TEST",
+            helperSchemaVersion: 1
+        )
+        let relativeMain = "DeviceArtifacts/IOSSim.app"
+        let relativeRunner = "DeviceArtifacts/IOSSimUITests-Runner.app"
+        var manifest = ArtifactManifest(schemaVersion: 1, release: release, components: [
+            .init(role: "iosMain", bundleIdentifier: ProtectedSourceBundleIdentifiers.default.main, version: "1", relativePath: relativeMain, sha256: "pending", signingMode: "personalTeamResign"),
+            .init(role: "locationControlRunner", bundleIdentifier: ProtectedSourceBundleIdentifiers.default.runner, version: "1", relativePath: relativeRunner, sha256: "pending", signingMode: "personalTeamResign")
+        ])
+        let verification = ArtifactManifestLoader.verify(resourcesURL: resources, manifest: manifest)
+        manifest = ArtifactManifest(schemaVersion: 1, release: release, components: zip(manifest.components, verification).map { component, result in
+            DeviceArtifactComponent(
+                role: component.role,
+                bundleIdentifier: component.bundleIdentifier,
+                version: component.version,
+                relativePath: component.relativePath,
+                sha256: result.actualSHA256!,
+                signingMode: component.signingMode
+            )
+        })
+        let data = try JSONEncoder().encode(manifest)
+        try data.write(to: artifacts.appendingPathComponent("manifest.json"), options: .atomic)
+    }
+
+    private func writeFixtureBundle(_ url: URL, identifier: String, executable: String) throws {
+        let info: [String: Any] = [
+            "CFBundleIdentifier": identifier,
+            "CFBundleExecutable": executable,
+            "CFBundleShortVersionString": "1.0"
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try data.write(to: url.appendingPathComponent("Info.plist"), options: .atomic)
+        try Data("fixture executable".utf8).write(to: url.appendingPathComponent(executable), options: .atomic)
+    }
+
+    private func writeExecutableBundle(_ url: URL, identifier: String, executable: String) throws {
+        let info: [String: Any] = [
+            "CFBundleIdentifier": identifier,
+            "CFBundleExecutable": executable,
+            "CFBundlePackageType": url.pathExtension == "app" ? "APPL" : "BNDL"
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try data.write(to: url.appendingPathComponent("Info.plist"), options: .atomic)
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: "/usr/bin/true"),
+            to: url.appendingPathComponent(executable)
+        )
+    }
+}
+
+private actor NativePipelineRecorder {
+    struct Command: Sendable {
+        let executable: URL
+        let arguments: [String]
+    }
+
+    struct Evidence: Sendable {
+        let commands: [Command]
+        let installedProfiles: [String: Data]
+        let installedBundleIdentifiers: [String]
+        let uninstalledBundleIdentifiers: [String]
+        let runtimeRunnerMapping: String?
+    }
+
+    private let team: String
+    private let physicalUDID: String
+    private let identifiers: PersonalTeamBundleIdentifierSet
+    private let certificateSHA1: String
+    private let profileDataByBundle: [String: Data]
+    private var commands: [Command] = []
+    private var installedProfiles: [String: Data] = [:]
+    private var installedBundleIdentifiers: [String] = []
+    private var uninstalledBundleIdentifiers: [String] = []
+    private var runtimeRunnerMapping: String?
+
+    init(
+        team: String,
+        physicalUDID: String,
+        identifiers: PersonalTeamBundleIdentifierSet,
+        certificateSHA1: String,
+        profileDataByBundle: [String: Data]
+    ) {
+        self.team = team
+        self.physicalUDID = physicalUDID
+        self.identifiers = identifiers
+        self.certificateSHA1 = certificateSHA1
+        self.profileDataByBundle = profileDataByBundle
+    }
+
+    func run(executable: URL, arguments: [String]) throws -> ProcessResult {
+        commands.append(Command(executable: executable, arguments: arguments))
+        if executable.path == "/usr/bin/security", arguments.starts(with: ["find-identity"]) {
+            return .init(exitCode: 0, stdout: "1) \(certificateSHA1) Apple Development: IOSSim (\(team))", stderr: "")
+        }
+        if executable.path == "/usr/bin/codesign" {
+            if arguments.contains("-dvv"), let path = arguments.last {
+                let identifier = try bundleIdentifier(at: URL(fileURLWithPath: path))
+                return .init(exitCode: 0, stdout: "", stderr: "Identifier=\(identifier)\nTeamIdentifier=\(team)")
+            }
+            if arguments.contains("--entitlements"), arguments.contains(":-"), let path = arguments.last {
+                let identifier = try bundleIdentifier(at: URL(fileURLWithPath: path))
+                guard let data = profileDataByBundle[identifier],
+                      let profile = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                      let entitlements = profile["Entitlements"] as? [String: Any] else {
+                    return .init(exitCode: 1, stdout: "", stderr: "missing fixture entitlements")
+                }
+                let xml = try PropertyListSerialization.data(fromPropertyList: entitlements, format: .xml, options: 0)
+                return .init(exitCode: 0, stdout: String(decoding: xml, as: UTF8.self), stderr: "")
+            }
+            return .init(exitCode: 0, stdout: "", stderr: "")
+        }
+        if executable.path == "/usr/bin/xcrun", arguments.first == "devicectl" {
+            if arguments.starts(with: ["devicectl", "list", "devices"]) {
+                try writeJSON([
+                    "result": ["devices": [[
+                        "identifier": physicalUDID,
+                        "deviceProperties": ["name": "Fixture iPhone", "developerModeStatus": "enabled"],
+                        "hardwareProperties": ["deviceType": "iPhone", "platform": "iOS", "udid": physicalUDID],
+                        "connectionProperties": ["pairingState": "paired"]
+                    ]]]
+                ], toOption: "--json-output", arguments: arguments)
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.starts(with: ["devicectl", "device", "info", "lockState"]) {
+                try writeJSON(["result": ["passcodeRequired": false]], toOption: "--json-output", arguments: arguments)
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.starts(with: ["devicectl", "device", "info", "apps"]) {
+                let bundle = option("--bundle-id", arguments: arguments)
+                let apps: [[String: Any]]
+                if let bundle, [identifiers.main, identifiers.runner].contains(bundle) {
+                    apps = [["bundleIdentifier": bundle]]
+                } else {
+                    apps = []
+                }
+                try writeJSON(["result": ["apps": apps]], toOption: "--json-output", arguments: arguments)
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.starts(with: ["devicectl", "device", "uninstall", "app"]), arguments.count > 6 {
+                uninstalledBundleIdentifiers.append(arguments[6])
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.starts(with: ["devicectl", "device", "install", "app"]),
+               let path = arguments.first(where: { $0.hasSuffix(".app") }) {
+                let url = URL(fileURLWithPath: path)
+                let identifier = try bundleIdentifier(at: url)
+                installedBundleIdentifiers.append(identifier)
+                installedProfiles[identifier] = try Data(contentsOf: url.appendingPathComponent("embedded.mobileprovision"))
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.starts(with: ["devicectl", "device", "process", "launch"]) {
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+            if arguments.starts(with: ["devicectl", "device", "copy", "from"]),
+               let destination = option("--destination", arguments: arguments) {
+                let directory = URL(fileURLWithPath: destination, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let preferences = ["IOSSimGate3RunnerBundleIdentifier": identifiers.runner]
+                let data = try PropertyListSerialization.data(fromPropertyList: preferences, format: .xml, options: 0)
+                try data.write(to: directory.appendingPathComponent("preferences.plist"))
+                runtimeRunnerMapping = identifiers.runner
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }
+        }
+        return .init(exitCode: 1, stdout: "", stderr: "Unexpected fixture command: \(executable.path) \(arguments)")
+    }
+
+    func evidence() -> Evidence {
+        Evidence(
+            commands: commands,
+            installedProfiles: installedProfiles,
+            installedBundleIdentifiers: installedBundleIdentifiers,
+            uninstalledBundleIdentifiers: uninstalledBundleIdentifiers,
+            runtimeRunnerMapping: runtimeRunnerMapping
+        )
+    }
+
+    private func bundleIdentifier(at url: URL) throws -> String {
+        let data = try Data(contentsOf: url.appendingPathComponent("Info.plist"))
+        let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as! [String: Any]
+        return plist["CFBundleIdentifier"] as! String
+    }
+
+    private func option(_ name: String, arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: name), arguments.indices.contains(index + 1) else { return nil }
+        return arguments[index + 1]
+    }
+
+    private func writeJSON(_ object: Any, toOption name: String, arguments: [String]) throws {
+        guard let path = option(name, arguments: arguments) else { return }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        try data.write(to: URL(fileURLWithPath: path))
     }
 }
 

@@ -371,6 +371,79 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         XCTAssertFalse(store.personalTeams.isEmpty)
     }
 
+    @MainActor
+    func testDownstreamNativeProfileFailurePreservesAuthorizedSessionAndUsesProvisioningCopy() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-downstream-auth-state-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = ExperimentalBackendMock(auth: .success)
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
+        let engine = DownstreamFailureEngine()
+        let store = SetupStore(
+            engine: engine,
+            authorizationCoordinator: coordinator,
+            nativeProvisioningExperiment: true,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(url: root.appendingPathComponent("diagnostics.json")),
+            nativeArtifactStore: NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("native"))
+        )
+        store.getStarted()
+        try await waitUntilIdle(store)
+        store.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.liveProvisioningCheckpoint, .provisioningReady)
+
+        store.runConfirmedFreshInstall()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .failed)
+        XCTAssertEqual(store.lastError?.headline, "IOSSim could not use its prepared iPhone signing profiles.")
+        XCTAssertFalse(store.lastError?.headline.localizedCaseInsensitiveContains("authorization") == true)
+        XCTAssertEqual(store.appleAuthorization.stage, .authorized)
+        XCTAssertTrue(store.appleAuthorization.sessionValid)
+        XCTAssertFalse(store.personalTeams.isEmpty)
+        let requests = await engine.requests
+        XCTAssertEqual(requests.last?.backend, .nativePersonalTeam)
+        XCTAssertEqual(requests.last?.allowFreshInstallAfterCrossTeamConflict, true)
+    }
+
+    @MainActor
+    func testResumedAuthorizedGenerationReusesValidPreparedNativeProfilesWithoutAppleProvisioning() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-resumed-native-state-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nativeStore = NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("native"))
+        let firstBackend = ExperimentalBackendMock(auth: .success)
+        let first = SetupStore(
+            engine: DownstreamFailureEngine(),
+            authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator(backend: firstBackend),
+            nativeProvisioningExperiment: true,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(url: root.appendingPathComponent("first.json")),
+            nativeArtifactStore: nativeStore
+        )
+        first.getStarted()
+        try await waitUntilIdle(first)
+        first.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
+        try await waitUntilIdle(first)
+        XCTAssertEqual(first.liveProvisioningCheckpoint, .provisioningReady)
+
+        let resumedBackend = ExperimentalBackendMock(auth: .success, resumedTeams: [.personal])
+        let resumed = SetupStore(
+            engine: DownstreamFailureEngine(),
+            authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator(backend: resumedBackend),
+            nativeProvisioningExperiment: true,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(url: root.appendingPathComponent("resumed.json")),
+            nativeArtifactStore: nativeStore
+        )
+        resumed.getStarted()
+        try await waitUntilIdle(resumed)
+
+        XCTAssertEqual(resumed.liveProvisioningCheckpoint, .provisioningReady)
+        XCTAssertEqual(resumed.appleAuthorization.stage, .authorized)
+        XCTAssertTrue(resumed.appleAuthorization.sessionValid)
+        let resumedEvents = await resumedBackend.events
+        XCTAssertEqual(resumedEvents, ["resume"])
+    }
+
     func testSlowerStaleAuthorizationCannotOverwriteNewerSuccess() async throws {
         let backend = ExperimentalBackendMock(
             auth: .success,
@@ -506,7 +579,7 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
         events.append("identity")
         if [.certificateLimit, .missingPrivateKey].contains(operationFailure) { throw operationFailure! }
         return .init(
-            certificateFingerprint: "fixture-fingerprint",
+            certificateFingerprint: String(repeating: "A", count: 64),
             certificateExpiration: Date().addingTimeInterval(86_400),
             privateKeyPersistentReference: Data("keychain-reference".utf8),
             reused: true
@@ -578,6 +651,50 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
         events.append("pairing")
         if operationFailure == .pairingFailure { return false }
         return true
+    }
+}
+
+private actor DownstreamFailureEngine: IOSSimSetupEngine {
+    nonisolated let consumerProvisioningEnabled = true
+    private(set) var requests: [ConsumerProvisioningRequest] = []
+
+    func doctor() async throws -> DoctorStatus {
+        let udid = "00008150-00022D581E12401C"
+        let device = DetectedDevice(
+            name: "Fixture iPhone",
+            identifier: RuntimeProvisioning.shortIdentifier(udid),
+            selectionIdentifier: udid,
+            udidRedacted: RuntimeProvisioning.shortIdentifier(udid),
+            osVersion: "26.0",
+            model: "iPhone",
+            developerModeStatus: "enabled",
+            pairingState: "paired",
+            tunnelState: "connected",
+            isLocked: false
+        )
+        return DoctorStatus(
+            ready: true,
+            mac: MacSummary(ready: true),
+            device: DeviceSummary(ready: true, connected: true, devices: [device]),
+            actionsRequired: [],
+            checks: []
+        )
+    }
+
+    func setup() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func build() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] { [] }
+    func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { nil }
+    func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        requests.append(request)
+        throw ConsumerProvisioningFailure(
+            code: .profileUnavailable,
+            stage: .preparingIdentities,
+            userMessage: "IOSSim could not use its prepared iPhone signing profiles.",
+            remediation: "Try Personal Team provisioning again; your Apple authorization remains valid.",
+            developerDetail: "Fixture downstream signing failure."
+        )
     }
 }
 

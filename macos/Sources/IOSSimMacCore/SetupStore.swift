@@ -27,6 +27,7 @@ public final class SetupStore: ObservableObject {
     public let engine: any IOSSimSetupEngine
     private let authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator
     private let stateDiagnostics: ApplePersonalTeamDiagnosticsStore
+    private let nativeArtifactStore: NativeProvisioningArtifactStore
     private let stateDiagnosticsEnabled: Bool
     public let nativeProvisioningExperiment: Bool
     private var task: Task<Void, Never>?
@@ -43,12 +44,14 @@ public final class SetupStore: ObservableObject {
         engine: any IOSSimSetupEngine,
         authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator? = nil,
         nativeProvisioningExperiment: Bool = ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
-        stateDiagnostics: ApplePersonalTeamDiagnosticsStore? = nil
+        stateDiagnostics: ApplePersonalTeamDiagnosticsStore? = nil,
+        nativeArtifactStore: NativeProvisioningArtifactStore = NativeProvisioningArtifactStore()
     ) {
         let diagnostics = stateDiagnostics ?? ApplePersonalTeamDiagnosticsStore()
         self.engine = engine
         self.nativeProvisioningExperiment = nativeProvisioningExperiment
         self.stateDiagnostics = diagnostics
+        self.nativeArtifactStore = nativeArtifactStore
         stateDiagnosticsEnabled = nativeProvisioningExperiment || stateDiagnostics != nil
         self.authorizationCoordinator = authorizationCoordinator ?? .init(
             backend: nativeProvisioningExperiment
@@ -393,6 +396,22 @@ public final class SetupStore: ObservableObject {
             throw ExperimentalBackendError.invalidDeviceIdentifier
         }
         consumerStage = .preparingIdentities
+        let availableTeams = await authorizationCoordinator.teams
+        try requireCurrentOperation(generation)
+        if let preferred = try? ExperimentalConsumerProvisioningCoordinator.preferredTeam(from: availableTeams),
+           (try? await nativeArtifactStore.load(
+               teamIdentifier: preferred.id,
+               selectedDeviceIdentifier: physicalUDID
+           )) != nil {
+            try requireCurrentOperation(generation)
+            selectedTeamIdentifier = preferred.id
+            liveProvisioningCheckpoint = .provisioningReady
+            consumerStage = .preparingArtifacts
+            phase = .complete
+            recordStateTransition(.setupStepAdvanced, generation: generation)
+            recordStateTransition(.uiStatePublished, generation: generation)
+            return
+        }
         let prepared = try await authorizationCoordinator.prepareProvisioning(.init(
             selectedDeviceIdentifier: identifier,
             selectedDeviceRegistrationIdentifier: physicalUDID,
@@ -400,6 +419,11 @@ public final class SetupStore: ObservableObject {
             selectedDeviceName: selected.name,
             operation: .install
         ))
+        try requireCurrentOperation(generation)
+        try await nativeArtifactStore.save(
+            prepared,
+            selectedDeviceIdentifier: physicalUDID
+        )
         try requireCurrentOperation(generation)
         selectedTeamIdentifier = prepared.team.id
         liveProvisioningCheckpoint = .provisioningReady
@@ -451,7 +475,8 @@ public final class SetupStore: ObservableObject {
                 operation: operation,
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
-                allowFreshInstallAfterCrossTeamConflict: allowFreshInstall
+                allowFreshInstallAfterCrossTeamConflict: allowFreshInstall,
+                backend: nativeProvisioningExperiment ? .nativePersonalTeam : .xcodeFallback
             ))
             try requireCurrentOperation(generation)
             provisioningManifest = result.manifest

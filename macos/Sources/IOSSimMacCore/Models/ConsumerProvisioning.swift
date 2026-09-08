@@ -190,17 +190,20 @@ public struct ConsumerProvisioningRequest: Codable, Equatable, Sendable {
     public let selectedDeviceIdentifier: String
     public let selectedTeamIdentifier: String
     public let allowFreshInstallAfterCrossTeamConflict: Bool
+    public let backend: ConsumerProvisioningBackendIdentifier
 
     public init(
         operation: ConsumerProvisioningOperation,
         selectedDeviceIdentifier: String,
         selectedTeamIdentifier: String,
-        allowFreshInstallAfterCrossTeamConflict: Bool = false
+        allowFreshInstallAfterCrossTeamConflict: Bool = false,
+        backend: ConsumerProvisioningBackendIdentifier = .xcodeFallback
     ) {
         self.operation = operation
         self.selectedDeviceIdentifier = selectedDeviceIdentifier
         self.selectedTeamIdentifier = selectedTeamIdentifier
         self.allowFreshInstallAfterCrossTeamConflict = allowFreshInstallAfterCrossTeamConflict
+        self.backend = backend
     }
 }
 

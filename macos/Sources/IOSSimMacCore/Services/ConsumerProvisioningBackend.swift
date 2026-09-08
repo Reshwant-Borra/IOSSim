@@ -267,7 +267,7 @@ public enum ZeroXcodeCapabilityPolicy {
             bundledDeviceBridgeReady: fileManager.isExecutableFile(atPath: bridge.path),
             nativeAppleAuthenticationReady: livePersonalTeamExperimentEnabled,
             nativePersonalTeamProvisioningReady: livePersonalTeamExperimentEnabled,
-            directSigningReady: false,
+            directSigningReady: livePersonalTeamExperimentEnabled,
             xcodePresent: XcodePresenceDetector.isPresent(fileManager: fileManager)
         )
     }

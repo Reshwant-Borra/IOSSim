@@ -474,7 +474,7 @@ struct ProvisionerTool {
           consumer-teams --json [--device <id>]
           consumer-status --json
           consumer-runtime-ready --json
-          consumer-provision --operation install|refresh|repair --device <id> --team <team-id>
+          consumer-provision --operation install|refresh|repair --device <id> --team <team-id> [--backend NATIVE_PERSONAL_TEAM|XCODE_FALLBACK]
           support-bundle --output <zip-path> --json
         """)
     }
@@ -499,11 +499,27 @@ struct ProvisionerTool {
             return 2
         }
         do {
+            let backend: ConsumerProvisioningBackendIdentifier
+            if let rawBackend = optionValue("--backend", in: arguments) {
+                guard let parsed = ConsumerProvisioningBackendIdentifier(rawValue: rawBackend) else {
+                    throw ConsumerProvisioningFailure(
+                        code: .unsupported,
+                        stage: .preparingIdentities,
+                        userMessage: "IOSSim could not select its signing pipeline.",
+                        remediation: "Reinstall IOSSim and try again.",
+                        developerDetail: "Unknown consumer provisioning backend."
+                    )
+                }
+                backend = parsed
+            } else {
+                backend = .xcodeFallback
+            }
             let request = ConsumerProvisioningRequest(
                 operation: operation,
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
-                allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install")
+                allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install"),
+                backend: backend
             )
             let result = try await ConsumerArtifactProvisioner(context: context).provision(request)
             try printJSON(ProvisionerOutput(

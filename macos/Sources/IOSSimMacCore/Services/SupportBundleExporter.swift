@@ -61,7 +61,7 @@ public enum SupportBundleExporter {
                 bundledDeviceBridgeReady: false,
                 nativeAppleAuthenticationReady: ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
                 nativePersonalTeamProvisioningReady: ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
-                directSigningReady: false,
+                directSigningReady: ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
                 xcodePresent: xcodePresent
             )
         )
