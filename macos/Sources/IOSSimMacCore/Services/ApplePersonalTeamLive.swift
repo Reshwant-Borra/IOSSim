@@ -18,6 +18,49 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let retryAfterSeconds: Int?
     public let retryable: Bool
     public let reauthorizationRequired: Bool
+    public let srpProtocol: String?
+    public let srpVersion: String?
+    public let structuralLengths: [String: Int]?
+    public let requestFieldNames: [String]?
+    public let challengeFieldNames: [String]?
+    public let responseFieldNames: [String]?
+    public let responseStatusCode: Int?
+
+    public init(
+        timestamp: Date,
+        checkpoint: String?,
+        stage: String,
+        safeErrorCode: String?,
+        httpStatus: Int?,
+        appleErrorCode: Int?,
+        retryAfterSeconds: Int?,
+        retryable: Bool,
+        reauthorizationRequired: Bool,
+        srpProtocol: String? = nil,
+        srpVersion: String? = nil,
+        structuralLengths: [String: Int]? = nil,
+        requestFieldNames: [String]? = nil,
+        challengeFieldNames: [String]? = nil,
+        responseFieldNames: [String]? = nil,
+        responseStatusCode: Int? = nil
+    ) {
+        self.timestamp = timestamp
+        self.checkpoint = checkpoint
+        self.stage = stage
+        self.safeErrorCode = safeErrorCode
+        self.httpStatus = httpStatus
+        self.appleErrorCode = appleErrorCode
+        self.retryAfterSeconds = retryAfterSeconds
+        self.retryable = retryable
+        self.reauthorizationRequired = reauthorizationRequired
+        self.srpProtocol = srpProtocol
+        self.srpVersion = srpVersion
+        self.structuralLengths = structuralLengths
+        self.requestFieldNames = requestFieldNames
+        self.challengeFieldNames = challengeFieldNames
+        self.responseFieldNames = responseFieldNames
+        self.responseStatusCode = responseStatusCode
+    }
 }
 
 public struct ApplePersonalTeamDiagnosticSnapshot: Codable, Equatable, Sendable {
@@ -522,7 +565,10 @@ struct AppleSRPClient {
         let sessionKey = Data(SHA256.hash(data: Self.pad(shared, to: 256)))
 
         var xor = Data(SHA256.hash(data: nData))
-        let gHash = Data(SHA256.hash(data: Data([2])))
+        // Corecrypto's default RFC 5054 variant hashes group elements at the
+        // modulus width. Hashing the one-byte encoding of g here changes every
+        // M1 proof and GrandSlam reports the mismatch as Status.ec = -22406.
+        let gHash = Data(SHA256.hash(data: gData))
         for index in xor.indices { xor[index] ^= gHash[index] }
         let userHash = Data(SHA256.hash(data: Data(account.utf8)))
         let proof = Data(SHA256.hash(
@@ -1422,7 +1468,8 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             "cpd": cpd,
             "u": account,
             "o": "complete"
-        ], machineHeaders: machineHeaders, stage: "srpComplete", closeConnection: true)
+        ], machineHeaders: machineHeaders, stage: "srpComplete",
+           srpProtocol: challenge.scheme, closeConnection: true)
         guard let serverProof = completed.response["M2"] as? Data else {
             throw ExperimentalBackendError.authenticationProtocolMismatch
         }
@@ -1518,6 +1565,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         _ parameters: [String: Any],
         machineHeaders: [String: String],
         stage: String,
+        srpProtocol: String? = nil,
         closeConnection: Bool = false
     ) async throws -> GrandSlamResponse {
         let body = try serializePlist(["Header": ["Version": "1.0.1"], "Request": parameters])
@@ -1543,6 +1591,16 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             throw ExperimentalBackendError.authenticationProtocolMismatch
         }
         let code = integer(status["ec"]) ?? 0
+        if stage.hasPrefix("srp") {
+            recordSRPStructure(
+                stage: stage,
+                parameters: parameters,
+                response: response,
+                status: status,
+                httpStatus: http.statusCode,
+                protocolName: srpProtocol ?? response["sp"] as? String
+            )
+        }
         if code != 0 {
             let error: ExperimentalBackendError = code == -22406 ? .badPassword : .authenticationRejected
             throw AppleServiceFailure(
@@ -1823,6 +1881,42 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         }
     }
 
+    private func recordSRPStructure(
+        stage: String,
+        parameters: [String: Any],
+        response: [String: Any],
+        status: [String: Any],
+        httpStatus: Int,
+        protocolName: String?
+    ) {
+        var lengths: [String: Int] = [:]
+        if let value = parameters["A2k"] as? Data { lengths["A"] = value.count }
+        if let value = parameters["M1"] as? Data { lengths["M1"] = value.count }
+        if let value = response["s"] as? Data { lengths["salt"] = value.count }
+        if let value = response["B"] as? Data { lengths["B"] = value.count }
+        let isChallenge = stage == "srpInit"
+        diagnostics.update(adapterVersion: adapter.version) {
+            $0.events.append(.init(
+                timestamp: Date(),
+                checkpoint: nil,
+                stage: stage,
+                safeErrorCode: nil,
+                httpStatus: httpStatus,
+                appleErrorCode: integer(status["ec"]),
+                retryAfterSeconds: nil,
+                retryable: false,
+                reauthorizationRequired: false,
+                srpProtocol: protocolName,
+                srpVersion: "1.0.1",
+                structuralLengths: lengths.isEmpty ? nil : lengths,
+                requestFieldNames: safeFieldNames(parameters.keys),
+                challengeFieldNames: isChallenge ? safeFieldNames(response.keys) : nil,
+                responseFieldNames: isChallenge ? nil : safeFieldNames(response.keys),
+                responseStatusCode: integer(status["hsc"])
+            ))
+        }
+    }
+
     private func recordFailure(_ failure: AppleServiceFailure, stage: String) {
         diagnostics.update(adapterVersion: adapter.version) {
             $0.events.append(.init(
@@ -1839,6 +1933,17 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             String(describing: key).localizedCaseInsensitiveCompare("Retry-After") == .orderedSame
         }.flatMap { Int(String(describing: $0.value)) }
     }
+}
+
+private func safeFieldNames(_ names: Dictionary<String, Any>.Keys) -> [String] {
+    names.compactMap { name -> String? in
+        guard !name.isEmpty, name.utf8.count <= 64,
+              name.unicodeScalars.allSatisfy({ scalar in
+                  scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar)
+                      || scalar == "_" || scalar == "-")
+              }) else { return nil }
+        return name
+    }.sorted()
 }
 
 private extension PrivateAppleProtocolAdapter {

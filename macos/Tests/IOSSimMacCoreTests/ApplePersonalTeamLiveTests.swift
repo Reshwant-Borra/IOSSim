@@ -42,6 +42,36 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         }
     }
 
+    func testSRPProofMatchesCoreCryptoCompatiblePaddedGeneratorVector() throws {
+        let client = try AppleSRPClient(randomBytes: Data((1...32).map(UInt8.init)))
+        let challenge = try AppleSRPClient.parseChallenge([
+            "sp": "s2k",
+            "s": Data(repeating: 0x5A, count: 16),
+            "i": 20_000,
+            "B": Data(repeating: 0x7B, count: 256),
+            "c": "synthetic-cookie"
+        ])
+
+        let proof = try client.proof(
+            account: "fixture@example.invalid",
+            password: Data("synthetic-password".utf8),
+            challenge: challenge
+        )
+
+        XCTAssertEqual(
+            proof.sessionKey,
+            Data(base64Encoded: "xRnScCRsxURCMxy9ERCQcj8tvhUWtMHtQUdTraYFycc=")
+        )
+        XCTAssertEqual(
+            proof.clientProof,
+            Data(base64Encoded: "71u6+3TM/Mxhb7+hn1BU1LZKSl6uBvt6dJutfOfVSV8=")
+        )
+        XCTAssertEqual(
+            proof.expectedServerProof,
+            Data(base64Encoded: "GQxhwR2hRI3nOjPmiKMpoh82I8Fn0zdjDu+NKxCAWuQ=")
+        )
+    }
+
     func testSRPRejectsMalformedOrUnsafeChallengeParameters() throws {
         let valid: [String: Any] = [
             "sp": "s2k", "s": Data(repeating: 1, count: 16), "i": 10_000,
@@ -314,6 +344,28 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertEqual(failure.appleErrorCode, -22406)
         XCTAssertFalse(failure.retryable)
         XCTAssertTrue(failure.reauthorizationRequired)
+
+        let initStructure = try XCTUnwrap(events.first(where: { $0.stage == "srpInit" }))
+        XCTAssertEqual(initStructure.srpProtocol, "s2k_fo")
+        XCTAssertEqual(initStructure.srpVersion, "1.0.1")
+        XCTAssertEqual(initStructure.structuralLengths, ["A": 256, "B": 256, "salt": 16])
+        XCTAssertEqual(initStructure.requestFieldNames, ["A2k", "cpd", "o", "ps", "u"])
+        XCTAssertEqual(initStructure.challengeFieldNames, ["B", "Status", "c", "i", "s", "sp"])
+        XCTAssertNil(initStructure.responseFieldNames)
+        XCTAssertEqual(initStructure.httpStatus, 200)
+        XCTAssertEqual(initStructure.appleErrorCode, 0)
+        XCTAssertEqual(initStructure.responseStatusCode, 200)
+
+        let completeStructure = try XCTUnwrap(events.first(where: { $0.stage == "srpComplete" }))
+        XCTAssertEqual(completeStructure.srpProtocol, "s2k_fo")
+        XCTAssertEqual(completeStructure.srpVersion, "1.0.1")
+        XCTAssertEqual(completeStructure.structuralLengths, ["M1": 32])
+        XCTAssertEqual(completeStructure.requestFieldNames, ["M1", "c", "cpd", "o", "u"])
+        XCTAssertNil(completeStructure.challengeFieldNames)
+        XCTAssertEqual(completeStructure.responseFieldNames, ["Status"])
+        XCTAssertEqual(completeStructure.httpStatus, 200)
+        XCTAssertEqual(completeStructure.appleErrorCode, -22406)
+        XCTAssertEqual(completeStructure.responseStatusCode, 401)
     }
 
     func testMixedCaseAccountIsCanonicalizedForEntireSRPExchange() async throws {
