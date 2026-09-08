@@ -8,6 +8,16 @@ import Security
 
 // MARK: - Safe diagnostics
 
+enum SetupStateTransition: String, Sendable {
+    case authorizationResultReceived = "AUTHORIZATION_RESULT_RECEIVED"
+    case authorizationStateUpdated = "AUTHORIZATION_STATE_UPDATED"
+    case teamStateUpdated = "TEAM_STATE_UPDATED"
+    case setupStepAdvanced = "SETUP_STEP_ADVANCED"
+    case errorStateCleared = "ERROR_STATE_CLEARED"
+    case uiStatePublished = "UI_STATE_PUBLISHED"
+    case staleResultIgnored = "STALE_RESULT_IGNORED"
+}
+
 public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let timestamp: Date
     public let checkpoint: String?
@@ -30,6 +40,13 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let nonSecretIntegers: [String: Int]?
     public let continuity: [String: Bool]?
     public let safeServerMessage: String?
+    public let generationID: UInt64?
+    public let setupPhase: String?
+    public let authorizationStage: String?
+    public let sessionValid: Bool?
+    public let personalTeamAvailable: Bool?
+    public let errorPresent: Bool?
+    public let currentGeneration: Bool?
 
     public init(
         timestamp: Date,
@@ -52,7 +69,14 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         responseStatusFieldNames: [String]? = nil,
         nonSecretIntegers: [String: Int]? = nil,
         continuity: [String: Bool]? = nil,
-        safeServerMessage: String? = nil
+        safeServerMessage: String? = nil,
+        generationID: UInt64? = nil,
+        setupPhase: String? = nil,
+        authorizationStage: String? = nil,
+        sessionValid: Bool? = nil,
+        personalTeamAvailable: Bool? = nil,
+        errorPresent: Bool? = nil,
+        currentGeneration: Bool? = nil
     ) {
         self.timestamp = timestamp
         self.checkpoint = checkpoint
@@ -75,6 +99,13 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         self.nonSecretIntegers = nonSecretIntegers
         self.continuity = continuity
         self.safeServerMessage = safeServerMessage
+        self.generationID = generationID
+        self.setupPhase = setupPhase
+        self.authorizationStage = authorizationStage
+        self.sessionValid = sessionValid
+        self.personalTeamAvailable = personalTeamAvailable
+        self.errorPresent = errorPresent
+        self.currentGeneration = currentGeneration
     }
 }
 
@@ -152,6 +183,40 @@ public final class ApplePersonalTeamDiagnosticsStore: @unchecked Sendable {
             } catch {
                 return
             }
+        }
+    }
+
+    func recordSetupTransition(
+        _ transition: SetupStateTransition,
+        adapterVersion: String,
+        generationID: UInt64,
+        setupPhase: SetupPhase,
+        authorizationStage: AppleAuthorizationStage,
+        sessionValid: Bool,
+        personalTeamAvailable: Bool,
+        errorPresent: Bool,
+        currentGeneration: Bool,
+        safeErrorCode: String? = nil
+    ) {
+        update(adapterVersion: adapterVersion) {
+            $0.events.append(.init(
+                timestamp: Date(),
+                checkpoint: nil,
+                stage: transition.rawValue,
+                safeErrorCode: safeErrorCode,
+                httpStatus: nil,
+                appleErrorCode: nil,
+                retryAfterSeconds: nil,
+                retryable: false,
+                reauthorizationRequired: false,
+                generationID: generationID,
+                setupPhase: setupPhase.rawValue,
+                authorizationStage: authorizationStage.rawValue,
+                sessionValid: sessionValid,
+                personalTeamAvailable: personalTeamAvailable,
+                errorPresent: errorPresent,
+                currentGeneration: currentGeneration
+            ))
         }
     }
 

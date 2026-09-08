@@ -251,6 +251,143 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
     }
 
     @MainActor
+    func testSuccessfulAuthorizationClearsEarlierFailureAndPublishesAdvancedUIState() async throws {
+        let diagnosticsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-setup-state-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: diagnosticsURL) }
+        let diagnostics = ApplePersonalTeamDiagnosticsStore(url: diagnosticsURL)
+        let backend = ExperimentalBackendMock(
+            auth: .success,
+            authSequence: [.failure(.srpAuthFailed), .success]
+        )
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
+        let store = SetupStore(
+            engine: MockIOSSimSetupEngine(scenario: .ready),
+            authorizationCoordinator: coordinator,
+            nativeProvisioningExperiment: false,
+            stateDiagnostics: diagnostics
+        )
+
+        store.beginAppleAuthorization(account: "fixture@example.invalid", password: "first-attempt")
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.phase, .failed)
+        XCTAssertEqual(store.appleAuthorization.safeErrorCode, "SRP_AUTH_FAILED")
+        XCTAssertNotNil(store.lastError)
+
+        store.beginAppleAuthorization(account: "fixture@example.invalid", password: "second-attempt")
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .installing)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(store.appleAuthorization.stage, .authorized)
+        XCTAssertTrue(store.appleAuthorization.sessionValid)
+        XCTAssertNil(store.appleAuthorization.safeErrorCode)
+        XCTAssertEqual(store.selectedTeamIdentifier, ExperimentalAppleTeam.personal.id)
+        XCTAssertEqual(store.personalTeams.count, 1)
+
+        let events = try XCTUnwrap(diagnostics.load()?.events)
+        let successfulStages = Set(events.filter { $0.generationID == 2 }.map(\.stage))
+        XCTAssertTrue(successfulStages.isSuperset(of: [
+            "AUTHORIZATION_RESULT_RECEIVED",
+            "AUTHORIZATION_STATE_UPDATED",
+            "TEAM_STATE_UPDATED",
+            "SETUP_STEP_ADVANCED",
+            "ERROR_STATE_CLEARED",
+            "UI_STATE_PUBLISHED"
+        ]))
+        let advanced = try XCTUnwrap(events.last(where: { $0.stage == "SETUP_STEP_ADVANCED" }))
+        XCTAssertEqual(advanced.generationID, 2)
+        XCTAssertEqual(advanced.setupPhase, SetupPhase.installing.rawValue)
+        XCTAssertEqual(advanced.authorizationStage, AppleAuthorizationStage.authorized.rawValue)
+        XCTAssertEqual(advanced.sessionValid, true)
+        XCTAssertEqual(advanced.personalTeamAvailable, true)
+        XCTAssertEqual(advanced.errorPresent, false)
+        XCTAssertNil(advanced.safeErrorCode)
+        XCTAssertTrue(events.contains(where: {
+            $0.stage == "ERROR_STATE_CLEARED" && $0.generationID == 2 && $0.errorPresent == false
+        }))
+        XCTAssertTrue(events.contains(where: {
+            $0.stage == "UI_STATE_PUBLISHED"
+                && $0.generationID == 2
+                && $0.setupPhase == SetupPhase.installing.rawValue
+        }))
+        let serializedDiagnostics = try String(contentsOf: diagnosticsURL, encoding: .utf8)
+        XCTAssertFalse(serializedDiagnostics.contains("fixture@example.invalid"))
+        XCTAssertFalse(serializedDiagnostics.contains("first-attempt"))
+        XCTAssertFalse(serializedDiagnostics.contains("second-attempt"))
+    }
+
+    @MainActor
+    func testPostAuthorizationProvisioningFailureIsNotReportedAsAuthenticationFailure() async throws {
+        let diagnosticsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-post-auth-state-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: diagnosticsURL) }
+        let backend = ExperimentalBackendMock(auth: .success, operationFailure: .certificateLimit)
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
+        let store = SetupStore(
+            engine: MockIOSSimSetupEngine(scenario: .ready),
+            authorizationCoordinator: coordinator,
+            nativeProvisioningExperiment: true,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(url: diagnosticsURL)
+        )
+        store.getStarted()
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.phase, .appleAccount)
+
+        store.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .failed)
+        XCTAssertEqual(
+            store.lastError?.headline,
+            "Apple authorization succeeded, but IOSSim couldn't prepare Personal Team provisioning."
+        )
+        XCTAssertEqual(store.lastError?.details, "CERTIFICATE_LIMIT_REACHED")
+        XCTAssertEqual(store.appleAuthorization.stage, .authorized)
+        XCTAssertTrue(store.appleAuthorization.sessionValid)
+        XCTAssertNil(store.appleAuthorization.safeErrorCode)
+        XCTAssertFalse(store.personalTeams.isEmpty)
+    }
+
+    func testSlowerStaleAuthorizationCannotOverwriteNewerSuccess() async throws {
+        let backend = ExperimentalBackendMock(
+            auth: .success,
+            authSequence: [.delayedFailure(.srpAuthFailed, 150_000_000), .success]
+        )
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
+        let older = Task {
+            try await coordinator.begin(
+                account: "fixture@example.invalid",
+                password: SensitiveInput("older-attempt")
+            )
+        }
+        while await backend.observedAuthorizationAttempts() < 1 {
+            await Task.yield()
+        }
+
+        let newer = Task {
+            try await coordinator.begin(
+                account: "fixture@example.invalid",
+                password: SensitiveInput("newer-attempt")
+            )
+        }
+        _ = try await newer.value
+        do {
+            _ = try await older.value
+            XCTFail("Expected stale authorization result to be discarded")
+        } catch is CancellationError {
+            // Expected: generation mismatch is represented as cancellation.
+        }
+
+        let authorization = await coordinator.authorization
+        let teams = await coordinator.teams
+        XCTAssertEqual(authorization.stage, .authorized)
+        XCTAssertTrue(authorization.sessionValid)
+        XCTAssertNil(authorization.safeErrorCode)
+        XCTAssertEqual(teams, [.personal])
+    }
+
+    @MainActor
     func testUnavailableLiveBoundaryShowsConsumerSafeAuthorizationError() async throws {
         let store = SetupStore(engine: MockIOSSimSetupEngine(scenario: .ready))
         store.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
@@ -266,6 +403,7 @@ private enum AuthMode: Sendable {
     case success
     case verification
     case failure(ExperimentalBackendError)
+    case delayedFailure(ExperimentalBackendError, UInt64)
 }
 
 private enum ProfileMode: Sendable {
@@ -282,7 +420,8 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
     nonisolated let clientIdentityVersion = "fixture-v1"
     nonisolated let isPhysicallyQualified = false
 
-    private let auth: AuthMode
+    private let authSequence: [AuthMode]
+    private var authAttemptCount = 0
     private let resumedTeams: [ExperimentalAppleTeam]?
     private let resumeFailure: ExperimentalBackendError?
     private let verificationFailure: ExperimentalBackendError?
@@ -292,13 +431,14 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
 
     init(
         auth: AuthMode,
+        authSequence: [AuthMode]? = nil,
         resumedTeams: [ExperimentalAppleTeam]? = nil,
         resumeFailure: ExperimentalBackendError? = nil,
         verificationFailure: ExperimentalBackendError? = nil,
         operationFailure: ExperimentalBackendError? = nil,
         profileMode: ProfileMode = .valid
     ) {
-        self.auth = auth
+        self.authSequence = authSequence ?? [auth]
         self.resumedTeams = resumedTeams
         self.resumeFailure = resumeFailure
         self.verificationFailure = verificationFailure
@@ -314,14 +454,22 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
 
     func beginAuthorization(account: String, password: SensitiveInput) async throws -> ExperimentalAuthorizationResult {
         events.append("auth")
+        let index = min(authAttemptCount, authSequence.count - 1)
+        let auth = authSequence[index]
+        authAttemptCount += 1
         guard !account.isEmpty, !password.isEmpty else { throw ExperimentalBackendError.badPassword }
         switch auth {
         case .success: return .authorized([.personal])
         case .verification:
             return .verificationRequired(.init(method: .trustedDevice, safeDestinationHint: "trusted device"))
         case .failure(let error): throw error
+        case .delayedFailure(let error, let nanoseconds):
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            throw error
         }
     }
+
+    func observedAuthorizationAttempts() -> Int { authAttemptCount }
 
     func submitVerification(code: SensitiveInput) async throws -> ExperimentalAuthorizationResult {
         events.append("verify")

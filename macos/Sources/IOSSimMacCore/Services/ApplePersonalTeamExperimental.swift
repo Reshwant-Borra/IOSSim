@@ -541,6 +541,7 @@ public actor ExperimentalConsumerProvisioningCoordinator {
     )
     public private(set) var teams: [ExperimentalAppleTeam] = []
     private let backend: any ExperimentalPersonalTeamBackend
+    private var authorizationGeneration: UInt64 = 0
 
     public init(backend: any ExperimentalPersonalTeamBackend) {
         self.backend = backend
@@ -556,42 +557,59 @@ public actor ExperimentalConsumerProvisioningCoordinator {
 
     @discardableResult
     public func resume() async throws -> Bool {
+        let generation = nextAuthorizationGeneration()
         do {
             guard let resumed = try await backend.resumeSession() else { return false }
+            try requireCurrentAuthorizationGeneration(generation)
             teams = try Self.validateTeams(resumed)
             authorization = summary(stage: .authorized, valid: true)
             return true
         } catch ExperimentalBackendError.sessionExpired {
+            try requireCurrentAuthorizationGeneration(generation)
             authorization = summary(stage: .sessionExpired, valid: false, code: "SESSION_EXPIRED")
             return false
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try requireCurrentAuthorizationGeneration(generation)
             authorization = summary(stage: .failed, valid: false, code: Self.safeCode(error))
             throw error
         }
     }
 
     public func begin(account: String, password: SensitiveInput) async throws -> AppleVerificationChallenge? {
+        let generation = nextAuthorizationGeneration()
         authorization = summary(stage: .startingAuthentication, valid: false)
         defer { password.clear() }
         do {
-            return try applyAuthorizationResult(
-                await backend.beginAuthorization(account: account, password: password)
-            )
+            let result = try await backend.beginAuthorization(account: account, password: password)
+            try requireCurrentAuthorizationGeneration(generation)
+            return try applyAuthorizationResult(result)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try requireCurrentAuthorizationGeneration(generation)
             authorization = summary(stage: .failed, valid: false, code: Self.safeCode(error))
             throw error
         }
     }
 
     public func verify(code: SensitiveInput) async throws -> AppleVerificationChallenge? {
+        let generation = nextAuthorizationGeneration()
         authorization = summary(stage: .verificationSubmitted, valid: false)
         defer { code.clear() }
         do {
-            return try applyAuthorizationResult(await backend.submitVerification(code: code))
+            let result = try await backend.submitVerification(code: code)
+            try requireCurrentAuthorizationGeneration(generation)
+            return try applyAuthorizationResult(result)
         } catch ExperimentalBackendError.verificationExpired {
+            try requireCurrentAuthorizationGeneration(generation)
             authorization = summary(stage: .verificationRequired, valid: false, code: "VERIFICATION_EXPIRED")
             throw ExperimentalBackendError.verificationExpired
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try requireCurrentAuthorizationGeneration(generation)
             authorization = summary(stage: .failed, valid: false, code: Self.safeCode(error))
             throw error
         }
@@ -655,9 +673,20 @@ public actor ExperimentalConsumerProvisioningCoordinator {
     }
 
     public func invalidate() async {
-        await backend.invalidateSession()
+        _ = nextAuthorizationGeneration()
         teams = []
         authorization = summary(stage: .notStarted, valid: false)
+        await backend.invalidateSession()
+    }
+
+    private func nextAuthorizationGeneration() -> UInt64 {
+        authorizationGeneration &+= 1
+        return authorizationGeneration
+    }
+
+    private func requireCurrentAuthorizationGeneration(_ generation: UInt64) throws {
+        try Task.checkCancellation()
+        guard generation == authorizationGeneration else { throw CancellationError() }
     }
 
     private func applyAuthorizationResult(_ result: ExperimentalAuthorizationResult) throws -> AppleVerificationChallenge? {

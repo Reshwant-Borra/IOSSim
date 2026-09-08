@@ -26,8 +26,12 @@ public final class SetupStore: ObservableObject {
 
     public let engine: any IOSSimSetupEngine
     private let authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator
+    private let stateDiagnostics: ApplePersonalTeamDiagnosticsStore
+    private let stateDiagnosticsEnabled: Bool
     public let nativeProvisioningExperiment: Bool
     private var task: Task<Void, Never>?
+    private var operationGeneration: UInt64 = 0
+    private var activeOperationGeneration: UInt64?
     private let onboardingKey = "IOSSimMac.onboardingCompleted"
     private let selectedDeviceKey = "IOSSimMac.selectedDeviceIdentifier"
     private let selectedDeviceNameKey = "IOSSimMac.selectedDeviceName"
@@ -38,13 +42,17 @@ public final class SetupStore: ObservableObject {
     public init(
         engine: any IOSSimSetupEngine,
         authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator? = nil,
-        nativeProvisioningExperiment: Bool = ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled
+        nativeProvisioningExperiment: Bool = ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
+        stateDiagnostics: ApplePersonalTeamDiagnosticsStore? = nil
     ) {
+        let diagnostics = stateDiagnostics ?? ApplePersonalTeamDiagnosticsStore()
         self.engine = engine
         self.nativeProvisioningExperiment = nativeProvisioningExperiment
+        self.stateDiagnostics = diagnostics
+        stateDiagnosticsEnabled = nativeProvisioningExperiment || stateDiagnostics != nil
         self.authorizationCoordinator = authorizationCoordinator ?? .init(
             backend: nativeProvisioningExperiment
-                ? LiveApplePersonalTeamBackend()
+                ? LiveApplePersonalTeamBackend(diagnostics: diagnostics)
                 : UnavailableExperimentalPersonalTeamBackend()
         )
         selectedDeviceIdentifier = UserDefaults.standard.string(forKey: selectedDeviceKey)
@@ -120,11 +128,13 @@ public final class SetupStore: ObservableObject {
     }
 
     public func refresh() {
-        runCancellable(stage: .checkingMac) { [self] in
+        runCancellable(stage: .checkingMac) { [self] generation in
             let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
             status = next
             applyDeviceSelection(from: next)
-            try await updateConsumerContext()
+            try await updateConsumerContext(generation: generation)
+            try requireCurrentOperation(generation)
             routeAfterDoctor(next)
         }
     }
@@ -146,17 +156,20 @@ public final class SetupStore: ObservableObject {
     public func runRepair() {
         guard !isRunning else { return }
         phase = .checkingMac
-        runCancellable(stage: .checkingMac) { [self] in
+        runCancellable(stage: .checkingMac) { [self] generation in
             let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
             status = next
             if !next.mac.ready {
                 let result = try await engine.setup()
+                try requireCurrentOperation(generation)
                 logs.append(.init(stage: "setup", result: result))
             }
             applyDeviceSelection(from: next)
-            try await updateConsumerContext()
+            try await updateConsumerContext(generation: generation)
+            try requireCurrentOperation(generation)
             if selectedDeviceProvisioningReady {
-                try await runProvisioningBody(operation: .repair)
+                try await runProvisioningBody(operation: .repair, generation: generation)
             } else {
                 routeAfterDoctor(next)
             }
@@ -167,20 +180,23 @@ public final class SetupStore: ObservableObject {
         guard !isRunning else { return }
         phase = .installing
         completedInstallStages = [.prepare]
-        runCritical { [self] in
+        runCritical { [self] generation in
             if engine.consumerProvisioningEnabled {
-                try await runProvisioningBody(operation: .refresh)
+                try await runProvisioningBody(operation: .refresh, generation: generation)
                 return
             }
             let buildResult = try await engine.build()
+            try requireCurrentOperation(generation)
             logs.append(.init(stage: "build", result: buildResult))
             completedInstallStages.insert(.installIOSSim)
             completedInstallStages.insert(.installRuntime)
             let deviceResult = try await engine.provisionDevice(selectedDeviceIdentifier: try selectedDeviceIdentifierForOperation())
+            try requireCurrentOperation(generation)
             logs.append(.init(stage: "device", result: deviceResult))
             completedInstallStages.insert(.verify)
             phase = .verifying
             let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
             status = next
             routeAfterDoctor(next)
         }
@@ -190,15 +206,17 @@ public final class SetupStore: ObservableObject {
         guard !isRunning else { return }
         phase = .installing
         completedInstallStages = [.prepare]
-        runCritical { [self] in
-            try await runProvisioningBody(operation: .install, allowFreshInstall: true)
+        runCritical { [self] generation in
+            try await runProvisioningBody(operation: .install, allowFreshInstall: true, generation: generation)
         }
     }
 
     public func exportSupportBundle() {
         guard !isRunning else { return }
-        runCancellable(stage: phase) { [self] in
-            lastSupportBundleURL = try await engine.exportSupportBundle()
+        runCancellable(stage: phase) { [self] generation in
+            let url = try await engine.exportSupportBundle()
+            try requireCurrentOperation(generation)
+            lastSupportBundleURL = url
         }
     }
 
@@ -218,6 +236,7 @@ public final class SetupStore: ObservableObject {
 
     public func cancelCurrentOperation() {
         guard !isCriticalStage else { return }
+        activeOperationGeneration = nil
         task?.cancel()
         task = nil
         isRunning = false
@@ -230,7 +249,7 @@ public final class SetupStore: ObservableObject {
 
     public func confirmRuntimeSetup() {
         guard !isRunning else { return }
-        runCancellable(stage: .verifying) { [self] in
+        runCancellable(stage: .verifying) { [self] generation in
             if engine.consumerProvisioningEnabled {
                 guard consumerProvisioningStateSupportsRuntimeSetup else {
                     throw ConsumerProvisioningFailure(
@@ -241,10 +260,13 @@ public final class SetupStore: ObservableObject {
                         developerDetail: "Runtime setup requires a valid provisioning manifest and deterministic runner mapping."
                     )
                 }
-                provisioningManifest = try await engine.confirmRuntimeSetup()
+                let manifest = try await engine.confirmRuntimeSetup()
+                try requireCurrentOperation(generation)
+                provisioningManifest = manifest
             }
             UserDefaults.standard.set(true, forKey: onboardingKey)
             let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
             status = next
             phase = .complete
         }
@@ -277,14 +299,26 @@ public final class SetupStore: ObservableObject {
     public func beginAppleAuthorization(account: String, password: String) {
         guard !isRunning, !account.isEmpty, !password.isEmpty else { return }
         let sensitivePassword = SensitiveInput(password)
-        runCancellable(stage: .appleAccount) { [self] in
-            appleVerificationChallenge = try await authorizationCoordinator.begin(
+        runCancellable(stage: .appleAccount) { [self] generation in
+            let challenge = try await authorizationCoordinator.begin(
                 account: account,
                 password: sensitivePassword
             )
-            appleAuthorization = await authorizationCoordinator.authorization
-            if appleVerificationChallenge == nil {
-                try await applyExperimentalTeams()
+            try requireCurrentOperation(generation)
+            let authorization = await authorizationCoordinator.authorization
+            try requireCurrentOperation(generation)
+            recordStateTransition(
+                .authorizationResultReceived,
+                generation: generation,
+                authorization: authorization
+            )
+            appleVerificationChallenge = challenge
+            appleAuthorization = authorization
+            recordStateTransition(.authorizationStateUpdated, generation: generation)
+            if challenge == nil {
+                try await applyExperimentalTeams(generation: generation)
+            } else {
+                recordStateTransition(.uiStatePublished, generation: generation)
             }
         }
     }
@@ -292,17 +326,30 @@ public final class SetupStore: ObservableObject {
     public func submitAppleVerification(code: String) {
         guard !isRunning, !code.isEmpty else { return }
         let sensitiveCode = SensitiveInput(code)
-        runCancellable(stage: .appleAccount) { [self] in
-            appleVerificationChallenge = try await authorizationCoordinator.verify(code: sensitiveCode)
-            appleAuthorization = await authorizationCoordinator.authorization
-            if appleVerificationChallenge == nil {
-                try await applyExperimentalTeams()
+        runCancellable(stage: .appleAccount) { [self] generation in
+            let challenge = try await authorizationCoordinator.verify(code: sensitiveCode)
+            try requireCurrentOperation(generation)
+            let authorization = await authorizationCoordinator.authorization
+            try requireCurrentOperation(generation)
+            recordStateTransition(
+                .authorizationResultReceived,
+                generation: generation,
+                authorization: authorization
+            )
+            appleVerificationChallenge = challenge
+            appleAuthorization = authorization
+            recordStateTransition(.authorizationStateUpdated, generation: generation)
+            if challenge == nil {
+                try await applyExperimentalTeams(generation: generation)
+            } else {
+                recordStateTransition(.uiStatePublished, generation: generation)
             }
         }
     }
 
-    private func applyExperimentalTeams() async throws {
+    private func applyExperimentalTeams(generation: UInt64) async throws {
         let discovered = await authorizationCoordinator.teams
+        try requireCurrentOperation(generation)
         guard !discovered.isEmpty else { throw ExperimentalBackendError.noTeam }
         personalTeams = discovered.map {
             PersonalTeamCandidate(
@@ -314,16 +361,19 @@ public final class SetupStore: ObservableObject {
                 personalTeam: $0.isPersonalTeam
             )
         }
+        recordStateTransition(.teamStateUpdated, generation: generation)
         if let preferred = try? ExperimentalConsumerProvisioningCoordinator.preferredTeam(from: discovered) {
             selectTeam(identifier: preferred.id)
         }
         phase = .installing
+        recordStateTransition(.setupStepAdvanced, generation: generation)
+        recordStateTransition(.uiStatePublished, generation: generation)
         if nativeProvisioningExperiment {
-            try await runLiveProvisioningThroughProfiles()
+            try await runLiveProvisioningThroughProfiles(generation: generation)
         }
     }
 
-    private func runLiveProvisioningThroughProfiles() async throws {
+    private func runLiveProvisioningThroughProfiles(generation: UInt64) async throws {
         guard let selected = selectedDevice,
               let identifier = selectedDeviceIdentifier else {
             throw ExperimentalBackendError.deviceRegistrationFailed
@@ -334,18 +384,23 @@ public final class SetupStore: ObservableObject {
             selectedDeviceName: selected.name,
             operation: .install
         ))
+        try requireCurrentOperation(generation)
         selectedTeamIdentifier = prepared.team.id
         liveProvisioningCheckpoint = .provisioningReady
         consumerStage = .preparingArtifacts
         phase = .complete
+        recordStateTransition(.setupStepAdvanced, generation: generation)
+        recordStateTransition(.uiStatePublished, generation: generation)
     }
 
     private func runSetup() {
         phase = .checkingMac
-        runCritical { [self] in
+        runCritical { [self] generation in
             let result = try await engine.setup()
+            try requireCurrentOperation(generation)
             logs.append(.init(stage: "setup", result: result))
             let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
             status = next
             routeAfterDoctor(next)
         }
@@ -354,14 +409,15 @@ public final class SetupStore: ObservableObject {
     private func runProvisioning() {
         phase = .installing
         completedInstallStages = [.prepare]
-        runCritical { [self] in
-            try await runProvisioningBody(operation: .install)
+        runCritical { [self] generation in
+            try await runProvisioningBody(operation: .install, generation: generation)
         }
     }
 
     private func runProvisioningBody(
         operation: ConsumerProvisioningOperation,
-        allowFreshInstall: Bool = false
+        allowFreshInstall: Bool = false,
+        generation: UInt64
     ) async throws {
         if engine.consumerProvisioningEnabled {
             let device = try selectedDeviceIdentifierForOperation()
@@ -381,6 +437,7 @@ public final class SetupStore: ObservableObject {
                 selectedTeamIdentifier: team,
                 allowFreshInstallAfterCrossTeamConflict: allowFreshInstall
             ))
+            try requireCurrentOperation(generation)
             provisioningManifest = result.manifest
             consumerStage = result.finalStage
             completedInstallStages = Set(InstallStage.allCases)
@@ -389,10 +446,12 @@ public final class SetupStore: ObservableObject {
         }
         completedInstallStages.insert(.installIOSSim)
         let result = try await engine.provisionDevice(selectedDeviceIdentifier: try selectedDeviceIdentifierForOperation())
+        try requireCurrentOperation(generation)
         logs.append(.init(stage: "device", result: result))
         completedInstallStages.insert(.installRuntime)
         phase = .verifying
         let next = try await engine.doctor()
+        try requireCurrentOperation(generation)
         status = next
         completedInstallStages.insert(.verify)
         routeAfterDoctor(next)
@@ -467,9 +526,11 @@ public final class SetupStore: ObservableObject {
         }
     }
 
-    private func updateConsumerContext() async throws {
+    private func updateConsumerContext(generation: UInt64) async throws {
         guard engine.consumerProvisioningEnabled else { return }
-        provisioningManifest = try await engine.consumerProvisioningStatus()
+        let manifest = try await engine.consumerProvisioningStatus()
+        try requireCurrentOperation(generation)
+        provisioningManifest = manifest
         guard let selectedDeviceIdentifier else {
             personalTeams = []
             selectedTeamIdentifier = nil
@@ -478,15 +539,28 @@ public final class SetupStore: ObservableObject {
         if nativeProvisioningExperiment {
             do {
                 if try await authorizationCoordinator.resume() {
+                    try requireCurrentOperation(generation)
                     appleAuthorization = await authorizationCoordinator.authorization
-                    try await applyExperimentalTeams()
+                    try requireCurrentOperation(generation)
+                    recordStateTransition(.authorizationResultReceived, generation: generation)
+                    recordStateTransition(.authorizationStateUpdated, generation: generation)
+                    try await applyExperimentalTeams(generation: generation)
                 }
             } catch ExperimentalBackendError.sessionExpired {
+                try requireCurrentOperation(generation)
                 appleAuthorization = await authorizationCoordinator.authorization
+                try requireCurrentOperation(generation)
+                recordStateTransition(
+                    .authorizationStateUpdated,
+                    generation: generation,
+                    safeErrorCode: appleAuthorization.safeErrorCode
+                )
             }
             return
         }
-        personalTeams = try await engine.discoverPersonalTeams(selectedDeviceIdentifier: selectedDeviceIdentifier)
+        let discovered = try await engine.discoverPersonalTeams(selectedDeviceIdentifier: selectedDeviceIdentifier)
+        try requireCurrentOperation(generation)
+        personalTeams = discovered
         let remembered = UserDefaults.standard.string(forKey: selectedTeamKey)
         if let remembered, personalTeams.contains(where: { $0.teamIdentifier == remembered }) {
             selectedTeamIdentifier = remembered
@@ -541,31 +615,58 @@ public final class SetupStore: ObservableObject {
         )
     }
 
-    private func runCancellable(stage: SetupPhase, operation: @escaping @MainActor () async throws -> Void) {
+    private func runCancellable(
+        stage: SetupPhase,
+        operation: @escaping @MainActor (UInt64) async throws -> Void
+    ) {
         run(stage: stage, critical: false, operation: operation)
     }
 
-    private func runCritical(operation: @escaping @MainActor () async throws -> Void) {
+    private func runCritical(operation: @escaping @MainActor (UInt64) async throws -> Void) {
         run(stage: phase, critical: true, operation: operation)
     }
 
-    private func run(stage: SetupPhase, critical: Bool, operation: @escaping @MainActor () async throws -> Void) {
+    private func run(
+        stage: SetupPhase,
+        critical: Bool,
+        operation: @escaping @MainActor (UInt64) async throws -> Void
+    ) {
         guard task == nil else { return }
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        activeOperationGeneration = generation
         phase = stage
         isRunning = true
         isCriticalStage = critical
         lastError = nil
+        recordStateTransition(.errorStateCleared, generation: generation)
+        recordStateTransition(.uiStatePublished, generation: generation)
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                try await operation()
+                try await operation(generation)
             } catch is CancellationError {
+                guard self.activeOperationGeneration == generation else {
+                    self.recordStateTransition(
+                        .staleResultIgnored,
+                        generation: generation,
+                        currentGeneration: false
+                    )
+                    return
+                }
                 self.lastError = nil
             } catch let failure as ProcessFailure {
+                guard self.activeOperationGeneration == generation else { return }
                 self.lastError = Self.friendlyError(commandName: failure.commandName, result: failure.result)
                 self.logs.append(.init(stage: failure.commandName, result: failure.result))
                 self.phase = .failed
+                self.recordStateTransition(
+                    .uiStatePublished,
+                    generation: generation,
+                    safeErrorCode: "PROCESS_FAILURE"
+                )
             } catch let failure as ConsumerProvisioningFailure {
+                guard self.activeOperationGeneration == generation else { return }
                 self.lastError = SetupError(
                     headline: failure.userMessage,
                     recovery: failure.remediation,
@@ -573,22 +674,84 @@ public final class SetupStore: ObservableObject {
                 )
                 self.consumerStage = .failed
                 self.phase = .failed
+                self.recordStateTransition(
+                    .uiStatePublished,
+                    generation: generation,
+                    safeErrorCode: failure.code.rawValue
+                )
             } catch let failure as ExperimentalBackendError {
-                self.appleAuthorization = await self.authorizationCoordinator.authorization
-                self.lastError = Self.appleAuthorizationError(failure)
-                self.phase = failure == .verificationExpired ? .appleAccount : .failed
+                guard self.activeOperationGeneration == generation else { return }
+                let authorization = await self.authorizationCoordinator.authorization
+                guard self.activeOperationGeneration == generation else { return }
+                self.appleAuthorization = authorization
+                self.recordStateTransition(
+                    .authorizationStateUpdated,
+                    generation: generation,
+                    safeErrorCode: authorization.safeErrorCode
+                )
+                if authorization.sessionValid,
+                   !self.personalTeams.isEmpty,
+                   failure != .sessionExpired {
+                    self.lastError = Self.experimentalProvisioningError(failure)
+                    self.consumerStage = .failed
+                    self.phase = .failed
+                } else {
+                    self.lastError = Self.appleAuthorizationError(failure)
+                    self.phase = failure == .verificationExpired ? .appleAccount : .failed
+                }
+                self.recordStateTransition(
+                    .uiStatePublished,
+                    generation: generation,
+                    safeErrorCode: failure.safeCode
+                )
             } catch {
+                guard self.activeOperationGeneration == generation else { return }
                 self.lastError = SetupError(
                     headline: "IOSSim could not complete this step.",
                     recovery: "Check your setup and try again.",
                     details: Redactor.redact(String(describing: error))
                 )
                 self.phase = .failed
+                self.recordStateTransition(
+                    .uiStatePublished,
+                    generation: generation,
+                    safeErrorCode: "UNEXPECTED_ERROR"
+                )
             }
+            guard self.activeOperationGeneration == generation else { return }
             self.isRunning = false
             self.isCriticalStage = false
             self.task = nil
+            self.activeOperationGeneration = nil
         }
+    }
+
+    private func requireCurrentOperation(_ generation: UInt64) throws {
+        try Task.checkCancellation()
+        guard activeOperationGeneration == generation else { throw CancellationError() }
+    }
+
+    private func recordStateTransition(
+        _ transition: SetupStateTransition,
+        generation: UInt64,
+        authorization: AppleAuthorizationSummary? = nil,
+        safeErrorCode: String? = nil,
+        currentGeneration: Bool? = nil
+    ) {
+        guard stateDiagnosticsEnabled else { return }
+        let authorization = authorization ?? appleAuthorization
+        stateDiagnostics.recordSetupTransition(
+            transition,
+            adapterVersion: authorization.clientIdentityVersion ?? "setup-state-v1",
+            generationID: generation,
+            setupPhase: phase,
+            authorizationStage: authorization.stage,
+            sessionValid: authorization.sessionValid,
+            personalTeamAvailable: !personalTeams.isEmpty,
+            errorPresent: lastError != nil,
+            currentGeneration: currentGeneration ?? (activeOperationGeneration == generation),
+            safeErrorCode: safeErrorCode
+        )
     }
 
     private static func appleAuthorizationError(_ failure: ExperimentalBackendError) -> SetupError {
@@ -618,6 +781,29 @@ public final class SetupStore: ObservableObject {
                 details: failure.safeCode
             )
         }
+    }
+
+    private static func experimentalProvisioningError(_ failure: ExperimentalBackendError) -> SetupError {
+        let recovery: String
+        switch failure {
+        case .certificateLimit:
+            recovery = "Remove an unused Apple Development certificate from your Personal Team, then try again."
+        case .missingPrivateKey:
+            recovery = "Restore the IOSSim signing key on this Mac or reset only IOSSim's managed signing identity."
+        case .deviceLimit:
+            recovery = "Remove an unused registered device from your Personal Team, then try again."
+        case .appIDLimit:
+            recovery = "Remove an unused App ID from your Personal Team, then try again."
+        case .appIDCollision:
+            recovery = "Resolve the conflicting Personal Team App ID, then try again."
+        default:
+            recovery = "Keep the iPhone connected and unlocked, then try Personal Team provisioning again."
+        }
+        return SetupError(
+            headline: "Apple authorization succeeded, but IOSSim couldn't prepare Personal Team provisioning.",
+            recovery: recovery,
+            details: failure.safeCode
+        )
     }
 
     private static func friendlyError(commandName: String, result: ProcessResult) -> SetupError {
