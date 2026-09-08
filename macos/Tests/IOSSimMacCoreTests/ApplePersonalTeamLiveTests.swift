@@ -1,6 +1,7 @@
 import Foundation
 import CommonCrypto
 import CryptoKit
+import Security
 import XCTest
 @testable import IOSSimMacCore
 
@@ -245,6 +246,230 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertThrowsError(try AppleDeveloperResponseParser.encodedProfile([
             "provisioningProfile": ["encodedProfile": Data()]
         ]))
+    }
+
+    func testManagedIdentityFirstCreationPersistsMatchingKeyAndCertificate() async throws {
+        let synthetic = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let keychain = FixtureManagedIdentityKeychain(keysToCreate: [synthetic.privateKey])
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([], available: 2)),
+            .plist(certificateSubmission(synthetic.certificateData, serial: "FIRST"))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        let identity = try await backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertFalse(identity.reused)
+        XCTAssertEqual(keychain.createdKeyCount, 1)
+        XCTAssertEqual(keychain.addedCertificateCount, 1)
+        XCTAssertNotNil(keychain.metadata?.certificateFingerprint)
+        let savedTag = try XCTUnwrap(keychain.metadata?.keyApplicationTag)
+        XCTAssertNotNil(keychain.metadata.flatMap {
+            canonicalManagedKeyTag($0.keyApplicationTag, teamIdentifier: "ABCDEFGHIJ")
+        })
+        let retrieved = try XCTUnwrap(keychain.lookupPrivateKey(applicationTag: savedTag).key)
+        XCTAssertTrue(publicKeysEqual(retrieved, synthetic.privateKey))
+        XCTAssertTrue(diagnostics.store.load()?.events.contains(where: {
+            $0.checkpoint == "PROVISIONING_PREPARATION_CONTINUED"
+        }) == true)
+    }
+
+    func testManagedIdentityReusesValidCertificateAndMatchingPrivateKey() async throws {
+        let synthetic = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let parsedCertificate = try XCTUnwrap(SecCertificateCreateWithData(nil, synthetic.certificateData as CFData))
+        XCTAssertTrue(certificatePublicKeyMatchesPrivateKey(parsedCertificate, privateKey: synthetic.privateKey))
+        XCTAssertEqual(certificateTeamIdentifiers(parsedCertificate), ["ABCDEFGHIJ"])
+        XCTAssertGreaterThan(try XCTUnwrap(certificateExpiration(parsedCertificate)), Date())
+        let tag = canonicalFixtureTag()
+        let metadata = fixtureIdentityMetadata(tag: tag, certificate: synthetic, serial: "REUSE")
+        let keychain = FixtureManagedIdentityKeychain(metadata: metadata, keys: [tag: synthetic.privateKey])
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([
+                certificateObject(synthetic.certificateData, serial: "REUSE")
+            ], available: 2))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        let identity = try await backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertTrue(identity.reused)
+        XCTAssertEqual(keychain.createdKeyCount, 0)
+        XCTAssertEqual(keychain.addedCertificateCount, 1)
+        let event = diagnostics.store.load()?.events.last(where: {
+            $0.checkpoint == "CERTIFICATE_PUBLIC_KEY_MATCH"
+        })
+        XCTAssertEqual(event?.continuity?["certificatePublicKeyMatchesPrivateKey"], true)
+    }
+
+    func testProvisionalManagedMetadataResumesCSRWithExistingPrivateKey() async throws {
+        let synthetic = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let tag = canonicalFixtureTag()
+        let keychain = FixtureManagedIdentityKeychain(
+            metadata: fixtureIdentityMetadata(tag: tag),
+            keys: [tag: synthetic.privateKey]
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([], available: 2)),
+            .plist(certificateSubmission(synthetic.certificateData, serial: "RECOVERED"))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        let identity = try await backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertFalse(identity.reused)
+        XCTAssertEqual(keychain.createdKeyCount, 0, "Recovery must reuse the existing permanent IOSSim key")
+        XCTAssertEqual(keychain.metadata?.keyApplicationTag, tag)
+        XCTAssertNotNil(keychain.metadata?.certificateFingerprint)
+        XCTAssertTrue(diagnostics.store.load()?.events.contains(where: {
+            $0.checkpoint == "MANAGED_IDENTITY_RECOVERY_SUCCEEDED"
+        }) == true)
+    }
+
+    func testMissingManagedPrivateKeyCreatesOnlyFreshIOSSimMapping() async throws {
+        let synthetic = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let staleCertificate = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let staleTag = canonicalFixtureTag()
+        let unrelatedTag = Data("com.example.unrelated.signing-key".utf8)
+        let historicalTag = canonicalFixtureTag()
+        let unrelated = try SyntheticDevelopmentIdentity(teamIdentifier: "ZZZZZZZZZZ")
+        let keychain = FixtureManagedIdentityKeychain(
+            metadata: fixtureIdentityMetadata(tag: staleTag, certificate: staleCertificate, serial: "STALE"),
+            keys: [
+                unrelatedTag: unrelated.privateKey,
+                historicalTag: staleCertificate.privateKey
+            ],
+            keysToCreate: [synthetic.privateKey]
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([
+                certificateObject(staleCertificate.certificateData, serial: "STALE")
+            ], available: 2)),
+            .plist(certificateSubmission(synthetic.certificateData, serial: "NEWKEY"))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        _ = try await backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertEqual(keychain.createdKeyCount, 1)
+        XCTAssertNotEqual(keychain.metadata?.keyApplicationTag, staleTag)
+        XCTAssertNotNil(keychain.keys[unrelatedTag], "Unrelated signing keys must remain untouched")
+        XCTAssertNotNil(keychain.keys[historicalTag], "Historical IOSSim keys must remain untouched")
+        XCTAssertTrue(keychain.deletedTags.isEmpty)
+        let requests = await transport.requests()
+        XCTAssertFalse(requests.contains { request in
+            let path = request.url?.path.lowercased() ?? ""
+            return path.contains("revoke") || path.contains("delete")
+        })
+        let missing = diagnostics.store.load()?.events.last(where: { $0.checkpoint == "PRIVATE_KEY_MISSING" })
+        XCTAssertEqual(missing?.osStatus, Int(errSecItemNotFound))
+    }
+
+    func testPrivateKeyAccessFailureDoesNotCreateOrReplaceManagedIdentity() async throws {
+        let staleTag = canonicalFixtureTag()
+        let keychain = FixtureManagedIdentityKeychain(
+            metadata: fixtureIdentityMetadata(tag: staleTag),
+            missingKeyStatus: errSecInteractionNotAllowed
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([], available: 2))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        do {
+            _ = try await backend.prepareIdentity(team: .fixturePersonal)
+            XCTFail("Expected inaccessible Keychain item to stop recovery")
+        } catch {
+            XCTAssertEqual(error as? ExperimentalBackendError, .missingPrivateKey)
+        }
+        XCTAssertEqual(keychain.createdKeyCount, 0)
+        XCTAssertEqual(keychain.metadata?.keyApplicationTag, staleTag)
+        XCTAssertTrue(keychain.deletedTags.isEmpty)
+    }
+
+    func testMismatchedCertificatePublicKeyIsRejectedWithoutDeletingAnyIdentity() async throws {
+        let managed = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let mismatched = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let tag = canonicalFixtureTag()
+        let keychain = FixtureManagedIdentityKeychain(
+            metadata: fixtureIdentityMetadata(tag: tag),
+            keys: [tag: managed.privateKey]
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([], available: 2)),
+            .plist(certificateSubmission(mismatched.certificateData, serial: "WRONG")),
+            .plist(certificateInventory([], available: 1))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        do {
+            _ = try await backend.prepareIdentity(team: .fixturePersonal)
+            XCTFail("Expected mismatched certificate rejection")
+        } catch {
+            XCTAssertEqual(error as? ExperimentalBackendError, .certificateRequestFailed)
+        }
+        XCTAssertTrue(keychain.deletedTags.isEmpty)
+        XCTAssertNil(keychain.metadata?.certificateFingerprint)
+        let mismatch = diagnostics.store.load()?.events.last(where: {
+            $0.checkpoint == "CERTIFICATE_PUBLIC_KEY_MATCH"
+        })
+        XCTAssertEqual(mismatch?.continuity?["certificatePublicKeyMatchesPrivateKey"], false)
+    }
+
+    func testManagedKeychainPersistsCanonicalPrivateKeyAcrossStoreInstances() throws {
+        let identifier = UUID().uuidString.uppercased()
+        let service = "com.iossim.tests.personal-team-signing.\(identifier)"
+        let team = "ABCDEFGHIJ"
+        let tag = Data("com.iossim.personal-team.\(team).\(identifier)".utf8)
+        defer {
+            SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: team
+            ] as CFDictionary)
+            SecItemDelete([
+                kSecClass as String: kSecClassKey,
+                kSecAttrApplicationTag as String: tag,
+                kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+                kSecAttrKeyClass as String: kSecAttrKeyClassPrivate
+            ] as CFDictionary)
+        }
+
+        let first = IOSSimIdentityMetadataStore(service: service, keyLabel: "IOSSim Test Signing Key")
+        let key = try first.createPrivateKey(applicationTag: tag)
+        try first.save(fixtureIdentityMetadata(tag: tag))
+        let restarted = IOSSimIdentityMetadataStore(service: service, keyLabel: "IOSSim Test Signing Key")
+        let lookup = restarted.lookupPrivateKey(applicationTag: tag)
+
+        XCTAssertEqual(lookup.status, errSecSuccess)
+        XCTAssertNotNil(lookup.key)
+        XCTAssertEqual(try restarted.load(teamIdentifier: team)?.keyApplicationTag, tag)
+        XCTAssertFalse(try restarted.persistentReference(applicationTag: tag).isEmpty)
+        XCTAssertNotNil(canonicalManagedKeyTag(tag, teamIdentifier: team))
+        XCTAssertTrue(publicKeysEqual(key, lookup.key!))
     }
 
     func testStoredSessionIsValidatedByLiveTeamDiscovery() async throws {
@@ -853,4 +1078,176 @@ private func teamResponse() -> [String: Any] {
 
 private func plistData(_ value: Any) throws -> Data {
     try PropertyListSerialization.data(fromPropertyList: value, format: .xml, options: 0)
+}
+
+private extension ExperimentalAppleTeam {
+    static let fixturePersonal = ExperimentalAppleTeam(
+        id: "ABCDEFGHIJ",
+        name: "Fixture Personal Team",
+        isPersonalTeam: true,
+        isPaidDeveloperTeam: false
+    )
+}
+
+private func canonicalFixtureTag() -> Data {
+    Data("com.iossim.personal-team.ABCDEFGHIJ.\(UUID().uuidString.uppercased())".utf8)
+}
+
+private func fixtureIdentityMetadata(
+    tag: Data,
+    certificate: SyntheticDevelopmentIdentity? = nil,
+    serial: String? = nil
+) -> IOSSimIdentityMetadata {
+    IOSSimIdentityMetadata(
+        teamIdentifier: "ABCDEFGHIJ",
+        certificateFingerprint: certificate.map { fixtureCertificateFingerprint($0.certificateData) },
+        certificateSerial: serial,
+        certificateExpiration: certificate == nil ? nil : Date().addingTimeInterval(86_400),
+        keyApplicationTag: tag,
+        createdAt: Date(),
+        generatedByIOSSim: true
+    )
+}
+
+private func certificateObject(_ data: Data, serial: String) -> [String: Any] {
+    ["certContent": data, "serialNumber": serial]
+}
+
+private func certificateInventory(_ certificates: [[String: Any]], available: Int) -> [String: Any] {
+    ["resultCode": 0, "certificates": certificates, "availableQuantity": available]
+}
+
+private func certificateSubmission(_ data: Data, serial: String) -> [String: Any] {
+    ["resultCode": 0, "certRequest": certificateObject(data, serial: serial)]
+}
+
+private func fixtureCertificateFingerprint(_ data: Data) -> String {
+    Data(SHA256.hash(data: data)).map { String(format: "%02X", $0) }.joined()
+}
+
+private func temporaryDiagnostics() -> (url: URL, store: ApplePersonalTeamDiagnosticsStore) {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("iossim-identity-diagnostics-\(UUID().uuidString).json")
+    return (url, ApplePersonalTeamDiagnosticsStore(url: url))
+}
+
+private func makeIdentityBackend(
+    transport: ScriptedAppleTransport,
+    keychain: FixtureManagedIdentityKeychain,
+    diagnostics: ApplePersonalTeamDiagnosticsStore
+) -> LiveApplePersonalTeamBackend {
+    LiveApplePersonalTeamBackend(
+        transport: transport,
+        machineIdentity: FixtureMachineIdentity(),
+        sessionStore: MemoryAuthorizationSessionStore(session: fixtureSession()),
+        diagnostics: diagnostics,
+        srpRandomBytesForTesting: Data(repeating: 1, count: 32),
+        identityKeychain: keychain
+    )
+}
+
+private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychain, @unchecked Sendable {
+    var metadata: IOSSimIdentityMetadata?
+    var keys: [Data: SecKey]
+    var keysToCreate: [SecKey]
+    let missingKeyStatus: OSStatus
+    private(set) var createdKeyCount = 0
+    private(set) var addedCertificateCount = 0
+    private(set) var deletedTags: [Data] = []
+
+    init(
+        metadata: IOSSimIdentityMetadata? = nil,
+        keys: [Data: SecKey] = [:],
+        keysToCreate: [SecKey] = [],
+        missingKeyStatus: OSStatus = errSecItemNotFound
+    ) {
+        self.metadata = metadata
+        self.keys = keys
+        self.keysToCreate = keysToCreate
+        self.missingKeyStatus = missingKeyStatus
+    }
+
+    func load(teamIdentifier: String) throws -> IOSSimIdentityMetadata? {
+        metadata?.teamIdentifier == teamIdentifier ? metadata : nil
+    }
+
+    func save(_ metadata: IOSSimIdentityMetadata) throws {
+        self.metadata = metadata
+    }
+
+    func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup {
+        guard let key = keys[applicationTag] else {
+            return ManagedPrivateKeyLookup(key: nil, status: missingKeyStatus)
+        }
+        return ManagedPrivateKeyLookup(key: key, status: errSecSuccess)
+    }
+
+    func persistentReference(applicationTag: Data) throws -> Data {
+        guard keys[applicationTag] != nil else { throw ExperimentalBackendError.missingPrivateKey }
+        return Data(SHA256.hash(data: applicationTag))
+    }
+
+    func createPrivateKey(applicationTag: Data) throws -> SecKey {
+        guard !keysToCreate.isEmpty else { throw ExperimentalBackendError.certificateRequestFailed }
+        let key = keysToCreate.removeFirst()
+        keys[applicationTag] = key
+        createdKeyCount += 1
+        return key
+    }
+
+    func addCertificate(_ certificate: SecCertificate, teamIdentifier: String) throws {
+        addedCertificateCount += 1
+    }
+}
+
+private struct SyntheticDevelopmentIdentity {
+    let privateKey: SecKey
+    let certificateData: Data
+
+    init(teamIdentifier: String) throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-synthetic-identity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let pem = folder.appendingPathComponent("private.pem")
+        let der = folder.appendingPathComponent("private.der")
+        let certificate = folder.appendingPathComponent("certificate.der")
+        try runOpenSSL(["genrsa", "-out", pem.path, "2048"])
+        try runOpenSSL([
+            "req", "-new", "-x509", "-key", pem.path,
+            "-outform", "DER", "-out", certificate.path,
+            "-days", "2", "-subj", "/C=US/O=IOSSim Tests/OU=\(teamIdentifier)/CN=Fixture Development"
+        ])
+        try runOpenSSL(["rsa", "-in", pem.path, "-outform", "DER", "-out", der.path])
+        let keyData = try Data(contentsOf: der)
+        var error: Unmanaged<CFError>?
+        guard let key = SecKeyCreateWithData(keyData as CFData, [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrKeySizeInBits as String: 2_048
+        ] as CFDictionary, &error) else {
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
+        privateKey = key
+        certificateData = try Data(contentsOf: certificate)
+    }
+}
+
+private func runOpenSSL(_ arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
+    process.arguments = arguments
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { throw ExperimentalBackendError.certificateRequestFailed }
+}
+
+private func publicKeysEqual(_ lhs: SecKey, _ rhs: SecKey) -> Bool {
+    guard let leftPublic = SecKeyCopyPublicKey(lhs),
+          let rightPublic = SecKeyCopyPublicKey(rhs),
+          let left = SecKeyCopyExternalRepresentation(leftPublic, nil) as Data?,
+          let right = SecKeyCopyExternalRepresentation(rightPublic, nil) as Data? else { return false }
+    return left == right
 }

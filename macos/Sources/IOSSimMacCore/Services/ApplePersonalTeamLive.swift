@@ -47,6 +47,9 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let personalTeamAvailable: Bool?
     public let errorPresent: Bool?
     public let currentGeneration: Bool?
+    public let osStatus: Int?
+    public let keyApplicationTagIdentifier: String?
+    public let certificateFingerprintPrefix: String?
 
     public init(
         timestamp: Date,
@@ -76,7 +79,10 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         sessionValid: Bool? = nil,
         personalTeamAvailable: Bool? = nil,
         errorPresent: Bool? = nil,
-        currentGeneration: Bool? = nil
+        currentGeneration: Bool? = nil,
+        osStatus: Int? = nil,
+        keyApplicationTagIdentifier: String? = nil,
+        certificateFingerprintPrefix: String? = nil
     ) {
         self.timestamp = timestamp
         self.checkpoint = checkpoint
@@ -106,6 +112,9 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         self.personalTeamAvailable = personalTeamAvailable
         self.errorPresent = errorPresent
         self.currentGeneration = currentGeneration
+        self.osStatus = osStatus
+        self.keyApplicationTagIdentifier = keyApplicationTagIdentifier
+        self.certificateFingerprintPrefix = certificateFingerprintPrefix
     }
 }
 
@@ -821,7 +830,7 @@ private extension Data {
 
 // MARK: - Certificate, device, identifier, and profile operations
 
-private struct IOSSimIdentityMetadata: Codable {
+struct IOSSimIdentityMetadata: Codable, Equatable {
     let teamIdentifier: String
     let certificateFingerprint: String?
     let certificateSerial: String?
@@ -831,8 +840,31 @@ private struct IOSSimIdentityMetadata: Codable {
     let generatedByIOSSim: Bool
 }
 
-private final class IOSSimIdentityMetadataStore: @unchecked Sendable {
-    private let service = "com.iossim.mac.personal-team-signing"
+struct ManagedPrivateKeyLookup {
+    let key: SecKey?
+    let status: OSStatus
+}
+
+protocol IOSSimManagedIdentityKeychain: Sendable {
+    func load(teamIdentifier: String) throws -> IOSSimIdentityMetadata?
+    func save(_ metadata: IOSSimIdentityMetadata) throws
+    func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup
+    func persistentReference(applicationTag: Data) throws -> Data
+    func createPrivateKey(applicationTag: Data) throws -> SecKey
+    func addCertificate(_ certificate: SecCertificate, teamIdentifier: String) throws
+}
+
+final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @unchecked Sendable {
+    private let service: String
+    private let keyLabel: String
+
+    init(
+        service: String = "com.iossim.mac.personal-team-signing",
+        keyLabel: String = "IOSSim Personal Team Signing Key"
+    ) {
+        self.service = service
+        self.keyLabel = keyLabel
+    }
 
     func load(teamIdentifier: String) throws -> IOSSimIdentityMetadata? {
         let query: [String: Any] = [
@@ -872,11 +904,75 @@ private final class IOSSimIdentityMetadataStore: @unchecked Sendable {
         }
         guard status == errSecSuccess else { throw ExperimentalBackendError.certificateRequestFailed }
     }
+
+    func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: applicationTag,
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrSynchronizable as String: false,
+            kSecReturnRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let key = status == errSecSuccess && result != nil ? (result! as! SecKey) : nil
+        return ManagedPrivateKeyLookup(key: key, status: status)
+    }
+
+    func persistentReference(applicationTag: Data) throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: applicationTag,
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrSynchronizable as String: false,
+            kSecReturnPersistentRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { throw ExperimentalBackendError.missingPrivateKey }
+        return data
+    }
+
+    func createPrivateKey(applicationTag: Data) throws -> SecKey {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeySizeInBits as String: 2_048,
+            kSecPrivateKeyAttrs as String: [
+                kSecAttrIsPermanent as String: true,
+                kSecAttrApplicationTag as String: applicationTag,
+                kSecAttrLabel as String: keyLabel,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                kSecAttrSynchronizable as String: false
+            ]
+        ]
+        var error: Unmanaged<CFError>?
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
+        return key
+    }
+
+    func addCertificate(_ certificate: SecCertificate, teamIdentifier: String) throws {
+        let status = SecItemAdd([
+            kSecClass as String: kSecClassCertificate,
+            kSecValueRef as String: certificate,
+            kSecAttrLabel as String: "IOSSim Apple Development \(teamIdentifier)"
+        ] as CFDictionary, nil)
+        guard status == errSecSuccess || status == errSecDuplicateItem else {
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
+    }
 }
 
 extension LiveApplePersonalTeamBackend {
     public func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity {
-        let metadataStore = IOSSimIdentityMetadataStore()
+        identityGeneration &+= 1
+        let generation = identityGeneration
+        recordIdentity(.signingIdentityLookupStarted, generation: generation)
         let response = try await developerRequest(
             operation: "ios/listAllDevelopmentCerts",
             parameters: ["teamId": team.id]
@@ -884,73 +980,162 @@ extension LiveApplePersonalTeamBackend {
         guard let certificates = response["certificates"] as? [[String: Any]], certificates.count <= 100 else {
             throw ExperimentalBackendError.responseChanged
         }
-        if let owned = try metadataStore.load(teamIdentifier: team.id) {
+        let availableQuantity = integer(response["availableQuantity"])
+        let owned = try identityKeychain.load(teamIdentifier: team.id)
+        if let owned {
+            recordIdentity(
+                .managedIdentityMetadataFound,
+                generation: generation,
+                tag: owned.keyApplicationTag,
+                counts: ["developmentCertificateCount": certificates.count]
+            )
             guard owned.generatedByIOSSim,
-                  let key = keyReference(applicationTag: owned.keyApplicationTag) else {
+                  canonicalManagedKeyTag(owned.keyApplicationTag, teamIdentifier: team.id) != nil else {
+                recordIdentity(.managedIdentityStale, generation: generation)
                 throw ExperimentalBackendError.missingPrivateKey
             }
-            if let fingerprint = owned.certificateFingerprint,
-               let expiration = owned.certificateExpiration,
-               expiration > Date(),
-               certificates.contains(where: { certificate in
-                   let serial = certificateString(certificate, names: ["serialNumber", "serialNum"])
-                   if let expected = owned.certificateSerial, serial == expected { return true }
-                   return certificateData(certificate).map(certificateFingerprint) == fingerprint
-               }) {
-                let persistent = try keyPersistentReference(applicationTag: owned.keyApplicationTag)
-                record(.signingIdentityReused, stage: "certificate")
-                diagnostics.update(adapterVersion: adapter.version) {
-                    $0.certificateFingerprint = fingerprint
+            recordIdentity(.privateKeyLookupStarted, generation: generation, tag: owned.keyApplicationTag)
+            let lookup = identityKeychain.lookupPrivateKey(applicationTag: owned.keyApplicationTag)
+            if let key = lookup.key {
+                recordIdentity(
+                    .privateKeyFound,
+                    generation: generation,
+                    tag: owned.keyApplicationTag,
+                    osStatus: lookup.status
+                )
+                if let remembered = rememberedCertificate(in: certificates, metadata: owned) {
+                    recordIdentity(
+                        .certificateFound,
+                        generation: generation,
+                        tag: owned.keyApplicationTag,
+                        fingerprint: certificateData(remembered).map(certificateFingerprint)
+                    )
+                    if let match = matchingCertificate(in: [remembered], key: key, teamIdentifier: team.id) {
+                        recordIdentity(
+                            .certificatePublicKeyMatch,
+                            generation: generation,
+                            tag: owned.keyApplicationTag,
+                            fingerprint: match.fingerprint,
+                            flags: ["certificatePublicKeyMatchesPrivateKey": true]
+                        )
+                        return try finishManagedIdentity(
+                            match,
+                            key: key,
+                            tag: owned.keyApplicationTag,
+                            createdAt: owned.createdAt,
+                            team: team,
+                            generation: generation,
+                            reused: true,
+                            recovered: false
+                        )
+                    }
+                    recordIdentity(
+                        .certificatePublicKeyMatch,
+                        generation: generation,
+                        tag: owned.keyApplicationTag,
+                        flags: ["certificatePublicKeyMatchesPrivateKey": false]
+                    )
                 }
-                return ExperimentalSigningIdentity(
-                    certificateFingerprint: fingerprint,
-                    certificateExpiration: expiration,
-                    privateKeyPersistentReference: persistent,
-                    reused: true
-                )
-            }
-            if let match = matchingCertificate(in: certificates, key: key, teamIdentifier: team.id) {
-                let finalized = IOSSimIdentityMetadata(
-                    teamIdentifier: team.id,
-                    certificateFingerprint: match.fingerprint,
-                    certificateSerial: match.serial,
-                    certificateExpiration: match.expiration,
-                    keyApplicationTag: owned.keyApplicationTag,
+                if let match = matchingCertificate(in: certificates, key: key, teamIdentifier: team.id) {
+                    recordIdentity(
+                        .certificateFound,
+                        generation: generation,
+                        tag: owned.keyApplicationTag,
+                        fingerprint: match.fingerprint
+                    )
+                    recordIdentity(
+                        .certificatePublicKeyMatch,
+                        generation: generation,
+                        tag: owned.keyApplicationTag,
+                        fingerprint: match.fingerprint,
+                        flags: ["certificatePublicKeyMatchesPrivateKey": true]
+                    )
+                    return try finishManagedIdentity(
+                        match,
+                        key: key,
+                        tag: owned.keyApplicationTag,
+                        createdAt: owned.createdAt,
+                        team: team,
+                        generation: generation,
+                        reused: true,
+                        recovered: false
+                    )
+                }
+                recordIdentity(.managedIdentityStale, generation: generation, tag: owned.keyApplicationTag)
+                guard availableQuantity != 0 else { throw ExperimentalBackendError.certificateLimit }
+                recordIdentity(.managedIdentityRecoveryStarted, generation: generation, tag: owned.keyApplicationTag)
+                return try await requestDevelopmentIdentity(
+                    key: key,
+                    tag: owned.keyApplicationTag,
                     createdAt: owned.createdAt,
-                    generatedByIOSSim: true
-                )
-                try metadataStore.save(finalized)
-                let persistent = try keyPersistentReference(applicationTag: owned.keyApplicationTag)
-                record(.signingIdentityReused, stage: "certificate")
-                diagnostics.update(adapterVersion: adapter.version) { $0.certificateFingerprint = match.fingerprint }
-                return ExperimentalSigningIdentity(
-                    certificateFingerprint: match.fingerprint,
-                    certificateExpiration: match.expiration,
-                    privateKeyPersistentReference: persistent,
-                    reused: true
+                    team: team,
+                    generation: generation,
+                    recovering: true
                 )
             }
-            // Never create another certificate behind stale IOSSim ownership
-            // metadata; this avoids consuming account certificate slots.
-            throw ExperimentalBackendError.missingPrivateKey
+
+            recordIdentity(
+                .privateKeyMissing,
+                generation: generation,
+                tag: owned.keyApplicationTag,
+                osStatus: lookup.status
+            )
+            recordIdentity(.managedIdentityStale, generation: generation, tag: owned.keyApplicationTag)
+            guard lookup.status == errSecItemNotFound else {
+                throw ExperimentalBackendError.missingPrivateKey
+            }
+            guard availableQuantity != 0 else { throw ExperimentalBackendError.certificateLimit }
+            recordIdentity(.managedIdentityRecoveryStarted, generation: generation, tag: owned.keyApplicationTag)
+            return try await createManagedIdentity(team: team, generation: generation, recovering: true)
         }
 
-        if integer(response["availableQuantity"]) == 0 {
-            throw ExperimentalBackendError.certificateLimit
-        }
+        recordIdentity(
+            .managedIdentityMetadataMissing,
+            generation: generation,
+            counts: ["developmentCertificateCount": certificates.count]
+        )
+        guard availableQuantity != 0 else { throw ExperimentalBackendError.certificateLimit }
+        return try await createManagedIdentity(team: team, generation: generation, recovering: false)
+    }
 
-        let tag = Data("com.iossim.personal-team.\(team.id).\(UUID().uuidString)".utf8)
-        let key = try createSigningKey(applicationTag: tag)
-        try metadataStore.save(IOSSimIdentityMetadata(
+    private func createManagedIdentity(
+        team: ExperimentalAppleTeam,
+        generation: UInt64,
+        recovering: Bool
+    ) async throws -> ExperimentalSigningIdentity {
+        let tag = Data("com.iossim.personal-team.\(team.id).\(UUID().uuidString.uppercased())".utf8)
+        let key = try identityKeychain.createPrivateKey(applicationTag: tag)
+        recordIdentity(.keypairCreated, generation: generation, tag: tag)
+        let createdAt = Date()
+        try identityKeychain.save(IOSSimIdentityMetadata(
             teamIdentifier: team.id,
             certificateFingerprint: nil,
             certificateSerial: nil,
             certificateExpiration: nil,
             keyApplicationTag: tag,
-            createdAt: Date(),
+            createdAt: createdAt,
             generatedByIOSSim: true
         ))
+        return try await requestDevelopmentIdentity(
+            key: key,
+            tag: tag,
+            createdAt: createdAt,
+            team: team,
+            generation: generation,
+            recovering: recovering
+        )
+    }
+
+    private func requestDevelopmentIdentity(
+        key: SecKey,
+        tag: Data,
+        createdAt: Date,
+        team: ExperimentalAppleTeam,
+        generation: UInt64,
+        recovering: Bool
+    ) async throws -> ExperimentalSigningIdentity {
         let csr = try createCertificateSigningRequest(key: key)
+        recordIdentity(.csrCreated, generation: generation, tag: tag)
         var submittedCertificate: [String: Any]?
         do {
             let submitted = try await developerRequest(
@@ -975,6 +1160,16 @@ extension LiveApplePersonalTeamBackend {
         var match = submittedCertificate.flatMap {
             matchingCertificate(in: [$0], key: key, teamIdentifier: team.id)
         }
+        if let submittedCertificate, certificateData(submittedCertificate) != nil {
+            recordIdentity(.certificateFound, generation: generation, tag: tag)
+            recordIdentity(
+                .certificatePublicKeyMatch,
+                generation: generation,
+                tag: tag,
+                fingerprint: match?.fingerprint,
+                flags: ["certificatePublicKeyMatchesPrivateKey": match != nil]
+            )
+        }
         if match == nil {
             let refreshed = try await developerRequest(
                 operation: "ios/listAllDevelopmentCerts",
@@ -989,32 +1184,83 @@ extension LiveApplePersonalTeamBackend {
         guard let match else {
             throw ExperimentalBackendError.certificateRequestFailed
         }
-        let addStatus = SecItemAdd([
-            kSecClass as String: kSecClassCertificate,
-            kSecValueRef as String: match.certificate,
-            kSecAttrLabel as String: "IOSSim Apple Development \(team.id)"
-        ] as CFDictionary, nil)
-        guard addStatus == errSecSuccess || addStatus == errSecDuplicateItem else {
+        recordIdentity(
+            .certificateFound,
+            generation: generation,
+            tag: tag,
+            fingerprint: match.fingerprint
+        )
+        recordIdentity(
+            .developmentCertificateCreated,
+            generation: generation,
+            tag: tag,
+            fingerprint: match.fingerprint,
+            flags: ["certificatePublicKeyMatchesPrivateKey": true]
+        )
+        return try finishManagedIdentity(
+            match,
+            key: key,
+            tag: tag,
+            createdAt: createdAt,
+            team: team,
+            generation: generation,
+            reused: false,
+            recovered: recovering
+        )
+    }
+
+    private func finishManagedIdentity(
+        _ match: MatchedDevelopmentCertificate,
+        key: SecKey,
+        tag: Data,
+        createdAt: Date,
+        team: ExperimentalAppleTeam,
+        generation: UInt64,
+        reused: Bool,
+        recovered: Bool
+    ) throws -> ExperimentalSigningIdentity {
+        guard certificatePublicKeyMatchesPrivateKey(match.certificate, privateKey: key) else {
+            recordIdentity(
+                .certificatePublicKeyMatch,
+                generation: generation,
+                tag: tag,
+                fingerprint: match.fingerprint,
+                flags: ["certificatePublicKeyMatchesPrivateKey": false]
+            )
             throw ExperimentalBackendError.certificateRequestFailed
         }
-        let metadata = IOSSimIdentityMetadata(
+        try identityKeychain.addCertificate(match.certificate, teamIdentifier: team.id)
+        try identityKeychain.save(IOSSimIdentityMetadata(
             teamIdentifier: team.id,
             certificateFingerprint: match.fingerprint,
             certificateSerial: match.serial,
             certificateExpiration: match.expiration,
             keyApplicationTag: tag,
-            createdAt: Date(),
+            createdAt: createdAt,
             generatedByIOSSim: true
-        )
-        try metadataStore.save(metadata)
-        let persistent = try keyPersistentReference(applicationTag: tag)
-        record(.signingIdentityCreated, stage: "certificate")
+        ))
+        let persistent = try identityKeychain.persistentReference(applicationTag: tag)
+        record(reused ? .signingIdentityReused : .signingIdentityCreated, stage: "certificate")
         diagnostics.update(adapterVersion: adapter.version) { $0.certificateFingerprint = match.fingerprint }
+        if recovered {
+            recordIdentity(
+                .managedIdentityRecoverySucceeded,
+                generation: generation,
+                tag: tag,
+                fingerprint: match.fingerprint
+            )
+        }
+        recordIdentity(
+            .provisioningPreparationContinued,
+            generation: generation,
+            tag: tag,
+            fingerprint: match.fingerprint
+        )
         return ExperimentalSigningIdentity(
             certificateFingerprint: match.fingerprint,
             certificateExpiration: match.expiration,
             privateKeyPersistentReference: persistent,
-            reused: false
+            reused: reused
         )
     }
 
@@ -1207,20 +1453,47 @@ private struct MatchedDevelopmentCertificate {
     let expiration: Date
 }
 
+private func rememberedCertificate(
+    in certificates: [[String: Any]],
+    metadata: IOSSimIdentityMetadata
+) -> [String: Any]? {
+    certificates.first { certificate in
+        if let expected = metadata.certificateSerial,
+           certificateString(certificate, names: ["serialNumber", "serialNum"]) == expected {
+            return true
+        }
+        guard let expected = metadata.certificateFingerprint else { return false }
+        return certificateData(certificate).map(certificateFingerprint) == expected
+    }
+}
+
+func canonicalManagedKeyTag(_ data: Data, teamIdentifier: String) -> String? {
+    guard let value = String(data: data, encoding: .utf8), Data(value.utf8) == data else { return nil }
+    let prefix = "com.iossim.personal-team.\(teamIdentifier)."
+    guard value.hasPrefix(prefix), UUID(uuidString: String(value.dropFirst(prefix.count))) != nil else { return nil }
+    return value
+}
+
+func certificatePublicKeyMatchesPrivateKey(_ certificate: SecCertificate, privateKey: SecKey) -> Bool {
+    guard let localPublicKey = SecKeyCopyPublicKey(privateKey),
+          let localBytes = SecKeyCopyExternalRepresentation(localPublicKey, nil) as Data?,
+          let certificateKey = SecCertificateCopyKey(certificate),
+          let certificateBytes = SecKeyCopyExternalRepresentation(certificateKey, nil) as Data? else {
+        return false
+    }
+    return constantTimeEqual(localBytes, certificateBytes)
+}
+
 private func matchingCertificate(
     in certificates: [[String: Any]],
     key: SecKey,
     teamIdentifier: String
 ) -> MatchedDevelopmentCertificate? {
-    guard let localPublicKey = SecKeyCopyPublicKey(key),
-          let localBytes = SecKeyCopyExternalRepresentation(localPublicKey, nil) as Data? else { return nil }
     for object in certificates {
         guard let der = certificateData(object), der.count <= 64 * 1_024,
               let certificate = SecCertificateCreateWithData(nil, der as CFData),
               certificateTeamIdentifiers(certificate).contains(teamIdentifier),
-              let certificateKey = SecCertificateCopyKey(certificate),
-              let certificateBytes = SecKeyCopyExternalRepresentation(certificateKey, nil) as Data?,
-              constantTimeEqual(localBytes, certificateBytes),
+              certificatePublicKeyMatchesPrivateKey(certificate, privateKey: key),
               let expiration = certificateExpiration(certificate), expiration > Date() else { continue }
         return MatchedDevelopmentCertificate(
             certificate: certificate,
@@ -1232,80 +1505,43 @@ private func matchingCertificate(
     return nil
 }
 
-private func certificateTeamIdentifiers(_ certificate: SecCertificate) -> Set<String> {
+func certificateTeamIdentifiers(_ certificate: SecCertificate) -> Set<String> {
     guard let values = SecCertificateCopyValues(
         certificate,
-        [kSecOIDOrganizationalUnitName] as CFArray,
+        [kSecOIDX509V1SubjectName] as CFArray,
         nil
     ) as? [CFString: Any],
-    let property = values[kSecOIDOrganizationalUnitName] else { return [] }
-    var strings: Set<String> = []
-    func collect(_ value: Any) {
-        if let value = value as? String { strings.insert(value); return }
-        if let array = value as? [Any] { array.forEach(collect); return }
-        if let dictionary = value as? [CFString: Any] { dictionary.values.forEach(collect) }
+    let property = values[kSecOIDX509V1SubjectName] as? [CFString: Any],
+    let subject = property[kSecPropertyKeyValue] as? [Any] else { return [] }
+    var teamIdentifiers: Set<String> = []
+    for field in subject {
+        guard let field = field as? [CFString: Any],
+              let label = field[kSecPropertyKeyLabel] as? String,
+              label == "2.5.4.11",
+              let value = field[kSecPropertyKeyValue] as? String,
+              !value.isEmpty else { continue }
+        teamIdentifiers.insert(value)
     }
-    collect(property)
-    return strings
+    return teamIdentifiers
 }
 
 private func certificateFingerprint(_ data: Data) -> String {
     Data(SHA256.hash(data: data)).map { String(format: "%02X", $0) }.joined()
 }
 
-private func certificateExpiration(_ certificate: SecCertificate) -> Date? {
+func certificateExpiration(_ certificate: SecCertificate) -> Date? {
     guard let values = SecCertificateCopyValues(
         certificate,
         [kSecOIDX509V1ValidityNotAfter] as CFArray,
         nil
     ) as? [CFString: Any],
     let property = values[kSecOIDX509V1ValidityNotAfter] as? [CFString: Any] else { return nil }
-    return property[kSecPropertyKeyValue] as? Date
-}
-
-private func keyReference(applicationTag: Data) -> SecKey? {
-    let query: [String: Any] = [
-        kSecClass as String: kSecClassKey,
-        kSecAttrApplicationTag as String: applicationTag,
-        kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-        kSecReturnRef as String: true,
-        kSecMatchLimit as String: kSecMatchLimitOne
-    ]
-    var result: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-    return (result as! SecKey)
-}
-
-private func keyPersistentReference(applicationTag: Data) throws -> Data {
-    let query: [String: Any] = [
-        kSecClass as String: kSecClassKey,
-        kSecAttrApplicationTag as String: applicationTag,
-        kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-        kSecReturnPersistentRef as String: true,
-        kSecMatchLimit as String: kSecMatchLimitOne
-    ]
-    var result: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-          let data = result as? Data else { throw ExperimentalBackendError.missingPrivateKey }
-    return data
-}
-
-private func createSigningKey(applicationTag: Data) throws -> SecKey {
-    let attributes: [String: Any] = [
-        kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-        kSecAttrKeySizeInBits as String: 2_048,
-        kSecPrivateKeyAttrs as String: [
-            kSecAttrIsPermanent as String: true,
-            kSecAttrApplicationTag as String: applicationTag,
-            kSecAttrLabel as String: "IOSSim Personal Team Signing Key",
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        ]
-    ]
-    var error: Unmanaged<CFError>?
-    guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
-        throw ExperimentalBackendError.certificateRequestFailed
+    let value = property[kSecPropertyKeyValue]
+    if let date = value as? Date { return date }
+    if let absoluteTime = value as? NSNumber {
+        return Date(timeIntervalSinceReferenceDate: absoluteTime.doubleValue)
     }
-    return key
+    return nil
 }
 
 private func createCertificateSigningRequest(key: SecKey) throws -> String {
@@ -1522,10 +1758,12 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
     private let machineIdentity: any AppleMachineIdentityProviding
     private let sessionStore: any AppleAuthorizationSessionStoring
     private let diagnostics: ApplePersonalTeamDiagnosticsStore
+    private let identityKeychain: any IOSSimManagedIdentityKeychain
     private let srpRandomBytesForTesting: Data?
     private var session: LiveSessionEnvelope?
     private var pendingTwoFactor: PendingTwoFactor?
     private var appIdentifierIDs: [String: String] = [:]
+    private var identityGeneration: UInt64 = 0
 
     public init(
         adapter: PrivateAppleProtocolAdapter = .researched2026,
@@ -1539,6 +1777,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         self.machineIdentity = machineIdentity
         self.sessionStore = sessionStore
         self.diagnostics = diagnostics
+        identityKeychain = IOSSimIdentityMetadataStore()
         srpRandomBytesForTesting = nil
         clientIdentityVersion = adapter.version
     }
@@ -1549,13 +1788,15 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         machineIdentity: any AppleMachineIdentityProviding,
         sessionStore: any AppleAuthorizationSessionStoring,
         diagnostics: ApplePersonalTeamDiagnosticsStore,
-        srpRandomBytesForTesting: Data
+        srpRandomBytesForTesting: Data,
+        identityKeychain: any IOSSimManagedIdentityKeychain = IOSSimIdentityMetadataStore()
     ) {
         self.adapter = adapter
         self.transport = transport
         self.machineIdentity = machineIdentity
         self.sessionStore = sessionStore
         self.diagnostics = diagnostics
+        self.identityKeychain = identityKeychain
         self.srpRandomBytesForTesting = srpRandomBytesForTesting
         clientIdentityVersion = adapter.version
     }
@@ -2227,6 +2468,38 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                 timestamp: Date(), checkpoint: checkpoint.rawValue, stage: stage,
                 safeErrorCode: nil, httpStatus: nil, appleErrorCode: nil, retryAfterSeconds: nil,
                 retryable: false, reauthorizationRequired: false
+            ))
+        }
+    }
+
+    private func recordIdentity(
+        _ checkpoint: ApplePersonalTeamCheckpoint,
+        generation: UInt64,
+        tag: Data? = nil,
+        fingerprint: String? = nil,
+        osStatus: OSStatus? = nil,
+        counts: [String: Int]? = nil,
+        flags: [String: Bool]? = nil
+    ) {
+        let tagIdentifier = tag.flatMap { String(data: $0, encoding: .utf8) }
+            .flatMap { $0.utf8.count <= 256 ? $0 : nil }
+        diagnostics.update(adapterVersion: adapter.version) {
+            $0.events.append(.init(
+                timestamp: Date(),
+                checkpoint: checkpoint.rawValue,
+                stage: "managedSigningIdentity",
+                safeErrorCode: nil,
+                httpStatus: nil,
+                appleErrorCode: nil,
+                retryAfterSeconds: nil,
+                retryable: false,
+                reauthorizationRequired: false,
+                nonSecretIntegers: counts,
+                continuity: flags,
+                generationID: generation,
+                osStatus: osStatus.map(Int.init),
+                keyApplicationTagIdentifier: tagIdentifier,
+                certificateFingerprintPrefix: fingerprint.map { String($0.prefix(12)) }
             ))
         }
     }
