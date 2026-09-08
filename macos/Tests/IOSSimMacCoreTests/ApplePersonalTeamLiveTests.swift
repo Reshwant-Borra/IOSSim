@@ -254,6 +254,110 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertFalse(checkpoints.contains("APPLE_AUTH_PASSWORD_ACCEPTED"))
     }
 
+    func testHTTP200Minus22406IsApplicationCredentialRejection() async throws {
+        let challenge: [String: Any] = [
+            "Status": ["ec": 0, "hsc": 200],
+            "sp": "s2k_fo",
+            "s": Data(repeating: 1, count: 16),
+            "i": 1_000,
+            "B": Data(repeating: 2, count: 256),
+            "c": "fixture-cookie"
+        ]
+        let transport = ScriptedAppleTransport([
+            .plist(["Response": challenge]),
+            .plist(["Response": [
+                "Status": [
+                    "ec": -22406,
+                    "hsc": 401,
+                    "em": "Enter the correct password for this Apple Account."
+                ]
+            ]], status: 200)
+        ])
+        let diagnosticsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-live-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: diagnosticsURL) }
+        let diagnostics = ApplePersonalTeamDiagnosticsStore(url: diagnosticsURL)
+        let backend = LiveApplePersonalTeamBackend(
+            transport: transport,
+            machineIdentity: FixtureMachineIdentity(),
+            sessionStore: MemoryAuthorizationSessionStore(),
+            diagnostics: diagnostics
+        )
+        let password = SensitiveInput("synthetic-password")
+
+        do {
+            _ = try await backend.beginAuthorization(
+                account: "fixture.user@example.invalid",
+                password: password
+            )
+            XCTFail("Expected the replayed GrandSlam credential rejection")
+        } catch {
+            XCTAssertEqual(error as? ExperimentalBackendError, .badPassword)
+        }
+
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.count, 2)
+        let completeRoot = try XCTUnwrap(try parseApplePlist(XCTUnwrap(requests[1].httpBody)))
+        let complete = try XCTUnwrap(completeRoot["Request"] as? [String: Any])
+        XCTAssertEqual(complete["o"] as? String, "complete")
+        XCTAssertEqual((complete["M1"] as? Data)?.count, 32)
+
+        let events = try XCTUnwrap(diagnostics.load()?.events)
+        XCTAssertEqual(events.compactMap(\.checkpoint), [
+            "APPLE_AUTH_STARTED",
+            "APPLE_AUTH_CHALLENGE_RECEIVED"
+        ])
+        let failure = try XCTUnwrap(events.last)
+        XCTAssertEqual(failure.stage, "authentication")
+        XCTAssertEqual(failure.safeErrorCode, "APPLE_AUTH_REJECTED")
+        XCTAssertEqual(failure.httpStatus, 200)
+        XCTAssertEqual(failure.appleErrorCode, -22406)
+        XCTAssertFalse(failure.retryable)
+        XCTAssertTrue(failure.reauthorizationRequired)
+    }
+
+    func testMixedCaseAccountIsCanonicalizedForEntireSRPExchange() async throws {
+        let challenge: [String: Any] = [
+            "Status": ["ec": 0, "hsc": 200],
+            "sp": "s2k",
+            "s": Data(repeating: 1, count: 16),
+            "i": 1_000,
+            "B": Data(repeating: 2, count: 256),
+            "c": "fixture-cookie"
+        ]
+        let transport = ScriptedAppleTransport([
+            .plist(["Response": challenge]),
+            .plist(["Response": ["Status": ["ec": 0, "hsc": 200]]])
+        ])
+        let diagnosticsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-live-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: diagnosticsURL) }
+        let backend = LiveApplePersonalTeamBackend(
+            transport: transport,
+            machineIdentity: FixtureMachineIdentity(),
+            sessionStore: MemoryAuthorizationSessionStore(),
+            diagnostics: ApplePersonalTeamDiagnosticsStore(url: diagnosticsURL)
+        )
+
+        do {
+            _ = try await backend.beginAuthorization(
+                account: "  Fixture.User@Example.Invalid  ",
+                password: SensitiveInput("synthetic-password")
+            )
+            XCTFail("Expected the synthetic success envelope to stop before M2 validation")
+        } catch {
+            XCTAssertEqual(error as? ExperimentalBackendError, .authenticationProtocolMismatch)
+        }
+
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.count, 2)
+        for request in requests {
+            let root = try XCTUnwrap(try parseApplePlist(XCTUnwrap(request.httpBody)))
+            let parameters = try XCTUnwrap(root["Request"] as? [String: Any])
+            XCTAssertEqual(parameters["u"] as? String, "fixture.user@example.invalid")
+        }
+    }
+
     func testDiagnosticsAndRedactorNeverSerializeInjectedSecrets() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("iossim-redaction-test-\(UUID().uuidString).json")

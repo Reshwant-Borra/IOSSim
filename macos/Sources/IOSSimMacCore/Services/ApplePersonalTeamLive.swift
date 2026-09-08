@@ -1322,15 +1322,20 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         account: String,
         password: SensitiveInput
     ) async throws -> ExperimentalAuthorizationResult {
-        let normalized = account.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.contains("@"), normalized.utf8.count <= 1_024, !password.isEmpty else {
+        // GrandSlam looks up Apple Accounts case-insensitively during `init`,
+        // but the selected account name participates in the SRP M1 proof.
+        // Use Apple's canonical lowercase form for the entire exchange so a
+        // mixed-case email cannot receive a challenge and then fail `complete`
+        // with Status.ec = -22406 despite a correct password.
+        let canonicalAccount = account.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard canonicalAccount.contains("@"), canonicalAccount.utf8.count <= 1_024, !password.isEmpty else {
             throw ExperimentalBackendError.authenticationRejected
         }
         record(.authStarted, stage: "startingAuthentication")
         var passwordData = password.withUnsafeBytes { Data($0) }
         defer { passwordData.resetBytes(in: 0..<passwordData.count) }
         do {
-            let outcome = try await authenticate(account: normalized, password: passwordData)
+            let outcome = try await authenticate(account: canonicalAccount, password: passwordData)
             switch outcome {
             case .verification(let pending):
                 pendingTwoFactor?.password.clear()
@@ -1338,7 +1343,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                 record(.twoFactorRequired, stage: "verificationRequired")
                 return .verificationRequired(.init(method: pending.method, safeDestinationHint: nil))
             case .session(let envelope):
-                return try await establishSession(envelope, account: normalized)
+                return try await establishSession(envelope, account: canonicalAccount)
             }
         } catch let failure as AppleServiceFailure {
             recordFailure(failure, stage: "authentication")
