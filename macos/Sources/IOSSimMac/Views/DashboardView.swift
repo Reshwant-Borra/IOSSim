@@ -158,7 +158,7 @@ struct FailureView: View {
                 .foregroundStyle(.secondary)
             HStack {
                 Button("Try Again") {
-                    store.refresh()
+                    store.retryCurrentStep()
                 }
                 .buttonStyle(.borderedProminent)
                 if store.status?.device.devices.isEmpty == false {

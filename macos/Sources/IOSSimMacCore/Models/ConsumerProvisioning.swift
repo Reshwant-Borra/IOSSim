@@ -32,10 +32,20 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
     case runtimeConfigurationPrepared = "RUNTIME_CONFIGURATION_PREPARED"
     case waitingForDevice = "WAITING_FOR_DEVICE"
     case installingMain = "INSTALLING_MAIN"
+    case mainInstallCommandSucceeded = "MAIN_INSTALL_COMMAND_SUCCEEDED"
     case installingRunner = "INSTALLING_RUNNER"
+    case runnerInstallCommandSucceeded = "RUNNER_INSTALL_COMMAND_SUCCEEDED"
     case verifyingInstallation = "VERIFYING_INSTALLATION"
+    case installInventoryRefresh = "INSTALL_INVENTORY_REFRESH"
+    case installInventoryPending = "INSTALL_INVENTORY_PENDING"
+    case installationVerified = "INSTALLATION_VERIFIED"
+    case developerProfileTrustRequired = "DEVELOPER_PROFILE_TRUST_REQUIRED"
+    case verifyingDeveloperProfileTrust = "VERIFYING_DEVELOPER_PROFILE_TRUST"
+    case developerProfileTrusted = "DEVELOPER_PROFILE_TRUSTED"
     case writingRuntimeConfiguration = "WRITING_RUNTIME_CONFIGURATION"
+    case runtimeConfigurationWritten = "RUNTIME_CONFIGURATION_WRITTEN"
     case verifyingRuntimeConfiguration = "VERIFYING_RUNTIME_CONFIGURATION"
+    case runtimeConfigurationVerified = "RUNTIME_CONFIGURATION_VERIFIED"
     case checkingProfileExpiration = "CHECKING_PROFILE_EXPIRATION"
     case waitingForIPhoneSetup = "WAITING_FOR_IPHONE_SETUP"
     case verifyingRuntimeReadiness = "VERIFYING_RUNTIME_READINESS"
@@ -57,10 +67,15 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
             return "Preparing IOSSim"
         case .signingNestedComponents, .signingMain, .signingRunner: return "Signing IOSSim"
         case .verifyingSignatures, .artifactValidationComplete: return "Verifying signed components"
-        case .installingMain: return "Installing IOSSim"
-        case .installingRunner: return "Installing support components"
-        case .verifyingInstallation, .writingRuntimeConfiguration, .verifyingRuntimeConfiguration:
-            return "Verifying installation"
+        case .installingMain, .mainInstallCommandSucceeded: return "Installing IOSSim"
+        case .installingRunner, .runnerInstallCommandSucceeded: return "Installing support components"
+        case .verifyingInstallation, .installInventoryRefresh, .installInventoryPending,
+             .installationVerified: return "Checking installation"
+        case .developerProfileTrustRequired: return "Trust IOSSim on your iPhone"
+        case .verifyingDeveloperProfileTrust, .developerProfileTrusted,
+             .writingRuntimeConfiguration, .runtimeConfigurationWritten,
+             .verifyingRuntimeConfiguration, .runtimeConfigurationVerified:
+            return "Finishing setup"
         case .checkingProfileExpiration: return "Checking refresh schedule"
         case .waitingForIPhoneSetup: return "Finish setup on your iPhone"
         case .verifyingRuntimeReadiness: return "Checking IOSSim readiness"
@@ -76,6 +91,11 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case noIPhoneFound = "NO_IPHONE_FOUND"
     case deviceSelectionRequired = "DEVICE_SELECTION_REQUIRED"
     case deviceUnavailable = "DEVICE_UNAVAILABLE"
+    case deviceLocked = "DEVICE_LOCKED"
+    case computerTrustRequired = "COMPUTER_TRUST_REQUIRED"
+    case developerProfileTrustRequired = "DEVELOPER_PROFILE_TRUST_REQUIRED"
+    case developerProfileTrustVerificationFailed = "DEVELOPER_PROFILE_TRUST_VERIFICATION_FAILED"
+    case developerModeRequired = "DEVELOPER_MODE_REQUIRED"
     case developerModeOff = "DEVELOPER_MODE_OFF"
     case appleAccountMissing = "APPLE_ACCOUNT_MISSING"
     case personalTeamUnavailable = "PERSONAL_TEAM_UNAVAILABLE"
@@ -102,6 +122,9 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case runnerNestedSignatureFailure = "RUNNER_NESTED_SIGNATURE_FAILURE"
     case mainInstallFailure = "MAIN_INSTALL_FAILURE"
     case runnerInstallFailure = "RUNNER_INSTALL_FAILURE"
+    case installCommandFailed = "INSTALL_COMMAND_FAILED"
+    case installInventoryPending = "INSTALL_INVENTORY_PENDING"
+    case installVerificationFailed = "INSTALL_VERIFICATION_FAILED"
     case runnerMappingMissing = "RUNNER_MAPPING_MISSING"
     case runnerNotInstalled = "RUNNER_NOT_INSTALLED"
     case duplicateRunner = "DUPLICATE_RUNNER"
@@ -110,6 +133,10 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case profileNearExpiry = "PROFILE_NEAR_EXPIRY"
     case deviceNotIncluded = "DEVICE_NOT_INCLUDED"
     case runtimeVerificationFailed = "RUNTIME_VERIFICATION_FAILED"
+    case runtimeConfigurationWriteFailed = "RUNTIME_CONFIGURATION_WRITE_FAILED"
+    case runtimeConfigurationReadbackFailed = "RUNTIME_CONFIGURATION_READBACK_FAILED"
+    case staleTeamState = "STALE_TEAM_STATE"
+    case crossTeamInstallConflict = "CROSS_TEAM_INSTALL_CONFLICT"
     case artifactInvalid = "ARTIFACT_INVALID"
     case manifestCorrupt = "MANIFEST_CORRUPT"
     case operationInProgress = "OPERATION_IN_PROGRESS"
@@ -222,19 +249,22 @@ public struct ConsumerProvisioningRequest: Codable, Equatable, Sendable {
     public let selectedTeamIdentifier: String
     public let allowFreshInstallAfterCrossTeamConflict: Bool
     public let backend: ConsumerProvisioningBackendIdentifier
+    public let generation: UInt64?
 
     public init(
         operation: ConsumerProvisioningOperation,
         selectedDeviceIdentifier: String,
         selectedTeamIdentifier: String,
         allowFreshInstallAfterCrossTeamConflict: Bool = false,
-        backend: ConsumerProvisioningBackendIdentifier = .xcodeFallback
+        backend: ConsumerProvisioningBackendIdentifier = .xcodeFallback,
+        generation: UInt64? = nil
     ) {
         self.operation = operation
         self.selectedDeviceIdentifier = selectedDeviceIdentifier
         self.selectedTeamIdentifier = selectedTeamIdentifier
         self.allowFreshInstallAfterCrossTeamConflict = allowFreshInstallAfterCrossTeamConflict
         self.backend = backend
+        self.generation = generation
     }
 }
 
@@ -285,6 +315,77 @@ public enum RuntimeSetupStatus: String, Codable, Equatable, Sendable {
     case needsAttention = "NEEDS_ATTENTION"
 }
 
+public enum ConsumerSetupCheckpoint: String, Codable, Equatable, Sendable, CaseIterable {
+    case installCommandsSucceeded = "INSTALL_COMMANDS_SUCCEEDED"
+    case installationVerified = "INSTALLATION_VERIFIED"
+    case developerProfileTrustRequired = "DEVELOPER_PROFILE_TRUST_REQUIRED"
+    case runtimeConfigurationWritten = "RUNTIME_CONFIGURATION_WRITTEN"
+    case runtimeConfigurationVerified = "RUNTIME_CONFIGURATION_VERIFIED"
+    case complete = "COMPLETE"
+
+    public var installationIsVerified: Bool {
+        self != .installCommandsSucceeded
+    }
+
+    public var runtimeConfigurationIsVerified: Bool {
+        self == .runtimeConfigurationVerified || self == .complete
+    }
+}
+
+public enum DeveloperProfileTrustStatus: String, Codable, Equatable, Sendable {
+    case unknown = "UNKNOWN"
+    case required = "REQUIRED"
+    case trusted = "TRUSTED"
+}
+
+/// One authoritative view of the selected device's post-install application
+/// inventory. Presence is exact-bundle based; stale/canonical apps never count
+/// as the current Personal Team main or runner.
+public struct InstallationInventoryResult: Codable, Equatable, Sendable {
+    public let selectedDeviceMatches: Bool
+    public let inventoryAvailable: Bool
+    public let mainPresent: Bool
+    public let runnerPresent: Bool
+    public let mainBundleIDMatches: Bool
+    public let runnerBundleIDMatches: Bool
+    public let expectedTeamContext: Bool
+    public let staleIOSSimArtifactsPresent: Bool
+    public let retryCount: Int
+    public let elapsedMilliseconds: Int
+    public let safeReason: String
+
+    public init(
+        selectedDeviceMatches: Bool,
+        inventoryAvailable: Bool,
+        mainPresent: Bool,
+        runnerPresent: Bool,
+        mainBundleIDMatches: Bool,
+        runnerBundleIDMatches: Bool,
+        expectedTeamContext: Bool,
+        staleIOSSimArtifactsPresent: Bool,
+        retryCount: Int,
+        elapsedMilliseconds: Int,
+        safeReason: String
+    ) {
+        self.selectedDeviceMatches = selectedDeviceMatches
+        self.inventoryAvailable = inventoryAvailable
+        self.mainPresent = mainPresent
+        self.runnerPresent = runnerPresent
+        self.mainBundleIDMatches = mainBundleIDMatches
+        self.runnerBundleIDMatches = runnerBundleIDMatches
+        self.expectedTeamContext = expectedTeamContext
+        self.staleIOSSimArtifactsPresent = staleIOSSimArtifactsPresent
+        self.retryCount = retryCount
+        self.elapsedMilliseconds = elapsedMilliseconds
+        self.safeReason = safeReason
+    }
+
+    public var verified: Bool {
+        selectedDeviceMatches && inventoryAvailable && mainPresent && runnerPresent
+            && mainBundleIDMatches && runnerBundleIDMatches && expectedTeamContext
+    }
+}
+
 public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
 
@@ -311,6 +412,12 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
     public let appVersion: String
     public let provisionerVersion: String
     public let trueRenewalPhysicallyValidated: Bool
+    /// Optional for backward compatibility with physically proven schema-v1
+    /// manifests written before setup checkpoints were introduced.
+    public let setupCheckpoint: ConsumerSetupCheckpoint?
+    public let installationInventory: InstallationInventoryResult?
+    public let developerProfileTrustStatus: DeveloperProfileTrustStatus?
+    public let operationGeneration: UInt64?
 
     public init(
         schemaVersion: Int = currentSchemaVersion,
@@ -335,7 +442,11 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
         lastRuntimeHealthCheck: Date? = nil,
         appVersion: String,
         provisionerVersion: String,
-        trueRenewalPhysicallyValidated: Bool = false
+        trueRenewalPhysicallyValidated: Bool = false,
+        setupCheckpoint: ConsumerSetupCheckpoint? = nil,
+        installationInventory: InstallationInventoryResult? = nil,
+        developerProfileTrustStatus: DeveloperProfileTrustStatus? = nil,
+        operationGeneration: UInt64? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.deviceIdentifierSafe = deviceIdentifierSafe
@@ -360,6 +471,16 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
         self.appVersion = appVersion
         self.provisionerVersion = provisionerVersion
         self.trueRenewalPhysicallyValidated = trueRenewalPhysicallyValidated
+        self.setupCheckpoint = setupCheckpoint
+        self.installationInventory = installationInventory
+        self.developerProfileTrustStatus = developerProfileTrustStatus
+        self.operationGeneration = operationGeneration
+    }
+
+    /// Legacy manifests were only written after launch and runtime mapping
+    /// readback succeeded, so their deepest safe checkpoint is runtime verified.
+    public var effectiveSetupCheckpoint: ConsumerSetupCheckpoint {
+        setupCheckpoint ?? (runtimeSetupStatus == .ready ? .complete : .runtimeConfigurationVerified)
     }
 
     public var earliestExpiration: Date? {
@@ -393,7 +514,11 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
             lastRuntimeHealthCheck: checkedAt,
             appVersion: appVersion,
             provisionerVersion: provisionerVersion,
-            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
+            setupCheckpoint: status == .ready ? .complete : setupCheckpoint,
+            installationInventory: installationInventory,
+            developerProfileTrustStatus: developerProfileTrustStatus,
+            operationGeneration: operationGeneration
         )
     }
 
@@ -421,7 +546,47 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
             lastRuntimeHealthCheck: lastRuntimeHealthCheck,
             appVersion: appVersion,
             provisionerVersion: provisionerVersion,
-            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
+            setupCheckpoint: setupCheckpoint,
+            installationInventory: installationInventory,
+            developerProfileTrustStatus: developerProfileTrustStatus,
+            operationGeneration: operationGeneration
+        )
+    }
+
+    public func updatingSetupCheckpoint(
+        _ checkpoint: ConsumerSetupCheckpoint,
+        inventory: InstallationInventoryResult? = nil,
+        developerProfileTrustStatus: DeveloperProfileTrustStatus? = nil
+    ) -> ConsumerProvisioningManifest {
+        ConsumerProvisioningManifest(
+            schemaVersion: schemaVersion,
+            deviceIdentifierSafe: deviceIdentifierSafe,
+            deviceIdentifierHash: deviceIdentifierHash,
+            deviceName: deviceName,
+            deviceModel: deviceModel,
+            deviceOSVersion: deviceOSVersion,
+            teamID: teamID,
+            sourceMainBundleID: sourceMainBundleID,
+            installedMainBundleID: installedMainBundleID,
+            sourceUITestBundleID: sourceUITestBundleID,
+            installedUITestBundleID: installedUITestBundleID,
+            sourceRunnerBundleID: sourceRunnerBundleID,
+            installedRunnerBundleID: installedRunnerBundleID,
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: lastInstallDate,
+            lastRefreshAttempt: lastRefreshAttempt,
+            lastRefreshSuccess: lastRefreshSuccess,
+            runtimeSetupStatus: runtimeSetupStatus,
+            lastRuntimeHealthCheck: lastRuntimeHealthCheck,
+            appVersion: appVersion,
+            provisionerVersion: provisionerVersion,
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
+            setupCheckpoint: checkpoint,
+            installationInventory: inventory ?? installationInventory,
+            developerProfileTrustStatus: developerProfileTrustStatus ?? self.developerProfileTrustStatus,
+            operationGeneration: operationGeneration
         )
     }
 }
@@ -491,6 +656,8 @@ public struct ProvisioningLogEvent: Codable, Equatable, Sendable, Identifiable {
     public let errorCode: ConsumerProvisioningErrorCode?
     public let durationMilliseconds: Int?
     public let detail: String?
+    public let generation: UInt64?
+    public let resumeCheckpoint: ConsumerSetupCheckpoint?
 
     public init(
         id: UUID = UUID(),
@@ -501,7 +668,9 @@ public struct ProvisioningLogEvent: Codable, Equatable, Sendable, Identifiable {
         result: ProvisioningLogResult,
         errorCode: ConsumerProvisioningErrorCode? = nil,
         durationMilliseconds: Int? = nil,
-        detail: String? = nil
+        detail: String? = nil,
+        generation: UInt64? = nil,
+        resumeCheckpoint: ConsumerSetupCheckpoint? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -512,12 +681,24 @@ public struct ProvisioningLogEvent: Codable, Equatable, Sendable, Identifiable {
         self.errorCode = errorCode
         self.durationMilliseconds = durationMilliseconds
         self.detail = detail.map(Redactor.redact)
+        self.generation = generation
+        self.resumeCheckpoint = resumeCheckpoint
     }
 }
 
 public enum ConsumerProvisioningErrorClassifier {
     public static func installErrorCode(output: String, artifact: String) -> ConsumerProvisioningErrorCode {
         let lower = output.lowercased()
+        if lower.contains("locked") || lower.contains("passcode") && lower.contains("required") {
+            return .deviceLocked
+        }
+        if lower.contains("developer mode") && (lower.contains("disabled") || lower.contains("required")) {
+            return .developerModeRequired
+        }
+        if lower.contains("not paired") || lower.contains("trust this computer")
+            || lower.contains("pairing") && lower.contains("trust") {
+            return .computerTrustRequired
+        }
         if lower.contains("mismatchedapplicationidentifierentitlement")
             || lower.contains("application-identifier") && lower.contains("does not match") {
             return .crossTeamUpgradeBlocked
@@ -533,6 +714,23 @@ public enum ConsumerProvisioningErrorClassifier {
             return .deviceUnavailable
         }
         return artifact == "main" ? .mainInstallFailure : .runnerInstallFailure
+    }
+
+    /// Classifies the structured CoreDevice/FBS error chain observed on the
+    /// physical iPhone. The profile-trust result requires domain/code evidence,
+    /// the Security reason, and the explicit profile-trust diagnostic; a generic
+    /// launch denial is deliberately not enough.
+    public static func launchErrorCode(output: String) -> ConsumerProvisioningErrorCode {
+        let lower = output.lowercased()
+        if lower.contains("coredeviceerror error 10002")
+            && lower.contains("fbsopenapplicationerrordomain error 3")
+            && lower.contains("bserrorcodedescription = security")
+            && lower.contains("profile has not been explicitly trusted") {
+            return .developerProfileTrustRequired
+        }
+        return installErrorCode(output: output, artifact: "main") == .mainInstallFailure
+            ? .runtimeConfigurationWriteFailed
+            : installErrorCode(output: output, artifact: "main")
     }
 
     public static func signingErrorCode(output: String) -> ConsumerProvisioningErrorCode {

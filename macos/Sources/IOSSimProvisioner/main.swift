@@ -135,6 +135,8 @@ struct ProvisionerTool {
                 return 0
             case "consumer-provision":
                 return await consumerProvision(arguments: Array(args.dropFirst()), context: context)
+            case "consumer-resume-setup":
+                return await consumerProvision(arguments: Array(args.dropFirst()), context: context, resume: true)
             case "support-bundle":
                 guard let output = optionValue("--output", in: Array(args.dropFirst())) else {
                     fputs("SUPPORT_OUTPUT_REQUIRED: provide --output <path>.\n", stderr)
@@ -475,11 +477,16 @@ struct ProvisionerTool {
           consumer-status --json
           consumer-runtime-ready --json
           consumer-provision --operation install|refresh|repair --device <id> --team <team-id> [--backend NATIVE_PERSONAL_TEAM|XCODE_FALLBACK]
+          consumer-resume-setup --operation install|refresh|repair --device <id> --team <team-id> [--generation <id>]
           support-bundle --output <zip-path> --json
         """)
     }
 
-    private func consumerProvision(arguments: [String], context: RuntimeProvisioningContext) async -> Int32 {
+    private func consumerProvision(
+        arguments: [String],
+        context: RuntimeProvisioningContext,
+        resume: Bool = false
+    ) async -> Int32 {
         guard let rawOperation = optionValue("--operation", in: arguments),
               let operation = ConsumerProvisioningOperation(rawValue: rawOperation.uppercased()),
               let device = optionValue("--device", in: arguments), !device.isEmpty,
@@ -519,9 +526,11 @@ struct ProvisionerTool {
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
                 allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install"),
-                backend: backend
+                backend: backend,
+                generation: optionValue("--generation", in: arguments).flatMap(UInt64.init)
             )
-            let result = try await ConsumerArtifactProvisioner(context: context).provision(request)
+            let provisioner = ConsumerArtifactProvisioner(context: context)
+            let result = try await (resume ? provisioner.resumeSetup(request) : provisioner.provision(request))
             try printJSON(ProvisionerOutput(
                 ok: true,
                 schemaVersion: RuntimeProvisioning.helperSchemaVersion,

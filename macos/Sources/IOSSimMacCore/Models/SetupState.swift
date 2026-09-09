@@ -9,6 +9,7 @@ public enum SetupPhase: String, Equatable, Sendable, CaseIterable {
     case deviceActionRequired
     case appleAccount
     case installing
+    case developerProfileTrust
     case runtimeSetup
     case verifying
     case complete
@@ -22,7 +23,7 @@ public enum SetupPhase: String, Equatable, Sendable, CaseIterable {
         case .checkingDevice, .deviceActionRequired: return 4
         case .appleAccount: return 5
         case .installing, .verifying: return 6
-        case .runtimeSetup: return 7
+        case .developerProfileTrust, .runtimeSetup: return 7
         case .complete: return 8
         case .failed: return 0
         }
@@ -38,6 +39,7 @@ public enum SetupPhase: String, Equatable, Sendable, CaseIterable {
         case .deviceActionRequired: return "Action Required"
         case .appleAccount: return "Apple Account"
         case .installing: return "Install IOSSim"
+        case .developerProfileTrust: return "Trust IOSSim"
         case .runtimeSetup: return "Runtime Setup"
         case .verifying: return "Verify"
         case .complete: return "Complete"

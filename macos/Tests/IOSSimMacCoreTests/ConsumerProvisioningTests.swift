@@ -189,7 +189,8 @@ final class ConsumerProvisioningTests: XCTestCase {
                 variant: "PRODUCTION",
                 helperSchemaVersion: 1
             ),
-            stateStore: store
+            stateStore: store,
+            authorizationSessionStore: EmptyAuthorizationSessionStore()
         )
         try FileManager.default.createDirectory(at: expandedDirectory, withIntermediateDirectories: true)
         let extraction = try await ProcessRunner().run(
@@ -204,7 +205,8 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertTrue(text.contains("release-commit"))
         XCTAssertTrue(text.contains("0.1.0"))
         XCTAssertTrue(text.contains("PRODUCTION"))
-        XCTAssertTrue(text.contains("Experimental private Apple protocol; physical Personal Team proof is pending"))
+        XCTAssertTrue(text.contains("Physical Personal Team provisioning, signing, main installation, runner installation"))
+        XCTAssertTrue(text.contains("does not claim clean-Mac, no-Xcode, runtime-location, or public-release qualification"))
         XCTAssertFalse(text.contains(rawDevice))
         XCTAssertFalse(text.contains("do-not-export"))
         XCTAssertFalse(text.contains("user@example.com"))
@@ -716,7 +718,324 @@ final class ConsumerProvisioningTests: XCTestCase {
         }
     }
 
-    private func makeNativeHarness(faultPoint: ConsumerProvisioningFaultPoint) async throws -> (
+    func testPhysicalUntrustedDeveloperErrorUsesStructuredTrustClassification() {
+        let physicalError = """
+        ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x2712))
+        The request was denied. (FBSOpenApplicationErrorDomain error 3 (0x03))
+        BSErrorCodeDescription = Security
+        Unable to launch because its profile has not been explicitly trusted by the user.
+        """
+        XCTAssertEqual(
+            ConsumerProvisioningErrorClassifier.launchErrorCode(output: physicalError),
+            .developerProfileTrustRequired
+        )
+        XCTAssertEqual(
+            ConsumerProvisioningErrorClassifier.launchErrorCode(
+                output: "FBSOpenApplicationErrorDomain error 3 BSErrorCodeDescription = Security invalid signature"
+            ),
+            .runtimeConfigurationWriteFailed
+        )
+    }
+
+    func testPostInstallInventoryRetriesMissingMainThenSucceedsWithoutUserFailure() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        let reader = SequenceApplicationInventoryReader([
+            .available([]),
+            .available([ids.runner]),
+            .available([ids.main, ids.runner]),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .immediateTesting
+        )
+
+        let result = try await provisioner.provision(harness.request)
+
+        XCTAssertEqual(result.finalStage, .complete)
+        XCTAssertEqual(result.manifest.installationInventory?.retryCount, 1)
+        let events = await harness.stateStore.loadEvents()
+        XCTAssertTrue(events.contains { $0.stage == .installInventoryPending })
+        XCTAssertFalse(events.contains { $0.result == .failed })
+    }
+
+    func testPostInstallInventoryImmediateExactMatchNeedsNoRetry() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        let reader = SequenceApplicationInventoryReader([
+            .available([]),
+            .available([ids.main, ids.runner]),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .immediateTesting
+        )
+
+        let result = try await provisioner.provision(harness.request)
+        let events = await harness.stateStore.loadEvents()
+
+        XCTAssertEqual(result.manifest.installationInventory?.retryCount, 0)
+        XCTAssertTrue(result.manifest.installationInventory?.verified == true)
+        XCTAssertFalse(events.contains { $0.stage == .installInventoryPending })
+    }
+
+    func testPostInstallInventoryRetriesMainOnlyUntilRunnerAppears() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        let reader = SequenceApplicationInventoryReader([
+            .available([]),
+            .available([ids.main]),
+            .available([ids.main, ids.runner]),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .immediateTesting
+        )
+
+        let result = try await provisioner.provision(harness.request)
+
+        XCTAssertEqual(result.manifest.installationInventory?.safeReason, "exact current main and runner present")
+        XCTAssertEqual(result.manifest.installationInventory?.retryCount, 1)
+    }
+
+    func testPostInstallInventoryBoundProducesVerificationFailureAndResumeCheckpoint() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let reader = SequenceApplicationInventoryReader([.available([])])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .init(backoffNanoseconds: [0, 0])
+        )
+
+        do {
+            _ = try await provisioner.provision(harness.request)
+            XCTFail("Expected bounded inventory failure")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .installVerificationFailed)
+            XCTAssertEqual(failure.stage, .verifyingInstallation)
+        }
+        let checkpoint = try await harness.stateStore.loadManifest()?.effectiveSetupCheckpoint
+        let readCount = await reader.readCount
+        XCTAssertEqual(checkpoint, .installCommandsSucceeded)
+        XCTAssertEqual(readCount, 4) // validation + three bounded post-install reads
+    }
+
+    func testPostInstallInventoryDisconnectTransitionsToWaitingForDevice() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let reader = SequenceApplicationInventoryReader([
+            .available([]),
+            .unavailable(.deviceUnavailable, reason: "device disconnected"),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .immediateTesting
+        )
+
+        do {
+            _ = try await provisioner.provision(harness.request)
+            XCTFail("Expected disconnect")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .deviceUnavailable)
+            XCTAssertEqual(failure.stage, .waitingForDevice)
+        }
+    }
+
+    func testWrongTeamInventoryNeverCountsAsCurrentInstallation() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let stale = try PersonalTeamBundleIdentifierSet(teamIdentifier: "5337SALD55")
+        let reader = SequenceApplicationInventoryReader([.available([stale.main, stale.runner])])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .init(backoffNanoseconds: [0])
+        )
+        do {
+            _ = try await provisioner.provision(harness.request)
+            XCTFail("Expected exact-current inventory failure")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .installedIdentityMigrationRequired)
+        }
+    }
+
+    func testCurrentInventoryOverridesHistoricalTeamManifestWithoutFreshInstall() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        try await harness.stateStore.saveManifest(try makeManifest(team: "5337SALD55", device: harness.physicalUDID))
+        let current = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        let reader = SequenceApplicationInventoryReader([
+            .available([current.main, current.runner]),
+            .available([current.main, current.runner]),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .immediateTesting
+        )
+
+        let result = try await provisioner.provision(harness.request)
+
+        XCTAssertEqual(result.manifest.teamID, harness.team)
+        let evidence = await harness.recorder.evidence()
+        let events = await harness.stateStore.loadEvents()
+        XCTAssertTrue(evidence.uninstalledBundleIdentifiers.isEmpty)
+        XCTAssertTrue(events.contains {
+            $0.errorCode == .staleTeamState && $0.result == .passed
+        })
+    }
+
+    func testRefreshUsesPostInstallInventoryWhenPreInstallInventoryMissesMain() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        try await harness.stateStore.saveManifest(
+            try makeManifest(team: harness.team, device: harness.physicalUDID)
+        )
+        let current = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        let reader = SequenceApplicationInventoryReader([
+            .available([]),
+            .available([current.main, current.runner]),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            inventoryRetryPolicy: .immediateTesting
+        )
+        let request = ConsumerProvisioningRequest(
+            operation: .refresh,
+            selectedDeviceIdentifier: harness.physicalUDID,
+            selectedTeamIdentifier: harness.team,
+            backend: .nativePersonalTeam
+        )
+
+        let result = try await provisioner.provision(request)
+
+        XCTAssertEqual(result.finalStage, .complete)
+        XCTAssertTrue(result.manifest.installationInventory?.verified == true)
+        XCTAssertEqual(result.manifest.installationInventory?.retryCount, 0)
+        let inventoryReadCount = await reader.readCount
+        XCTAssertEqual(inventoryReadCount, 2)
+    }
+
+    func testDeveloperTrustPendingPersistsAndResumeNeverReinstalls() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        let inventory = SequenceApplicationInventoryReader([
+            .available([]), .available([ids.main, ids.runner]),
+        ])
+        let launch = LaunchSequenceRecorder(
+            base: harness.recorder,
+            results: [.untrustedDeveloper, .untrustedDeveloper, .success]
+        )
+        let runner = ProcessRunner { executable, arguments, _, _, _ in
+            try await launch.run(executable: executable, arguments: arguments)
+        }
+        func makeProvisioner() -> ConsumerArtifactProvisioner {
+            ConsumerArtifactProvisioner(
+                context: .init(resourcesURL: harness.resources, runner: runner),
+                stateStore: harness.stateStore,
+                nativeArtifactStore: harness.nativeStore,
+                nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+                workspaceRootURL: harness.workspaces,
+                inventoryReader: inventory,
+                inventoryRetryPolicy: .immediateTesting
+            )
+        }
+
+        let initial = try await makeProvisioner().provision(harness.request)
+        XCTAssertEqual(initial.finalStage, .developerProfileTrustRequired)
+        XCTAssertEqual(initial.manifest.developerProfileTrustStatus, .required)
+        let persistedCheckpoint = try await harness.stateStore.loadManifest()?.effectiveSetupCheckpoint
+        XCTAssertEqual(persistedCheckpoint, .developerProfileTrustRequired)
+        let installedCount = (await harness.recorder.evidence()).installedBundleIdentifiers.count
+
+        let stillPending = try await makeProvisioner().resumeSetup(harness.request)
+        XCTAssertEqual(stillPending.finalStage, .developerProfileTrustRequired)
+        let installedAfterPending = (await harness.recorder.evidence()).installedBundleIdentifiers.count
+        XCTAssertEqual(installedAfterPending, installedCount)
+
+        let complete = try await makeProvisioner().resumeSetup(harness.request)
+        XCTAssertEqual(complete.finalStage, .complete)
+        XCTAssertEqual(complete.manifest.developerProfileTrustStatus, .trusted)
+        XCTAssertEqual(complete.manifest.effectiveSetupCheckpoint, .runtimeConfigurationVerified)
+        let installedAfterComplete = (await harness.recorder.evidence()).installedBundleIdentifiers.count
+        XCTAssertEqual(installedAfterComplete, installedCount)
+        _ = try await harness.nativeStore.load(
+            teamIdentifier: harness.team,
+            selectedDeviceIdentifier: harness.physicalUDID
+        )
+    }
+
+    func testTrustResumeUnrelatedLaunchFailureKeepsActualClassification() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let pending = try makeManifest(team: harness.team, device: harness.physicalUDID)
+            .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
+        try await harness.stateStore.saveManifest(pending)
+        let launch = LaunchSequenceRecorder(base: harness.recorder, results: [.unrelatedFailure])
+        let runner = ProcessRunner { executable, arguments, _, _, _ in
+            try await launch.run(executable: executable, arguments: arguments)
+        }
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryRetryPolicy: .immediateTesting
+        )
+
+        do {
+            _ = try await provisioner.resumeSetup(harness.request)
+            XCTFail("Expected unrelated launch failure")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .runtimeConfigurationWriteFailed)
+            XCTAssertNotEqual(failure.code, .developerProfileTrustRequired)
+        }
+    }
+
+    private func makeNativeHarness(faultPoint: ConsumerProvisioningFaultPoint?) async throws -> (
         root: URL,
         resources: URL,
         workspaces: URL,
@@ -770,12 +1089,17 @@ final class ConsumerProvisioningTests: XCTestCase {
             try await recorder.run(executable: executable, arguments: arguments)
         }
         let stateStore = ConsumerProvisioningStateStore(directoryURL: root.appendingPathComponent("State"))
+        let faultInjector: any ConsumerProvisioningFaultInjecting = if let faultPoint {
+            FixtureFaultInjector(point: faultPoint)
+        } else {
+            NoConsumerProvisioningFaults()
+        }
         let provisioner = ConsumerArtifactProvisioner(
             context: RuntimeProvisioningContext(resourcesURL: resources, runner: runner),
             stateStore: stateStore,
             nativeArtifactStore: nativeStore,
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
-            faultInjector: FixtureFaultInjector(point: faultPoint),
+            faultInjector: faultInjector,
             workspaceRootURL: workspaces
         )
         return (
@@ -940,6 +1264,87 @@ final class ConsumerProvisioningTests: XCTestCase {
     }
 }
 
+private actor SequenceApplicationInventoryReader: DeviceApplicationInventoryReading {
+    private var values: [DeviceApplicationInventory]
+    private let fallback: DeviceApplicationInventory
+    private(set) var readCount = 0
+
+    init(_ values: [DeviceApplicationInventory]) {
+        self.values = values
+        self.fallback = values.last ?? .available([])
+    }
+
+    func read(rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> DeviceApplicationInventory {
+        readCount += 1
+        return values.isEmpty ? fallback : values.removeFirst()
+    }
+}
+
+private struct EmptyAuthorizationSessionStore: AppleAuthorizationSessionStoring {
+    func load() throws -> AppleAuthorizationSession? { nil }
+    func loadMetadata() throws -> AppleAuthorizationSessionMetadata? { nil }
+    func save(_ session: AppleAuthorizationSession) throws {}
+    func remove() throws {}
+}
+
+private extension DeviceApplicationInventory {
+    static func available(_ identifiers: Set<String>) -> DeviceApplicationInventory {
+        DeviceApplicationInventory(selectedDeviceMatches: true, bundleIdentifiers: identifiers)
+    }
+
+    static func unavailable(
+        _ code: ConsumerProvisioningErrorCode,
+        reason: String
+    ) -> DeviceApplicationInventory {
+        DeviceApplicationInventory(
+            selectedDeviceMatches: false,
+            bundleIdentifiers: [],
+            failureCode: code,
+            safeReason: reason
+        )
+    }
+}
+
+private actor LaunchSequenceRecorder {
+    enum Result {
+        case untrustedDeveloper
+        case success
+        case unrelatedFailure
+    }
+
+    private let base: NativePipelineRecorder
+    private var results: [Result]
+
+    init(base: NativePipelineRecorder, results: [Result]) {
+        self.base = base
+        self.results = results
+    }
+
+    func run(executable: URL, arguments: [String]) async throws -> ProcessResult {
+        if executable.path == "/usr/bin/xcrun",
+           arguments.starts(with: ["devicectl", "device", "process", "launch"]),
+           !results.isEmpty {
+            switch results.removeFirst() {
+            case .success:
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            case .untrustedDeveloper:
+                return .init(exitCode: 1, stdout: "", stderr: Self.physicalUntrustedDeveloperError)
+            case .unrelatedFailure:
+                return .init(exitCode: 1, stdout: "", stderr: "CoreDevice launch failed for an unrelated reason")
+            }
+        }
+        return try await base.run(executable: executable, arguments: arguments)
+    }
+
+    private static let physicalUntrustedDeveloperError = """
+    ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x2712))
+    The request to open the app failed. (FBSOpenApplicationServiceErrorDomain error 1 (0x01))
+    The operation could not be completed. (FBSOpenApplicationErrorDomain error 3 (0x03))
+    BSErrorCodeDescription = Security
+    Unable to launch because its profile has not been explicitly trusted by the user.
+    """
+}
+
 private struct FixtureNativeSigningIdentityResolver: NativeSigningIdentityResolving {
     func resolve(
         certificateDER: Data,
@@ -1093,6 +1498,8 @@ private actor NativePipelineRecorder {
                 let apps: [[String: Any]]
                 if let bundle, [identifiers.main, identifiers.runner].contains(bundle) {
                     apps = [["bundleIdentifier": bundle]]
+                } else if bundle == nil {
+                    apps = [identifiers.main, identifiers.runner].map { ["bundleIdentifier": $0] }
                 } else {
                     apps = []
                 }

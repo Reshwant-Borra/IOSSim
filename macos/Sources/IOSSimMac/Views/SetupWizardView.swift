@@ -32,6 +32,8 @@ struct SetupWizardView: View {
                     AppleAccountView()
                 case .installing:
                     InstallationView()
+                case .developerProfileTrust:
+                    DeveloperProfileTrustView()
                 case .runtimeSetup:
                     RuntimeSetupView()
                 case .verifying:
@@ -85,6 +87,8 @@ struct WizardControls: View {
             return "Check Again"
         case .runtimeSetup:
             return "I Finished Setup"
+        case .developerProfileTrust:
+            return "Continue"
         case .waitingForDevice:
             return (store.status?.device.devices.isEmpty == false) ? "Continue" : "Check Again"
         case .appleAccount:
@@ -106,6 +110,8 @@ struct WizardControls: View {
             store.refresh()
         case .runtimeSetup:
             store.confirmRuntimeSetup()
+        case .developerProfileTrust:
+            store.continueDeveloperProfileTrust()
         case .appleAccount:
             if store.personalTeams.isEmpty { store.refresh() } else { store.continueFromCurrentStatus() }
         case .waitingForDevice:
@@ -449,6 +455,31 @@ struct RuntimeSetupView: View {
     }
 }
 
+struct DeveloperProfileTrustView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Trust IOSSim on your iPhone")
+                .font(.title2.weight(.semibold))
+            Text("Apple requires you to trust apps installed with your Personal Team before they can open.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("1. Open Settings on your iPhone.")
+                Text("2. Go to General.")
+                Text("3. Open VPN & Device Management.")
+                Text("4. Select the developer profile for the Apple Account you used with IOSSim.")
+                Text("5. Tap Trust, then confirm.")
+                Text("6. Return to IOSSim on your Mac.")
+                Text("7. Click Continue.")
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            Text("If IOSSim was already trusted, Continue will verify it without reinstalling anything.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct VerifyingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -467,16 +498,14 @@ struct CompletionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(store.nativeProvisioningExperiment ? "Provisioning Ready" : "Setup Complete")
+            Text("Setup Complete")
                 .font(.title2.weight(.semibold))
-            Text(store.nativeProvisioningExperiment
-                ? "Apple authorization, Personal Team preparation, device registration, identifiers, and profiles completed. Native signing and installation are not part of this test build."
-                : "IOSSim is ready to manage setup, repair, and component updates from this Mac.")
+            Text("IOSSim is ready to manage setup, repair, and component updates from this Mac.")
                 .foregroundStyle(.secondary)
             if store.nativeProvisioningExperiment {
                 FriendlyCheckRow(
-                    title: "PROVISIONING_READY",
-                    detail: "Signing and installation pending",
+                    title: "LOCAL TEST ONLY",
+                    detail: "Personal Team provisioning, signing, installation, and setup completed on this Mac and iPhone.",
                     state: .pass
                 )
                 Button("Export Support Report") { store.exportSupportBundle() }

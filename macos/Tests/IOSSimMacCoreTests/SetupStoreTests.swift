@@ -352,6 +352,86 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertEqual(resumedStore.phase, .runtimeSetup)
     }
 
+    func testDeveloperProfileTrustCheckpointSurvivesMacAppRelaunch() async throws {
+        let pending = try Self.consumerManifest()
+            .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: pending)
+        let first = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+
+        first.getStarted()
+        try await waitUntilIdle(first)
+        XCTAssertEqual(first.phase, .developerProfileTrust)
+        XCTAssertEqual(first.consumerStage, .developerProfileTrustRequired)
+
+        let relaunched = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        relaunched.getStarted()
+        try await waitUntilIdle(relaunched)
+        XCTAssertEqual(relaunched.phase, .developerProfileTrust)
+        XCTAssertEqual(relaunched.provisioningManifest?.developerProfileTrustStatus, .required)
+    }
+
+    func testDeveloperProfileTrustContinueResumesWithoutProvisioningAgain() async throws {
+        let pending = try Self.consumerManifest()
+            .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
+        let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: pending)
+        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        store.continueDeveloperProfileTrust()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .runtimeSetup)
+        XCTAssertEqual(store.provisioningManifest?.developerProfileTrustStatus, .trusted)
+        let resumeCount = await engine.resumeCount
+        let requests = await engine.requests
+        XCTAssertEqual(resumeCount, 1)
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testStillUntrustedContinueRemainsOnTrustStep() async throws {
+        let pending = try Self.consumerManifest()
+            .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
+        let engine = ConsumerSequenceEngine(
+            teams: [.team("TEAM1")],
+            initialManifest: pending,
+            resumeRemainsTrustRequired: true
+        )
+        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        store.continueDeveloperProfileTrust()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .developerProfileTrust)
+        XCTAssertNil(store.lastError)
+        let resumeCount = await engine.resumeCount
+        let requests = await engine.requests
+        XCTAssertEqual(resumeCount, 1)
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testOlderTrustVerificationFailureCannotOverwriteNewerSuccess() async throws {
+        let pending = try Self.consumerManifest()
+            .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
+        let engine = RacingTrustResumeEngine(manifest: pending)
+        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        store.continueDeveloperProfileTrust()
+        while await engine.resumeCount < 1 { await Task.yield() }
+        store.cancelCurrentOperation()
+        store.continueDeveloperProfileTrust()
+        try await waitUntilIdle(store)
+        while !(await engine.firstResumeFinished) { await Task.yield() }
+
+        XCTAssertEqual(store.phase, .runtimeSetup)
+        XCTAssertEqual(store.provisioningManifest?.developerProfileTrustStatus, .trusted)
+        XCTAssertNil(store.lastError)
+    }
+
     func testConsumerRefreshAndRepairUseTypedOperations() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
         let store = SetupStore(engine: engine)
@@ -607,6 +687,73 @@ private actor ConsumerDisconnectEngine: IOSSimSetupEngine {
     }
 }
 
+private actor RacingTrustResumeEngine: IOSSimSetupEngine {
+    nonisolated let consumerProvisioningEnabled = true
+    private var manifest: ConsumerProvisioningManifest
+    private(set) var resumeCount = 0
+    private(set) var firstResumeFinished = false
+
+    init(manifest: ConsumerProvisioningManifest) {
+        self.manifest = manifest
+    }
+
+    func doctor() async throws -> DoctorStatus {
+        let device = DetectedDevice(
+            name: "Test iPhone",
+            identifier: "A",
+            selectionIdentifier: "A",
+            developerModeStatus: "enabled",
+            pairingState: "paired",
+            tunnelState: "connected"
+        )
+        return DoctorStatus(
+            ready: false,
+            mac: MacSummary(ready: true),
+            device: DeviceSummary(ready: true, connected: true, devices: [device]),
+            actionsRequired: [],
+            checks: []
+        )
+    }
+
+    func setup() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func build() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult {
+        .init(exitCode: 0, stdout: "", stderr: "")
+    }
+    func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] {
+        [.team("TEAM1")]
+    }
+    func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { manifest }
+
+    func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        resumeCount += 1
+        if resumeCount == 1 {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { continuation.resume() }
+            }
+            firstResumeFinished = true
+            throw ConsumerProvisioningFailure(
+                code: .runtimeConfigurationWriteFailed,
+                stage: .writingRuntimeConfiguration,
+                userMessage: "stale failure",
+                remediation: "stale failure",
+                developerDetail: "stale generation"
+            )
+        }
+        manifest = manifest.updatingSetupCheckpoint(
+            .runtimeConfigurationVerified,
+            developerProfileTrustStatus: .trusted
+        )
+        return ConsumerProvisioningResult(
+            operation: request.operation,
+            finalStage: .complete,
+            manifest: manifest,
+            installedBundleIdentifiers: [manifest.installedMainBundleID, manifest.installedRunnerBundleID],
+            runtimeRecoveryRecommended: false
+        )
+    }
+}
+
 private extension PersonalTeamCandidate {
     static func team(_ identifier: String) -> PersonalTeamCandidate {
         PersonalTeamCandidate(
@@ -628,17 +775,21 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
     let teams: [PersonalTeamCandidate]
     private(set) var requests: [ConsumerProvisioningRequest] = []
     private(set) var runtimeConfirmationCount = 0
+    private(set) var resumeCount = 0
     private var manifest: ConsumerProvisioningManifest?
     private let runtimeActionsWithoutManifest: Bool
+    private let resumeRemainsTrustRequired: Bool
 
     init(
         teams: [PersonalTeamCandidate],
         initialManifest: ConsumerProvisioningManifest? = nil,
-        runtimeActionsWithoutManifest: Bool = false
+        runtimeActionsWithoutManifest: Bool = false,
+        resumeRemainsTrustRequired: Bool = false
     ) {
         self.teams = teams
         self.manifest = initialManifest
         self.runtimeActionsWithoutManifest = runtimeActionsWithoutManifest
+        self.resumeRemainsTrustRequired = resumeRemainsTrustRequired
     }
 
     func doctor() async throws -> DoctorStatus {
@@ -680,6 +831,30 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
     func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
     func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] { teams }
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { manifest }
+
+    func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        resumeCount += 1
+        guard let manifest else {
+            throw ConsumerProvisioningFailure(
+                code: .installVerificationFailed,
+                stage: .verifyingInstallation,
+                userMessage: "Missing checkpoint.",
+                remediation: "Repair.",
+                developerDetail: "Test checkpoint missing."
+            )
+        }
+        let updated = resumeRemainsTrustRequired
+            ? manifest.updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
+            : manifest.updatingSetupCheckpoint(.runtimeConfigurationVerified, developerProfileTrustStatus: .trusted)
+        self.manifest = updated
+        return ConsumerProvisioningResult(
+            operation: request.operation,
+            finalStage: resumeRemainsTrustRequired ? .developerProfileTrustRequired : .complete,
+            manifest: updated,
+            installedBundleIdentifiers: [updated.installedMainBundleID, updated.installedRunnerBundleID],
+            runtimeRecoveryRecommended: false
+        )
+    }
 
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest {
         runtimeConfirmationCount += 1

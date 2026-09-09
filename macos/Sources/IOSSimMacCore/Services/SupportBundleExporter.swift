@@ -20,6 +20,19 @@ private struct SupportEnvironment: Codable {
     let authClientIdentityVersion: String?
     let authSessionExpiration: Date?
     let lastProvisioningStage: String?
+    let resumeCheckpoint: String?
+    let deviceLock: String
+    let computerTrust: String
+    let developerMode: String
+    let developerProfileTrust: String?
+    let installationInventoryRetryCount: Int?
+    let installationInventoryElapsedMilliseconds: Int?
+    let installationInventoryReason: String?
+    let installationSelectedDeviceMatches: Bool?
+    let installationMainPresent: Bool?
+    let installationRunnerPresent: Bool?
+    let runtimeConfigurationWrite: String
+    let runtimeConfigurationVerification: String
     let xcodeVersion: String?
     let deviceName: String?
     let deviceModel: String?
@@ -41,6 +54,7 @@ public enum SupportBundleExporter {
         to outputURL: URL,
         release: ReleaseManifest? = nil,
         stateStore: ConsumerProvisioningStateStore = ConsumerProvisioningStateStore(),
+        authorizationSessionStore: any AppleAuthorizationSessionStoring = KeychainAppleAuthorizationSessionStore(),
         runner: ProcessRunner = ProcessRunner(),
         fileManager: FileManager = .default
     ) async throws -> SupportBundleExportResult {
@@ -65,13 +79,13 @@ public enum SupportBundleExporter {
                 xcodePresent: xcodePresent
             )
         )
-        let authMetadata = try? KeychainAppleAuthorizationSessionStore().loadMetadata()
+        let authMetadata = try? authorizationSessionStore.loadMetadata()
         let nativeDiagnostics = ApplePersonalTeamDiagnosticsStore().load()
         let authSessionValid = nativeDiagnostics?.sessionValid
             ?? authMetadata.map { $0.expiresAt.map { $0 > Date() } ?? true }
             ?? false
         let document = SanitizedSupportDocument(
-            schemaVersion: 2,
+            schemaVersion: 3,
             generatedAt: Date(),
             environment: SupportEnvironment(
                 iPhoneAppVersion: manifest?.appVersion,
@@ -88,6 +102,19 @@ public enum SupportBundleExporter {
                 authClientIdentityVersion: authMetadata?.clientIdentityVersion,
                 authSessionExpiration: authMetadata?.expiresAt,
                 lastProvisioningStage: events.last?.stage.rawValue,
+                resumeCheckpoint: manifest?.effectiveSetupCheckpoint.rawValue,
+                deviceLock: prerequisiteStatus(events: events, requiredCode: .deviceLocked),
+                computerTrust: prerequisiteStatus(events: events, requiredCode: .computerTrustRequired),
+                developerMode: prerequisiteStatus(events: events, requiredCode: .developerModeRequired),
+                developerProfileTrust: manifest?.developerProfileTrustStatus?.rawValue,
+                installationInventoryRetryCount: manifest?.installationInventory?.retryCount,
+                installationInventoryElapsedMilliseconds: manifest?.installationInventory?.elapsedMilliseconds,
+                installationInventoryReason: manifest?.installationInventory?.safeReason,
+                installationSelectedDeviceMatches: manifest?.installationInventory?.selectedDeviceMatches,
+                installationMainPresent: manifest?.installationInventory?.mainPresent,
+                installationRunnerPresent: manifest?.installationInventory?.runnerPresent,
+                runtimeConfigurationWrite: runtimeWriteStatus(manifest: manifest, events: events),
+                runtimeConfigurationVerification: runtimeVerificationStatus(manifest: manifest, events: events),
                 xcodeVersion: selection.backend.map {
                     [.xcodeFallback, .xcodeInvisible].contains($0)
                 } == true
@@ -103,8 +130,8 @@ public enum SupportBundleExporter {
             notes: [
                 "Local-only sanitized support export.",
                 "Apple credentials, signing private keys, provisioning payloads, and RPPairing material are excluded.",
-                "Experimental private Apple protocol; physical Personal Team proof is pending.",
-                "Native signing and installation are outside this P0-P7 test build."
+                "Physical Personal Team provisioning, signing, main installation, runner installation, and setup completion have been observed on the current test Mac and iPhone.",
+                "This evidence does not claim clean-Mac, no-Xcode, runtime-location, or public-release qualification."
             ]
         )
         let encoder = JSONEncoder()
@@ -122,6 +149,38 @@ public enum SupportBundleExporter {
         )
         guard result.exitCode == 0 else { throw ProcessFailure(commandName: "support-bundle", result: result) }
         return SupportBundleExportResult(url: outputURL)
+    }
+
+    private static func prerequisiteStatus(
+        events: [ProvisioningLogEvent],
+        requiredCode: ConsumerProvisioningErrorCode
+    ) -> String {
+        events.last(where: { $0.errorCode == requiredCode }) == nil ? "UNKNOWN" : "LAST_OBSERVED_REQUIRED"
+    }
+
+    private static func runtimeWriteStatus(
+        manifest: ConsumerProvisioningManifest?,
+        events: [ProvisioningLogEvent]
+    ) -> String {
+        if let checkpoint = manifest?.effectiveSetupCheckpoint,
+           [.runtimeConfigurationWritten, .runtimeConfigurationVerified, .complete].contains(checkpoint) {
+            return "SUCCEEDED"
+        }
+        return events.last(where: { $0.errorCode == .runtimeConfigurationWriteFailed }) == nil
+            ? "NOT_STARTED"
+            : "FAILED"
+    }
+
+    private static func runtimeVerificationStatus(
+        manifest: ConsumerProvisioningManifest?,
+        events: [ProvisioningLogEvent]
+    ) -> String {
+        if manifest?.effectiveSetupCheckpoint.runtimeConfigurationIsVerified == true {
+            return "SUCCEEDED"
+        }
+        return events.last(where: { $0.errorCode == .runtimeConfigurationReadbackFailed }) == nil
+            ? "NOT_STARTED"
+            : "FAILED"
     }
 
     private static func xcodeVersion(runner: ProcessRunner) async -> String {

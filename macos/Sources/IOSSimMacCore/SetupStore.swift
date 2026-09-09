@@ -15,6 +15,8 @@ public final class SetupStore: ObservableObject {
     @Published public private(set) var selectedTeamIdentifier: String?
     @Published public private(set) var provisioningManifest: ConsumerProvisioningManifest?
     @Published public private(set) var consumerStage: ConsumerProvisioningStage = .idle
+    @Published public private(set) var lastConsumerFailureCode: ConsumerProvisioningErrorCode?
+    @Published public private(set) var lastConsumerFailureStage: ConsumerProvisioningStage?
     @Published public private(set) var lastSupportBundleURL: URL?
     @Published public private(set) var appleAuthorization = AppleAuthorizationSummary(
         method: .privateGrandSlamSRP,
@@ -144,6 +146,15 @@ public final class SetupStore: ObservableObject {
 
     public func continueFromCurrentStatus() {
         guard let status, !isRunning else { return }
+        if phase == .developerProfileTrust {
+            continueDeveloperProfileTrust()
+            return
+        }
+        if let checkpoint = provisioningManifest?.setupCheckpoint,
+           !checkpoint.runtimeConfigurationIsVerified {
+            continueDeveloperProfileTrust()
+            return
+        }
         if !status.mac.ready {
             runSetup()
             return
@@ -154,6 +165,43 @@ public final class SetupStore: ObservableObject {
         }
         phase = .checkingDevice
         refresh()
+    }
+
+    public func retryCurrentStep() {
+        guard !isRunning else { return }
+        let resumableCodes: Set<ConsumerProvisioningErrorCode> = [
+            .installInventoryPending, .installVerificationFailed,
+            .developerProfileTrustRequired, .developerProfileTrustVerificationFailed,
+            .runtimeConfigurationWriteFailed, .runtimeConfigurationReadbackFailed,
+            .deviceUnavailable, .deviceLocked, .computerTrustRequired, .developerModeRequired
+        ]
+        if let manifest = provisioningManifest,
+           manifest.setupCheckpoint != nil,
+           lastConsumerFailureCode.map(resumableCodes.contains) == true {
+            continueDeveloperProfileTrust()
+        } else {
+            refresh()
+        }
+    }
+
+    public func continueDeveloperProfileTrust() {
+        guard !isRunning, engine.consumerProvisioningEnabled else { return }
+        runCancellable(stage: .developerProfileTrust) { [self] generation in
+            let device = try selectedDeviceIdentifierForOperation()
+            guard let team = selectedTeamIdentifier ?? provisioningManifest?.teamID else {
+                throw selectionFailure("TEAM_SELECTION_REQUIRED: current provisioning context is unavailable.")
+            }
+            consumerStage = .verifyingDeveloperProfileTrust
+            let result = try await engine.resumeConsumerSetup(ConsumerProvisioningRequest(
+                operation: .repair,
+                selectedDeviceIdentifier: device,
+                selectedTeamIdentifier: team,
+                backend: nativeProvisioningExperiment ? .nativePersonalTeam : .xcodeFallback,
+                generation: generation
+            ))
+            try requireCurrentOperation(generation)
+            applyConsumerResult(result)
+        }
     }
 
     public func runRepair() {
@@ -476,13 +524,11 @@ public final class SetupStore: ObservableObject {
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
                 allowFreshInstallAfterCrossTeamConflict: allowFreshInstall,
-                backend: nativeProvisioningExperiment ? .nativePersonalTeam : .xcodeFallback
+                backend: nativeProvisioningExperiment ? .nativePersonalTeam : .xcodeFallback,
+                generation: generation
             ))
             try requireCurrentOperation(generation)
-            provisioningManifest = result.manifest
-            consumerStage = result.finalStage
-            completedInstallStages = Set(InstallStage.allCases)
-            phase = .runtimeSetup
+            applyConsumerResult(result)
             return
         }
         completedInstallStages.insert(.installIOSSim)
@@ -499,6 +545,21 @@ public final class SetupStore: ObservableObject {
     }
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
+        if let manifest = provisioningManifest,
+           manifest.effectiveSetupCheckpoint == .developerProfileTrustRequired {
+            consumerStage = .developerProfileTrustRequired
+            completedInstallStages = Set(InstallStage.allCases)
+            phase = .developerProfileTrust
+            return
+        }
+        if let checkpoint = provisioningManifest?.setupCheckpoint,
+           !checkpoint.runtimeConfigurationIsVerified {
+            consumerStage = checkpoint == .installCommandsSucceeded
+                ? .verifyingInstallation
+                : .verifyingDeveloperProfileTrust
+            phase = .verifying
+            return
+        }
         if nativeProvisioningExperiment,
            status.mac.ready,
            selectedDevice != nil,
@@ -557,6 +618,16 @@ public final class SetupStore: ObservableObject {
             && manifest.mainProfile.bundleIdentifier == expected.main
             && manifest.runnerProfile.teamIdentifier == manifest.teamID
             && manifest.runnerProfile.bundleIdentifier == expected.runner
+            && manifest.effectiveSetupCheckpoint.runtimeConfigurationIsVerified
+    }
+
+    private func applyConsumerResult(_ result: ConsumerProvisioningResult) {
+        provisioningManifest = result.manifest
+        consumerStage = result.finalStage
+        lastConsumerFailureCode = nil
+        lastConsumerFailureStage = nil
+        completedInstallStages = Set(InstallStage.allCases)
+        phase = result.finalStage == .developerProfileTrustRequired ? .developerProfileTrust : .runtimeSetup
     }
 
     private func routeToConsumerProvisioning() {
@@ -713,7 +784,13 @@ public final class SetupStore: ObservableObject {
                     recovery: failure.remediation,
                     details: "\(failure.code.rawValue): \(failure.developerDetail)"
                 )
-                let waitingForDevice = failure.code == .deviceUnavailable || failure.stage == .waitingForDevice
+                self.lastConsumerFailureCode = failure.code
+                self.lastConsumerFailureStage = failure.stage
+                if let checkpoint = try? await self.engine.consumerProvisioningStatus(),
+                   self.activeOperationGeneration == generation {
+                    self.provisioningManifest = checkpoint
+                }
+                let waitingForDevice = failure.code == .deviceUnavailable
                 self.consumerStage = waitingForDevice ? .waitingForDevice : .failed
                 self.phase = waitingForDevice ? .waitingForDevice : .failed
                 self.recordStateTransition(

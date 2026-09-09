@@ -8,6 +8,7 @@ public protocol IOSSimSetupEngine: Sendable {
     func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult
     func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate]
     func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult
+    func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest?
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest
     func exportSupportBundle() async throws -> URL
@@ -24,6 +25,16 @@ public extension IOSSimSetupEngine {
             userMessage: "Consumer Personal Team provisioning is unavailable in this build.",
             remediation: "Use the packaged production IOSSim Mac app.",
             developerDetail: "The selected setup engine does not implement consumer provisioning."
+        )
+    }
+
+    func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        throw ConsumerProvisioningFailure(
+            code: .unsupported,
+            stage: .failed,
+            userMessage: "This IOSSim build cannot resume device setup.",
+            remediation: "Use the packaged IOSSim Mac app.",
+            developerDetail: "The selected setup engine does not implement checkpoint resume."
         )
     }
 
