@@ -1,12 +1,16 @@
 # Consumer Apple Authorization and Provisioning
 
-Status: `LIVE_PERSONAL_TEAM_PROVISIONING_READY_FOR_HUMAN_TEST`
-(`LOCAL_TEST_ONLY` isolated engineering POC, 2026-09-07).
+Status: historical zero-Xcode investigation, superseded in part by the current
+native Personal Team and physical-install stabilization handoff. See
+[../CURRENT_STATE.md](../CURRENT_STATE.md) and
+[../RELEASE_AND_DISTRIBUTION.md](../RELEASE_AND_DISTRIBUTION.md).
 
 This report separates Apple's supported provisioning API, the strongest
 headless Xcode path, and the experimental free Personal Team protocol. It does
-not claim physical qualification. The investigation Mac has Xcode installed and
-no connected qualification iPhone.
+not claim clean-Mac qualification. Later work physically proved native Personal
+Team authorization/provisioning/signing/install on the current Mac/iPhone, but
+the clean-Mac "Xcode installed, never opened/configured" claim is still
+unproven.
 
 ## Architecture
 
@@ -27,7 +31,8 @@ through profile retrieval. It includes bounded HTTPS, Apple SRP-6a, trusted-
 device verification, Xcode-scoped token decryption, Keychain session storage,
 Developer Services operations, local key/CSR generation, selected-device and
 derived-App-ID registration, CMS profile validation, and safe checkpoints.
-Physical account/device proof is still pending, so AUTO remains unqualified.
+Physical account/device proof later succeeded on the current Mac/iPhone. AUTO
+and clean-Mac behavior still need qualification in the final consumer flow.
 
 ## Supported Apple Path
 
@@ -247,21 +252,20 @@ verification remain pending.
 | Path A initial auth | `PATH_A_BLOCKED_AT_INITIAL_ACCOUNT_AUTH` |
 | Path A remaining provisioning | Existing headless-capable machinery after auth; not a brand-new-user solution |
 | Path B local machine identity | Live AOSKit/AuthKit adapter; credentials-free probe passed on macOS 26.6.2 |
-| Path B Apple auth/2FA | Live SRP and trusted-device 2FA implementation; pending real-account proof |
-| Path B session/team | Live Xcode-scoped token and team discovery; pending real-account proof |
-| Path B cert/device/IDs/profiles | Live read-before-create operations and strict validation; pending real-account/iPhone proof |
-| Native signing/install/pair | Contracts/mappings only; no Mac host FFI implementation or physical proof |
-| Gate 3/Spoof/Rich XCUILocation/Rich Drive | Not run for either new backend |
+| Path B Apple auth/2FA | Live SRP and trusted-device 2FA implementation; current-Mac/iPhone proof exists, clean-Mac proof pending |
+| Path B session/team | Live Xcode-scoped token and team discovery; current-Mac/iPhone proof exists, clean-Mac proof pending |
+| Path B cert/device/IDs/profiles | Live read-before-create operations and strict validation; current-Mac/iPhone proof exists, clean-Mac proof pending |
+| Native signing/install/pair | Native signing and `devicectl` install are proven on current Mac/iPhone; native macOS idevice install backend remains unimplemented |
+| Gate 3/Spoof/Rich XCUILocation/Rich Drive | Proven in earlier runtime/Personal Team cycles; current stabilization RC runtime requalification pending |
 
 ## Physical Evidence and Limitations
 
-No qualifying account or physical-iPhone evidence was produced. A credentials-
-free local AOSKit machine-identity probe passed. Xcode is installed on this Mac,
-Homebrew happens to be installed, external `idevicepair` is absent, and no
-physical iPhone is connected. The proven manually configured Xcode runtime
-evidence remains baseline evidence only; it was not reclassified as headless or
-native consumer proof.
+This investigation did not itself produce qualifying account or physical-iPhone
+evidence. Later work did produce current-Mac/iPhone evidence for live Personal
+Team authorization, provisioning, native signing, main install, runner install,
+developer-profile trust handling, and setup completion. It still did not prove
+clean-Mac, Xcode-never-opened behavior, true profile renewal, public
+distribution, or a native macOS idevice install backend.
 
-Current verdict: `LIVE_PERSONAL_TEAM_PROVISIONING_READY_FOR_HUMAN_TEST`. The
-package remains `LOCAL_TEST_ONLY`; native signing, installation, pairing and all
-iPhone runtime gates remain pending.
+Current verdict for this historical document: superseded by
+`docs/CURRENT_STATE.md`. Current RC classification remains `LOCAL_TEST_ONLY`.

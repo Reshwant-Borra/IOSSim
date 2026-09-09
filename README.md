@@ -1,325 +1,35 @@
-﻿# IOSSim
+# IOSSim
 
-Current `main` is the iPhone/on-device IOSSim implementation. Start here:
+IOSSim is a private iPhone location-simulation project with a native macOS setup
+app, an iPhone runtime app, and a signed XCTest runner used by the proven
+XCUILocation runtime path.
+
+Start with [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md). That is the
+authoritative handoff for the current branch, physical evidence, release
+boundary, and next engineering work.
+
+Current engineer entry points:
+
+- [Current State](docs/CURRENT_STATE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Provisioning and Signing](docs/PROVISIONING_AND_SIGNING.md)
+- [Physical Validation](docs/PHYSICAL_VALIDATION.md)
+- [Release and Distribution](docs/RELEASE_AND_DISTRIBUTION.md)
+- [Next Steps](docs/NEXT_STEPS.md)
+- [Engineering History](docs/ENGINEERING_HISTORY.md)
+
+Developer commands remain:
 
 ```bash
 ./iossim setup
 ./iossim doctor
 ./iossim build
 ./iossim test
-./iossim device
+./iossim package-app
+./iossim release-local
 ```
-
-See [docs/SETUP.md](docs/SETUP.md) for the canonical developer setup flow.
 
 The frozen historical desktop frontend/backend implementation is preserved on
-the `desktop-legacy` branch.
-
-Some older sections below still describe the pre-split desktop workflow and
-engineering frontend/backend surfaces that remain in this tree for validation.
-For current iPhone/on-device setup, treat `./iossim` and `docs/SETUP.md` as the
-source of truth.
-
-# iOS Location Sim
-
-Free, open-source iOS location testing tool. Windows-first with macOS support, USB connection, no paid Apple Developer account required.
-
-**Stack**: Python 3.11+ / FastAPI / pymobiledevice3, React 18 / TypeScript / Vite, OpenStreetMap via Leaflet.
-
-This repository contains two runtime implementations:
-
-- The stable Mac-hosted IOSSim app in `backend/` and `frontend/`.
-- The experimental iPhone on-device DVT POC in `ios/`.
-
-See [docs/IMPLEMENTATIONS.md](docs/IMPLEMENTATIONS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
-
----
-
-## Stability Model
-
-The default app surface is intentionally stable-only. Experimental features are hidden or blocked unless explicitly enabled for a test build.
-
-Stable working features:
-
-- USB device detection.
-- Developer Disk Image mount.
-- Backend-owned tunnel startup for iOS 17+.
-- RSD parsing.
-- Static Set Location over USB/RSD.
-- Wireless userspace location for saved same-LAN iPhones using explicit UDID -> userspace RSD -> DVT -> DeviceInfo warmup -> LocationSimulation.
-- Wireless Set Location, coordinate changes, and Reset GPS with backend-owned persistent userspace session.
-- One-time USB setup to enable wireless access and save iPhone identity.
-- Persistent active `simulate-location set` process while backend stays open.
-- Reset GPS / clear location.
-- `RUN_EVERYTHING.ps1` launcher (Windows) and `RUN_EVERYTHING.sh` launcher (macOS).
-- Frontend/backend communication for status, initialize, set, reset, and favorites.
-- Drive Mode over an active USB/RSD backend session (manual waypoints and address-based road routes via Nominatim and OSRM).
-
-Experimental or not guaranteed:
-
-- iOS Drive Simulation — visual iPhone display simulation showing the drive in progress (planned next experimental feature).
-- Legacy GPX route playback.
-- Advanced Wireless Diagnostics for persistent tunnel experiments.
-- Unplug persistence.
-- Developer Mode OFF trick / GhostMe-style persistence.
-
-See [STABILITY.md](STABILITY.md) before changing device, tunnel, set, clear, launcher, Drive Mode, route, WiFi, or persistence behavior.
-
-For a full clean-machine setup walkthrough, see [SETUP_FROM_SCRATCH.md](SETUP_FROM_SCRATCH.md) (Windows) and [SETUP_MAC.md](SETUP_MAC.md) (macOS).
-
----
-
-## Feature Flags
-
-Drive Mode is stable and always on. No flags required.
-
-`IOS_SIM_ENABLE_EXPERIMENTAL=1` (backend) and `VITE_ENABLE_EXPERIMENTAL_FEATURES=1` (frontend) enable the remaining experimental features — Lock & Unplug and legacy GPX route playback. Use the `-Mode experimental` launcher argument to set both:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
-```
-
-Dedicated experimental labs require their own gates in addition to generic experimental mode. Drive Testing uses `-Mode drive-testing`. Advanced Wireless Diagnostics uses `-Mode wireless-testing` and is documented in [docs/wireless_testing/README.md](docs/wireless_testing/README.md).
-
----
-
-## Prerequisites
-
-| Requirement | Windows | macOS |
-|---|---|---|
-| Python 3.11+ | Required (3.13 recommended) | Required — `brew install python@3.13` |
-| iTunes / device support | Standalone iTunes from apple.com, not Microsoft Store | Not required — built into macOS (`usbmuxd`) |
-| Node.js 20+ | Required | Required |
-| Elevated privileges | Run as Administrator for iOS 17+ tunnel | `sudo` for backend on iOS 17+ tunnel |
-| iPhone with Developer Mode ON | Settings > Privacy & Security > Developer Mode | Same |
-| USB cable | Required once for new-phone wireless setup or USB mode | Same |
-
----
-
-## iOS Compatibility
-
-| iOS | Works | Command path |
-|-----|-------|--------------|
-| <= 16.x | Yes | Direct developer simulate-location |
-| 17.0-17.3.1 | Risky | QUIC tunnel path; avoid if possible |
-| 17.4+ | Yes | TCP lockdown tunnel |
-| 18.x | Yes | TCP lockdown tunnel |
-| 26.x | Yes | TCP lockdown tunnel, confirmed on target device |
-
-Do not use libimobiledevice/idevicesetlocation for iOS 17+.
-
----
-
-## Quick Start
-
-### Option A: Windows launcher
-
-```text
-Right-click start.bat -> Run as administrator
-```
-
-This delegates to `RUN_EVERYTHING.ps1`, starts the backend and frontend, and opens `http://localhost:5173`. The backend must run as administrator because it owns the iOS 17+ tunnel and stores the parsed RSD address used by Set Location.
-
-For the PowerShell launcher, stable mode is the default and now stops old IOSSim backend/frontend/location processes before starting:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1"
-```
-
-To stop IOSSim processes:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode stop
-```
-
-To launch with experimental features enabled (Lock & Unplug, legacy GPX):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode experimental
-```
-
-To launch the isolated Advanced Wireless Diagnostics lab:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Users\reshw\Desktop\ios-location-sim\RUN_EVERYTHING.ps1" -Mode wireless-testing
-```
-
-### Option B: Manual
-
-```bat
-REM Terminal 1, run as Administrator
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --host 0.0.0.0 --port 8765 --reload
-
-REM Terminal 2
-cd frontend
-npm install
-npm run dev
-```
-
-Open `http://localhost:5173`.
-
-### Option C: macOS launcher
-
-macOS uses the same stable/experimental modes as Windows. The backend runs with `sudo` because the iOS 17+ tunnel needs elevated privileges (you will be prompted for your Mac login password).
-
-```bash
-cd /path/to/IOSSim
-chmod +x RUN_EVERYTHING.sh   # first time only
-./RUN_EVERYTHING.sh
-```
-
-With experimental features (Lock & Unplug, legacy GPX):
-
-```bash
-./RUN_EVERYTHING.sh experimental
-```
-
-With the isolated Advanced Wireless Diagnostics lab:
-
-```bash
-./RUN_EVERYTHING.sh wireless-testing
-```
-
-This opens two Terminal windows (backend + frontend) and launches `http://localhost:5173`. For a full macOS walkthrough, see [SETUP_MAC.md](SETUP_MAC.md).
-
-To stop IOSSim processes:
-
-```bash
-./RUN_EVERYTHING.sh stop
-```
-
-### Option D: macOS manual
-
-```bash
-# Terminal 1 — backend (sudo for iOS 17+)
-cd backend
-python3.13 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-sudo -E $(which python) -m uvicorn main:app --host 127.0.0.1 --port 8765 --reload
-
-# Terminal 2 — frontend
-cd frontend
-npm install
-npm run dev
-```
-
----
-
-## Wireless Workflow: Add Once, Use Wirelessly
-
-For a new iPhone:
-
-1. Launch IOSSim.
-2. Connect the iPhone with USB.
-3. Unlock the iPhone and Trust this Mac/PC.
-4. Click **Add iPhone**.
-5. When IOSSim says **You can unplug your iPhone now**, unplug it.
-6. Click **I've unplugged my iPhone**.
-7. Wait for **Wireless Ready**.
-8. Pick a point on the map and click **Set Location**.
-9. Pick another point and click **Set Location** again to change coordinates.
-10. Click **Reset GPS** to clear the simulated location.
-
-For a previously paired iPhone, no cable is required when the iPhone is reachable on the same local network. Launch IOSSim, wait for **Wireless Ready**, then use **Set Location** and **Reset GPS** normally.
-
-Wireless mode requires the computer and iPhone to be mutually reachable on the same LAN. Guest, hotel, school, or segmented networks may block discovery. Some apps may take longer to refresh their displayed location.
-
-## USB Workflow: Set Location
-
-1. Connect iPhone via USB.
-2. In the app, choose **USB** under Connection and click **Prepare USB** in the Device panel.
-3. Initialization mounts the Developer Disk Image.
-4. On iOS 17+, initialization starts the backend-owned tunnel.
-5. Click anywhere on the map to pick a location.
-6. Click **Set Location**.
-7. Keep the backend open. The active `simulate-location set` process keeps the fake GPS active.
-8. Click **Reset GPS** to clear the simulated location.
-
----
-
-## Drive Mode
-
-Drive Mode is stable and always available. It uses timed static-location updates, exposes pause/resume/stop/status endpoints, and can keep the final destination active when "Stay at end" is enabled.
-
-1. Click **Drive Mode**.
-2. Either enter a destination address and generate a road route, or click at least two manual waypoints on the map.
-3. Choose a speed preset or custom mph.
-4. Click **Start Road Drive** or **Start Manual Drive**.
-5. Use **Pause**, **Resume**, or **Stop** as needed.
-
-Limit: Drive Mode is not an unplug/offline persistence feature. Keep the backend and tunnel running for movement updates.
-
-Nominatim and OSRM public endpoints are for light personal testing only. The backend caches geocode and route responses locally under `backend/data/route_cache`.
-
----
-
-## Experimental Workflow: Lock & Unplug
-
-Lock & Unplug is behind the frontend experimental flag and is not guaranteed.
-
-The Developer Mode OFF trick is an undocumented side effect. It may or may not preserve the last simulated location after unplugging. It should be treated as a test workflow, not a stable feature.
-
-For the persistence research and experiment plan, see:
-
-- `Projects/iOS_Location_Sim_Research/Ghost_Mode_Persistence.md`
-- `Projects/iOS_Location_Sim_Research/Ghost_Mode_Experiments.md`
-
-## Experimental Workflow: Wireless Testing Lab
-
-Wireless Testing Lab is separate from Drive Testing. It tests whether a previously paired iPhone can be discovered over same-LAN Wi-Fi, whether pymobiledevice3 can establish a fresh Wi-Fi RemoteXPC/RSD tunnel, and whether IOSSim can run Set Location and Reset GPS through that wireless RSD endpoint.
-
-Initial USB pairing/trust may still be required, especially for the target iOS 26.5.2 phone. Do not treat a missing current wireless candidate as proof that cable-free IOSSim is impossible. See [docs/wireless_testing/README.md](docs/wireless_testing/README.md).
-
----
-
-## Hard Limits on Stock iOS
-
-| Claim | Reality |
-|---|---|
-| Location survives every reboot | No, expect reboot to clear or recalibrate |
-| First-time setup without USB | No, USB trust/pairing is required first |
-| Per-app spoofing | No, DVT simulation is system-wide |
-| Permanent offline location | No supported stock iOS API found |
-| Undetectable spoofing | No, apps may inspect simulated-location signals |
-
----
-
-## Project Structure
-
-```text
-ios-location-sim/
-  backend/
-    main.py
-    device_manager.py
-    location_service.py
-    favorites.py
-    requirements.txt
-  frontend/
-    index.html
-    tsconfig.json
-    vite.config.ts
-    package.json
-    src/
-      main.tsx
-      App.tsx
-      api/client.ts
-      components/
-        DevicePanel.tsx
-        FavoritesList.tsx
-        UnplugModal.tsx
-  RUN_EVERYTHING.ps1
-  RUN_EVERYTHING.sh
-  SETUP_FROM_SCRATCH.md
-  SETUP_MAC.md
-  start.bat
-  STABILITY.md
-  README.md
-```
-
----
-
-## Legal
-
-Use only on devices you own or are authorized to test. Using location simulation to violate an app's terms or deceive others can have consequences.
+the `desktop-legacy` branch. Older root-level and subdirectory documents may
+describe that pre-native host architecture; when they conflict with
+`docs/CURRENT_STATE.md`, the current-state handoff wins.

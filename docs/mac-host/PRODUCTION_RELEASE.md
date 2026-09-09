@@ -1,5 +1,10 @@
 # IOSSim Production Release
 
+Current note: this release-engineering document predates the latest
+physical-install stabilization and some native Personal Team wording. The
+authoritative current release boundary is
+[../RELEASE_AND_DISTRIBUTION.md](../RELEASE_AND_DISTRIBUTION.md).
+
 ## Scope
 
 The production release is a manually installed, Developer ID signed and Apple-notarized DMG. It contains only `IOSSim.app` and an `/Applications` shortcut. The app uses the existing consumer path:
@@ -22,8 +27,10 @@ Two deliberately separate packaging classes use that same production code and UI
 The current Personal Team flow still requires:
 
 - macOS 13 or newer on Apple silicon or Intel;
-- full Xcode 15 or newer, opened once and selected as the active developer directory;
-- an Apple Account signed into Xcode with a usable Personal Team and Apple Development identity;
+- full Xcode 15 or newer installed, with clean-Mac first-launch requirements
+  still unproven;
+- an Apple Account authorized inside IOSSim for the current native Personal Team
+  flow;
 - a compatible iPhone that is connected, unlocked, trusted, and in Developer Mode;
 - LocalDevVPN installed and approved on the iPhone;
 - valid RPPairing material imported inside the iPhone app.

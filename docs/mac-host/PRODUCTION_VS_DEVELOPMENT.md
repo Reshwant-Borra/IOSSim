@@ -1,5 +1,10 @@
 # Production And Development Variants
 
+Current note: native Personal Team authorization now happens inside IOSSim. Xcode
+developer tooling remains a dependency for the current physical device path, but
+Xcode Accounts setup is not the intended current consumer flow. See
+[../CURRENT_STATE.md](../CURRENT_STATE.md).
+
 Both variants are built from the same Swift packages and iPhone sources. They do
 not duplicate the app or runtime architecture.
 
@@ -18,8 +23,10 @@ Production is compiled with `IOSSIM_BUNDLED_ENGINE` and uses
 - sanitized support bundle export
 - dashboard refresh, repair, and profile validity
 
-The production host still requires Xcode-managed account state, Apple developer
-tooling, and `devicectl`. It does not collect Apple credentials.
+The production host still requires installed Apple developer tooling and
+`devicectl`. The current native Personal Team path collects Apple Account
+credentials only inside IOSSim as ephemeral sensitive input and does not persist
+passwords or 2FA codes.
 
 ## Development
 
