@@ -24,6 +24,23 @@ reviewed at `f254dcd06662fc20d660044fcf8e93418cde2d11` (MIT). The related
 `9bece1ada36006b18b84caec62d14dc91b47ae2b` did not contain a license file, so
 its authentication source was not integrated or copied.
 
+## Known Incomplete Boundaries
+
+- Apple developer-download catalog/login/2FA adapter and its consumer UI;
+- orchestration that connects the existing Xcode state primitives to the setup
+  wizard and durable checkpoints;
+- explicit opt-in real archive download, extraction, authorization, install,
+  first-launch, and clean-Mac qualification;
+- physical USB creation/transfer/use of a newly generated pairing record;
+- protected same-candidate retry after a Mac-to-iPhone transfer failure;
+- complete packaged notices for every statically linked Rust transitive
+  dependency before public distribution.
+
+The iPhone deletes each secret inbox candidate after it writes a receipt. A
+small non-secret transaction/state receipt remains in the private application
+container for diagnostics; it is not pairing material and is never included in
+support export.
+
 ## Xcode Dependency Map
 
 | Dependency | Phase | Why it remains |

@@ -17,20 +17,21 @@ credentials are missing.
 `./iossim release-local` is for local functional and physical testing. It is not
 for public distribution and does not qualify Gatekeeper behavior.
 
-## Current Local RC
+## Experimental Local RC
 
-Verified current artifact:
+The ignored local candidate is written to:
 
 ```text
 path: .build/iossim/local-release/IOSSim-0.1.0-local.dmg
-sha256: 5ca34d69a9a80a1bf4469026c63e879a3d147f3f0c50e1cc436f1600134e18ba
-size: 15,603,686 bytes
-source commit: 06478bab66e5dc117932cff1c9575c607c35b72e
 classification: LOCAL_TEST_ONLY
-build timestamp: 2026-09-09T00:17:43.071717Z
 ```
 
-The release manifest says:
+Run `./iossim release-local` only from a clean experiment HEAD, then use the
+adjacent `.release.json` and `.dmg.sha256` files for exact source, timestamp,
+size, and checksum provenance. `release-local-audit` rejects a dirty tree or a
+HEAD that differs from that metadata.
+
+The release manifest must say:
 
 - `developerID: false`
 - `notarized: false`
@@ -97,6 +98,8 @@ from its lockfile at idevice commit
 `c442bd235bd14d6d5c8f28f85c9e6179e3a4c3d5`. Consumers do not need Rust,
 Cargo, Homebrew, or a separate `idevice_pair` download. Release builds remap
 developer paths and strip helper symbols before the package secret/path audit.
+The release audit also requires the helper to contain the same configured
+universal architecture set as the GUI and provisioner.
 
 ## Xcode Product Requirement
 
@@ -140,7 +143,10 @@ Do not state that Path B has already been chosen.
 
 Before public release:
 
-- same-Mac/same-iPhone physical regression of current RC;
+- licensed Apple developer-download authentication and consumer bootstrap UI;
+- complete third-party notice generation/audit for all statically linked Rust
+  transitive dependencies;
+- same-Mac/same-iPhone automatic-pairing regression of the experimental RC;
 - runtime requalification after setup stabilization;
 - clean-Mac Xcode-installed-never-opened qualification;
 - decision on `devicectl` versus native idevice/AFC/InstallationProxy;

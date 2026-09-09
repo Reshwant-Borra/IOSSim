@@ -2506,7 +2506,11 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
                 stderr=subprocess.PIPE,
             )
             ok &= audit_pass("App Gatekeeper assessment") if app_gatekeeper.returncode == 0 else audit_fail("App Gatekeeper assessment", app_gatekeeper.stderr)
-            for executable in [app_dir / "Contents/MacOS/IOSSim", app_dir / "Contents/MacOS/IOSSimProvisioner"]:
+            for executable in [
+                app_dir / "Contents/MacOS/IOSSim",
+                app_dir / "Contents/MacOS/IOSSimProvisioner",
+                app_dir / "Contents/Helpers/IOSSimPairingHelper",
+            ]:
                 arch_result = subprocess.run(
                     ["/usr/bin/lipo", "-archs", str(executable)],
                     text=True,
@@ -2617,7 +2621,11 @@ def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
                 ok &= audit_pass("Bundled production provenance") if provenance_ok else audit_fail("Bundled production provenance")
             except Exception as exc:
                 ok &= audit_fail("Bundled production provenance", str(exc))
-            for executable in [app_dir / "Contents/MacOS/IOSSim", app_dir / "Contents/MacOS/IOSSimProvisioner"]:
+            for executable in [
+                app_dir / "Contents/MacOS/IOSSim",
+                app_dir / "Contents/MacOS/IOSSimProvisioner",
+                app_dir / "Contents/Helpers/IOSSimPairingHelper",
+            ]:
                 arch_result = subprocess.run(
                     ["/usr/bin/lipo", "-archs", str(executable)],
                     text=True,

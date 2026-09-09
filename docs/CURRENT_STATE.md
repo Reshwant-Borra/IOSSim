@@ -19,15 +19,17 @@ Experimental branch base, `main`, and `origin/main` at branch creation:
 The physical-install stabilization history through
 `f4b719fc62240eb3aa148c87c57a6862f161f2c1` is merged and pushed on `main`.
 
-Current local RC:
+Experimental local RC output:
 
 ```text
 .build/iossim/local-release/IOSSim-0.1.0-local.dmg
-sha256: 5ca34d69a9a80a1bf4469026c63e879a3d147f3f0c50e1cc436f1600134e18ba
-size: 15,603,686 bytes
-source: 06478bab66e5dc117932cff1c9575c607c35b72e
 classification: LOCAL_TEST_ONLY
 ```
+
+Regenerate this ignored artifact with `./iossim release-local` from the final
+clean experiment HEAD. Its adjacent `.release.json` and `.dmg.sha256` files are
+the authoritative local artifact provenance; this document does not pin a hash
+that would become stale after a documentation-only commit.
 
 What currently works:
 
