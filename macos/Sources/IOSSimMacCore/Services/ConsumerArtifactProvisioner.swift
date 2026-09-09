@@ -14,6 +14,7 @@ public actor ConsumerArtifactProvisioner {
     private let workspaceRootURL: URL?
     private let inventoryReader: any DeviceApplicationInventoryReading
     private let inventoryRetryPolicy: InstallationInventoryRetryPolicy
+    private let profileWriteOptions: Data.WritingOptions
     private var operationGeneration: UInt64?
 
     public init(
@@ -26,7 +27,8 @@ public actor ConsumerArtifactProvisioner {
         fileManager: FileManager = .default,
         workspaceRootURL: URL? = nil,
         inventoryReader: any DeviceApplicationInventoryReading = DevicectlApplicationInventoryReader(),
-        inventoryRetryPolicy: InstallationInventoryRetryPolicy = .postInstall
+        inventoryRetryPolicy: InstallationInventoryRetryPolicy = .postInstall,
+        profileWriteOptions: Data.WritingOptions = [.atomic, .completeFileProtection]
     ) {
         self.context = context
         self.stateStore = stateStore
@@ -39,6 +41,7 @@ public actor ConsumerArtifactProvisioner {
         self.workspaceRootURL = workspaceRootURL
         self.inventoryReader = inventoryReader
         self.inventoryRetryPolicy = inventoryRetryPolicy
+        self.profileWriteOptions = profileWriteOptions
     }
 
     static func installedIdentifiers(
@@ -609,8 +612,8 @@ public actor ConsumerArtifactProvisioner {
             }
             mainProfileURL = profilesURL.appendingPathComponent("main.mobileprovision")
             runnerProfileURL = profilesURL.appendingPathComponent("runner.mobileprovision")
-            try main.profileData.write(to: mainProfileURL, options: [.atomic, .completeFileProtection])
-            try runner.profileData.write(to: runnerProfileURL, options: [.atomic, .completeFileProtection])
+            try main.profileData.write(to: mainProfileURL, options: profileWriteOptions)
+            try runner.profileData.write(to: runnerProfileURL, options: profileWriteOptions)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mainProfileURL.path)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: runnerProfileURL.path)
         } else {
@@ -1535,7 +1538,7 @@ public actor ConsumerArtifactProvisioner {
                 throw nativeProfileFailure("Native preflight is missing the \(artifact) profile.")
             }
             let url = directory.appendingPathComponent("\(artifact).mobileprovision")
-            try profile.profileData.write(to: url, options: [.atomic, .completeFileProtection])
+            try profile.profileData.write(to: url, options: profileWriteOptions)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             _ = try profileState(
                 url: url,

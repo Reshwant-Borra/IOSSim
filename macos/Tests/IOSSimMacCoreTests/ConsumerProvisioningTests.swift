@@ -753,7 +753,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
 
         let result = try await provisioner.provision(harness.request)
@@ -780,7 +781,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
 
         let result = try await provisioner.provision(harness.request)
@@ -807,7 +809,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
 
         let result = try await provisioner.provision(harness.request)
@@ -827,7 +830,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .init(backoffNanoseconds: [0, 0])
+            inventoryRetryPolicy: .init(backoffNanoseconds: [0, 0]),
+            profileWriteOptions: .atomic
         )
 
         do {
@@ -857,7 +861,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
 
         do {
@@ -881,7 +886,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .init(backoffNanoseconds: [0])
+            inventoryRetryPolicy: .init(backoffNanoseconds: [0]),
+            profileWriteOptions: .atomic
         )
         do {
             _ = try await provisioner.provision(harness.request)
@@ -907,7 +913,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
 
         let result = try await provisioner.provision(harness.request)
@@ -939,7 +946,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
         let request = ConsumerProvisioningRequest(
             operation: .refresh,
@@ -979,7 +987,8 @@ final class ConsumerProvisioningTests: XCTestCase {
                 nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
                 workspaceRootURL: harness.workspaces,
                 inventoryReader: inventory,
-                inventoryRetryPolicy: .immediateTesting
+                inventoryRetryPolicy: .immediateTesting,
+                profileWriteOptions: .atomic
             )
         }
 
@@ -1023,7 +1032,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeArtifactStore: harness.nativeStore,
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
-            inventoryRetryPolicy: .immediateTesting
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
         )
 
         do {
@@ -1076,7 +1086,23 @@ final class ConsumerProvisioningTests: XCTestCase {
             profiles: profiles
         )
         let nativeStore = NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("Native"))
-        try await nativeStore.save(preparation, selectedDeviceIdentifier: physicalUDID)
+        // This harness exercises the downstream signing/install state machine,
+        // not NativeProvisioningArtifactStore.save (which has its own protected-
+        // data tests). Materialize the valid envelope directly so these state
+        // tests remain runnable while macOS protected data is unavailable.
+        let artifactURL = await nativeStore.artifactURL
+        try FileManager.default.createDirectory(
+            at: artifactURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let artifactEncoder = JSONEncoder()
+        artifactEncoder.dateEncodingStrategy = .iso8601
+        artifactEncoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try artifactEncoder.encode(NativeProvisioningArtifacts(
+            preparation: preparation,
+            selectedDeviceIdentifier: physicalUDID
+        )).write(to: artifactURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: artifactURL.path)
         try makeConsumerArtifactFixture(at: resources)
         let recorder = NativePipelineRecorder(
             team: team,
@@ -1100,7 +1126,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeArtifactStore: nativeStore,
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             faultInjector: faultInjector,
-            workspaceRootURL: workspaces
+            workspaceRootURL: workspaces,
+            profileWriteOptions: .atomic
         )
         return (
             root, resources, workspaces, team, physicalUDID, nativeStore, stateStore, recorder, runner,
