@@ -32,6 +32,8 @@ struct SetupWizardView: View {
                     AppleAccountView()
                 case .installing:
                     InstallationView()
+                case .developerProfileTrust:
+                    DeveloperProfileTrustView()
                 case .runtimeSetup:
                     RuntimeSetupView()
                 case .verifying:
@@ -85,6 +87,8 @@ struct WizardControls: View {
             return "Check Again"
         case .runtimeSetup:
             return "I Finished Setup"
+        case .developerProfileTrust:
+            return "Continue"
         case .waitingForDevice:
             return (store.status?.device.devices.isEmpty == false) ? "Continue" : "Check Again"
         case .appleAccount:
@@ -106,6 +110,8 @@ struct WizardControls: View {
             store.refresh()
         case .runtimeSetup:
             store.confirmRuntimeSetup()
+        case .developerProfileTrust:
+            store.continueDeveloperProfileTrust()
         case .appleAccount:
             if store.personalTeams.isEmpty { store.refresh() } else { store.continueFromCurrentStatus() }
         case .waitingForDevice:
@@ -322,36 +328,91 @@ struct InstallationView: View {
 
 struct AppleAccountView: View {
     @EnvironmentObject private var store: SetupStore
+    @State private var appleAccount = ""
+    @State private var password = ""
+    @State private var verificationCode = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Apple Account")
+            if store.nativeProvisioningExperiment {
+                Text("LOCAL TEST ONLY — Experimental Personal Team provisioning")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            Text(store.appleVerificationChallenge == nil ? "Apple Authorization" : "Apple Verification")
                 .font(.title2.weight(.semibold))
-            Text("Choose the Personal Team IOSSim should use for this iPhone.")
-                .foregroundStyle(.secondary)
-            if store.personalTeams.isEmpty {
+            if let challenge = store.appleVerificationChallenge {
+                Text(challenge.method == .trustedDevice
+                    ? "Enter the code Apple sent to your trusted device."
+                    : "Enter the verification code Apple sent by text message.")
+                    .foregroundStyle(.secondary)
+                SecureField("Apple Verification Code", text: $verificationCode)
+                    .textContentType(.oneTimeCode)
+                    .frame(maxWidth: 280)
+                    .onSubmit(verify)
+                Button("Verify", action: verify)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(verificationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isRunning)
+            } else if store.personalTeams.isEmpty {
+                Text("IOSSim uses your Apple Account to authorize its on-device components.")
+                    .foregroundStyle(.secondary)
+                TextField("Apple Account", text: $appleAccount)
+                    .textContentType(.username)
+                    .frame(maxWidth: 360)
+                SecureField("Password", text: $password)
+                    .textContentType(.password)
+                    .frame(maxWidth: 360)
+                    .onSubmit(authorize)
+                Button("Continue", action: authorize)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        appleAccount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || password.isEmpty
+                            || store.isRunning
+                    )
                 FriendlyCheckRow(
-                    title: "Apple account needed",
-                    detail: "Open Xcode Settings > Accounts, sign in with your Apple Account, then return here.",
-                    state: .action
+                    title: "Your account stays private",
+                    detail: "Your credentials are used locally to authenticate with Apple and are never sent to IOSSim servers. Apple may require two-factor verification. Free Apple authorization needs periodic refresh.",
+                    state: .pass
                 )
             } else {
-                Picker("Personal Team", selection: Binding(
-                    get: { store.selectedTeamIdentifier ?? "" },
-                    set: { store.selectTeam(identifier: $0) }
-                )) {
-                    Text("Choose an account").tag("")
-                    ForEach(store.personalTeams) { team in
-                        Text(team.userDisplayName).tag(team.teamIdentifier)
+                FriendlyCheckRow(
+                    title: "Apple authorization",
+                    detail: store.selectedTeam?.userDisplayName ?? "Ready",
+                    state: .pass
+                )
+                if store.selectedTeam == nil {
+                    Picker("Account", selection: Binding(
+                        get: { store.selectedTeamIdentifier ?? "" },
+                        set: { store.selectTeam(identifier: $0) }
+                    )) {
+                        Text("Choose an account").tag("")
+                        ForEach(store.personalTeams) { team in
+                            Text(team.userDisplayName).tag(team.teamIdentifier)
+                        }
                     }
+                    .pickerStyle(.radioGroup)
                 }
-                .pickerStyle(.radioGroup)
-                Text("IOSSim uses Xcode’s existing signed-in account. Your password and verification codes are never requested or stored.")
-                    .font(.callout)
+            }
+            if store.nativeProvisioningExperiment {
+                Text("Safe stage: \(store.liveProvisioningCheckpoint?.rawValue ?? store.appleAuthorization.stage.rawValue)")
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
+    }
+
+    private func authorize() {
+        let account = appleAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.beginAppleAuthorization(account: account, password: password)
+        password.removeAll(keepingCapacity: false)
+    }
+
+    private func verify() {
+        let code = verificationCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.submitAppleVerification(code: code)
+        verificationCode.removeAll(keepingCapacity: false)
     }
 }
 
@@ -387,9 +448,34 @@ struct RuntimeSetupView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Finish Device Pairing")
                     .font(.headline)
-                Text("Open IOSSim on your iPhone and complete the device pairing step. Your pairing information stays on your device.")
+                Text("Keep your iPhone unlocked while IOSSim prepares and verifies the secure connection.")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+struct DeveloperProfileTrustView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Trust IOSSim on your iPhone")
+                .font(.title2.weight(.semibold))
+            Text("Apple requires you to trust apps installed with your Personal Team before they can open.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("1. Open Settings on your iPhone.")
+                Text("2. Go to General.")
+                Text("3. Open VPN & Device Management.")
+                Text("4. Select the developer profile for the Apple Account you used with IOSSim.")
+                Text("5. Tap Trust, then confirm.")
+                Text("6. Return to IOSSim on your Mac.")
+                Text("7. Click Continue.")
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            Text("If IOSSim was already trusted, Continue will verify it without reinstalling anything.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -408,12 +494,29 @@ struct VerifyingView: View {
 }
 
 struct CompletionView: View {
+    @EnvironmentObject private var store: SetupStore
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Setup Complete")
                 .font(.title2.weight(.semibold))
             Text("IOSSim is ready to manage setup, repair, and component updates from this Mac.")
                 .foregroundStyle(.secondary)
+            if store.nativeProvisioningExperiment {
+                FriendlyCheckRow(
+                    title: "LOCAL TEST ONLY",
+                    detail: "Personal Team provisioning, signing, installation, and setup completed on this Mac and iPhone.",
+                    state: .pass
+                )
+                Button("Export Support Report") { store.exportSupportBundle() }
+                    .disabled(store.isRunning)
+                if let url = store.lastSupportBundleURL {
+                    Text("Saved to \(url.path)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
         }
     }
 }

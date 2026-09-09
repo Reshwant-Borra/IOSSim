@@ -135,13 +135,17 @@ struct ProvisionerTool {
                 return 0
             case "consumer-provision":
                 return await consumerProvision(arguments: Array(args.dropFirst()), context: context)
+            case "consumer-resume-setup":
+                return await consumerProvision(arguments: Array(args.dropFirst()), context: context, resume: true)
             case "support-bundle":
                 guard let output = optionValue("--output", in: Array(args.dropFirst())) else {
                     fputs("SUPPORT_OUTPUT_REQUIRED: provide --output <path>.\n", stderr)
                     return 2
                 }
+                let release = try? context.loadManifest().release
                 let exported = try await SupportBundleExporter.export(
                     to: URL(fileURLWithPath: output),
+                    release: release,
                     runner: context.runner
                 )
                 try printJSON(ProvisionerOutput(
@@ -240,17 +244,56 @@ struct ProvisionerTool {
             action: macSupported ? nil : "Upgrade macOS.",
             requiredFor: "mac"
         ))
-        let backendKind = ProvisioningBackendKind.selected()
-        let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil || RuntimeProvisioning.devicectlForbidden()
+        let consumerSelection = RuntimeProvisioning.consumerBackendSelection(resourcesURL: context.resourcesURL)
+        let xcodePresent = consumerSelection.xcodePresent
+        let usesXcodeBackend = consumerSelection.backend.map {
+            [.xcodeFallback, .xcodeInvisible].contains($0)
+        } == true
+        var xcodeResult: ProcessResult?
+        var devicectlResult: ProcessResult?
+        if usesXcodeBackend {
+            xcodeResult = try? await context.runner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+                arguments: ["-version"],
+                workingDirectory: context.resourcesURL,
+                environment: RuntimeProvisioning.deterministicEnvironment()
+            )
+            devicectlResult = try? await context.runner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+                arguments: ["--find", "devicectl"],
+                workingDirectory: context.resourcesURL,
+                environment: RuntimeProvisioning.deterministicEnvironment()
+            )
+        }
+        let fullXcodeAvailable = xcodeResult?.exitCode == 0
+        let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil
+            || RuntimeProvisioning.devicectlForbidden()
+            || devicectlResult?.exitCode != 0
+        let appleToolingReady = consumerSelection.ready
+            && (!usesXcodeBackend || (fullXcodeAvailable && !devicectlUnavailable))
         checks.append(DoctorCheck(
-            state: backendKind == .devicectl && devicectlUnavailable ? .action : .pass,
-            component: "Apple Tooling",
-            name: backendKind == .devicectl ? "xcrun devicectl" : "idevice backend",
-            detail: backendKind == .devicectl
-                ? (RuntimeProvisioning.devicectlForbidden() ? "forbidden by test mode" : (RuntimeProvisioning.xcrunURL()?.path ?? "missing"))
-                : "selected",
-            action: backendKind == .devicectl && devicectlUnavailable ? "Install/select Apple developer tools or choose a non-devicectl backend." : nil,
-            requiredFor: "mac"
+            state: .pass,
+            component: "Provisioning",
+            name: "backend selection",
+            detail: "preference=\(consumerSelection.preference.rawValue) backend=\(consumerSelection.backend?.rawValue ?? "NONE") zeroXcodeMode=\(consumerSelection.zeroXcodeMode)",
+            requiredFor: "authorization"
+        ))
+        checks.append(DoctorCheck(
+            state: .pass,
+            component: "Provisioning",
+            name: "xcodePresent",
+            detail: xcodePresent ? "true" : "false",
+            requiredFor: "diagnostics"
+        ))
+        checks.append(DoctorCheck(
+            state: appleToolingReady ? .pass : .action,
+            component: "Provisioning",
+            name: consumerSelection.zeroXcodeMode ? "native Personal Team backend" : "headless Xcode backend",
+            detail: appleToolingReady
+                ? (xcodeResult?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ready")
+                : (consumerSelection.failureCode ?? "backend unavailable"),
+            action: appleToolingReady ? nil : "IOSSim could not prepare Apple authorization on this Mac.",
+            requiredFor: "authorization"
         ))
         do {
             let manifest = try context.loadManifest()
@@ -289,6 +332,7 @@ struct ProvisionerTool {
                 requiredFor: "mac"
             ))
         }
+        let consumerManifest = try? await ConsumerProvisioningStateStore().loadManifest()
         var devices = await AppleDeviceTool.discoverDevices(context: context)
         if let manifestForEligibility {
             var enrichedDevices: [DetectedDevice] = []
@@ -308,6 +352,7 @@ struct ProvisionerTool {
                 let installedBundleIdentifiers = await installedProjectBundleIdentifiers(
                     for: device.selectionIdentifier,
                     manifest: manifestForEligibility,
+                    consumerManifest: consumerManifest,
                     context: context
                 )
                 enrichedDevices.append(device.withProvisioningState(
@@ -383,7 +428,6 @@ struct ProvisionerTool {
                 }
             }
         }
-        let consumerManifest = try? await ConsumerProvisioningStateStore().loadManifest()
         let confirmedDeviceConnected = consumerManifest.map { manifest in
             manifest.runtimeSetupStatus == .ready && devices.contains {
                 PersonalTeamProvisioningPOC.deviceIdentifierHash($0.selectionIdentifier) == manifest.deviceIdentifierHash
@@ -395,7 +439,7 @@ struct ProvisionerTool {
                 component: "Runtime",
                 name: "PAIRING MATERIAL",
                 detail: "stored on iPhone; never bundled",
-                action: "Open IOSSim on your iPhone and complete the pairing import.",
+                action: "Keep your iPhone unlocked while IOSSim prepares and verifies the secure connection.",
                 requiredFor: "device"
             ))
             checks.append(DoctorCheck(
@@ -432,12 +476,17 @@ struct ProvisionerTool {
           consumer-teams --json [--device <id>]
           consumer-status --json
           consumer-runtime-ready --json
-          consumer-provision --operation install|refresh|repair --device <id> --team <team-id>
+          consumer-provision --operation install|refresh|repair --device <id> --team <team-id> [--backend NATIVE_PERSONAL_TEAM|XCODE_FALLBACK]
+          consumer-resume-setup --operation install|refresh|repair --device <id> --team <team-id> [--generation <id>]
           support-bundle --output <zip-path> --json
         """)
     }
 
-    private func consumerProvision(arguments: [String], context: RuntimeProvisioningContext) async -> Int32 {
+    private func consumerProvision(
+        arguments: [String],
+        context: RuntimeProvisioningContext,
+        resume: Bool = false
+    ) async -> Int32 {
         guard let rawOperation = optionValue("--operation", in: arguments),
               let operation = ConsumerProvisioningOperation(rawValue: rawOperation.uppercased()),
               let device = optionValue("--device", in: arguments), !device.isEmpty,
@@ -445,7 +494,7 @@ struct ProvisionerTool {
             let failure = ConsumerProvisioningFailure(
                 code: .deviceSelectionRequired,
                 stage: .waitingForDeviceSelection,
-                userMessage: "Choose an iPhone and Personal Team before installing.",
+                userMessage: "IOSSim needs an iPhone and Apple authorization before installing.",
                 remediation: "Return to setup and make both selections.",
                 developerDetail: "consumer-provision requires --operation, --device, and --team."
             )
@@ -457,13 +506,31 @@ struct ProvisionerTool {
             return 2
         }
         do {
+            let backend: ConsumerProvisioningBackendIdentifier
+            if let rawBackend = optionValue("--backend", in: arguments) {
+                guard let parsed = ConsumerProvisioningBackendIdentifier(rawValue: rawBackend) else {
+                    throw ConsumerProvisioningFailure(
+                        code: .unsupported,
+                        stage: .preparingIdentities,
+                        userMessage: "IOSSim could not select its signing pipeline.",
+                        remediation: "Reinstall IOSSim and try again.",
+                        developerDetail: "Unknown consumer provisioning backend."
+                    )
+                }
+                backend = parsed
+            } else {
+                backend = .xcodeFallback
+            }
             let request = ConsumerProvisioningRequest(
                 operation: operation,
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
-                allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install")
+                allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install"),
+                backend: backend,
+                generation: optionValue("--generation", in: arguments).flatMap(UInt64.init)
             )
-            let result = try await ConsumerArtifactProvisioner(context: context).provision(request)
+            let provisioner = ConsumerArtifactProvisioner(context: context)
+            let result = try await (resume ? provisioner.resumeSetup(request) : provisioner.provision(request))
             try printJSON(ProvisionerOutput(
                 ok: true,
                 schemaVersion: RuntimeProvisioning.helperSchemaVersion,
@@ -591,19 +658,30 @@ private func uniqueDetails(from summaries: [ProvisioningProfileSummary]) -> Stri
 private func installedProjectBundleIdentifiers(
     for rawDeviceIdentifier: String,
     manifest: ArtifactManifest,
+    consumerManifest: ConsumerProvisioningManifest?,
     context: RuntimeProvisioningContext
 ) async -> [String]? {
     var installed: [String] = []
     for component in manifest.components {
+        let consumerStateApplies = consumerManifest?.deviceIdentifierHash
+            == PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier)
+        let installedBundleIdentifier: String
+        if consumerStateApplies, component.role == "iosMain", let consumerManifest {
+            installedBundleIdentifier = consumerManifest.installedMainBundleID
+        } else if consumerStateApplies, component.role == "locationControlRunner", let consumerManifest {
+            installedBundleIdentifier = consumerManifest.installedRunnerBundleID
+        } else {
+            installedBundleIdentifier = component.bundleIdentifier
+        }
         guard let isInstalled = await AppleDeviceTool.isAppInstalled(
-            bundleIdentifier: component.bundleIdentifier,
+            bundleIdentifier: installedBundleIdentifier,
             rawDeviceIdentifier: rawDeviceIdentifier,
             context: context
         ) else {
             return nil
         }
         if isInstalled {
-            installed.append(component.bundleIdentifier)
+            installed.append(installedBundleIdentifier)
         }
     }
     return installed

@@ -88,10 +88,14 @@ public struct BundledProvisioningEngine: IOSSimSetupEngine {
             "consumer-provision",
             "--operation", request.operation.rawValue.lowercased(),
             "--device", request.selectedDeviceIdentifier,
-            "--team", request.selectedTeamIdentifier
+            "--team", request.selectedTeamIdentifier,
+            "--backend", request.backend.rawValue
         ]
         if request.allowFreshInstallAfterCrossTeamConflict {
             arguments.append("--confirm-fresh-install")
+        }
+        if let generation = request.generation {
+            arguments += ["--generation", String(generation)]
         }
         let result = try await runHelper(
             arguments: arguments,
@@ -100,6 +104,25 @@ public struct BundledProvisioningEngine: IOSSimSetupEngine {
         guard result.exitCode == 0 else {
             if let failure = try? decodeFailure(from: result.stdout) { throw failure }
             throw ProcessFailure(commandName: "consumer-provision", result: redacted(result))
+        }
+        return try decodeEnvelope(ConsumerProvisioningResult.self, from: result.stdout)
+    }
+
+    public func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
+        var arguments = [
+            "consumer-resume-setup",
+            "--operation", request.operation.rawValue.lowercased(),
+            "--device", request.selectedDeviceIdentifier,
+            "--team", request.selectedTeamIdentifier,
+            "--backend", request.backend.rawValue
+        ]
+        if let generation = request.generation {
+            arguments += ["--generation", String(generation)]
+        }
+        let result = try await runHelper(arguments: arguments, commandName: "consumer-resume-setup")
+        guard result.exitCode == 0 else {
+            if let failure = try? decodeFailure(from: result.stdout) { throw failure }
+            throw ProcessFailure(commandName: "consumer-resume-setup", result: redacted(result))
         }
         return try decodeEnvelope(ConsumerProvisioningResult.self, from: result.stdout)
     }

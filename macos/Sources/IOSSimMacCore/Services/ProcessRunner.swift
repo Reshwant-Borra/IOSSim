@@ -16,7 +16,23 @@ public struct ProcessFailure: Error, Equatable, Sendable {
 }
 
 public final class ProcessRunner: @unchecked Sendable {
-    public init() {}
+    public typealias RunHandler = @Sendable (
+        URL,
+        [String],
+        URL,
+        [String: String]?,
+        Bool
+    ) async throws -> ProcessResult
+
+    private let runHandler: RunHandler?
+
+    public init() {
+        self.runHandler = nil
+    }
+
+    public init(runHandler: @escaping RunHandler) {
+        self.runHandler = runHandler
+    }
 
     public func run(
         executableURL: URL,
@@ -25,6 +41,9 @@ public final class ProcessRunner: @unchecked Sendable {
         environment: [String: String]? = nil,
         redactOutput: Bool = true
     ) async throws -> ProcessResult {
+        if let runHandler {
+            return try await runHandler(executableURL, arguments, workingDirectory, environment, redactOutput)
+        }
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments

@@ -11,6 +11,7 @@ struct POCUnitChecks {
     try topLevelArrayIsRejected()
     try inMemoryStoreValidatesBeforeSaving()
     try deleteRemovesPairing()
+    try updatedPairingStatePersistsOnlyWhenChangedAndValid()
     try localDevVPNRouteDetection()
     await routeProbeSurfacesEndpointAndTCPResult()
     await localDevVPNReadinessUsesDeveloperEndpointReachability()
@@ -156,6 +157,37 @@ struct POCUnitChecks {
     try store.deletePairingData()
     let summary = try store.pairingSummary()
     try require(summary == nil, "delete removes pairing")
+  }
+
+  static func updatedPairingStatePersistsOnlyWhenChangedAndValid() throws {
+    let original = try makePairingPlist(identifier: "12345678-1234-1234-1234-123456789abc")
+    let updated = try makePairingPlist(identifier: "abcdefab-cdef-abcd-efab-cdefabcdefab")
+    let store = InMemoryRPPairingStore(data: original)
+
+    let unchanged = try RPPairingUpdatePersistence.persistIfChanged(
+      original,
+      originalData: original,
+      store: store)
+    try require(!unchanged, "unchanged pairing state is not rewritten")
+    let afterUnchanged = try store.loadPairingData()
+    try require(afterUnchanged == original, "unchanged pairing state remains intact")
+
+    let persisted = try RPPairingUpdatePersistence.persistIfChanged(
+      updated,
+      originalData: original,
+      store: store)
+    try require(persisted, "updated pairing state is persisted")
+    let afterUpdate = try store.loadPairingData()
+    try require(afterUpdate == updated, "updated pairing state is reusable")
+
+    try expectThrows {
+      _ = try RPPairingUpdatePersistence.persistIfChanged(
+        Data("invalid pairing".utf8),
+        originalData: updated,
+        store: store)
+    }
+    let afterInvalidUpdate = try store.loadPairingData()
+    try require(afterInvalidUpdate == updated, "invalid update cannot replace usable pairing state")
   }
 
   static func localDevVPNRouteDetection() throws {

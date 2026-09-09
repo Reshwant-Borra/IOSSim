@@ -26,15 +26,18 @@ public final class KeychainRPPairingStore: RPPairingStore, @unchecked Sendable {
     public func importPairingData(_ data: Data) throws -> RPPairingSummary {
         let summary = try RPPairingValidator.validate(data)
         let query = baseQuery()
-        SecItemDelete(query as CFDictionary)
-
-        var attributes = query
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = accessible
-
-        let status = SecItemAdd(attributes as CFDictionary, nil)
+        let replacement: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: accessible
+        ]
+        var status = SecItemUpdate(query as CFDictionary, replacement as CFDictionary)
+        if status == errSecItemNotFound {
+            var attributes = query
+            replacement.forEach { attributes[$0.key] = $0.value }
+            status = SecItemAdd(attributes as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
-            throw POCError(.pairingStorageFailed, "Keychain add failed with OSStatus \(status).", stage: .pairingImported)
+            throw POCError(.pairingStorageFailed, "Keychain write failed with OSStatus \(status).", stage: .pairingImported)
         }
         return summary
     }
@@ -76,6 +79,23 @@ public final class KeychainRPPairingStore: RPPairingStore, @unchecked Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+    }
+}
+
+public enum RPPairingUpdatePersistence {
+    /// Persists only a semantically valid changed record. The store owns the
+    /// secure/atomic storage mechanism; no pairing bytes are logged here.
+    @discardableResult
+    public static func persistIfChanged(
+        _ updatedData: Data,
+        originalData: Data,
+        store: RPPairingStore?
+    ) throws -> Bool {
+        guard updatedData != originalData else { return false }
+        _ = try RPPairingValidator.validate(updatedData)
+        guard let store else { return false }
+        _ = try store.importPairingData(updatedData)
+        return true
     }
 }
 

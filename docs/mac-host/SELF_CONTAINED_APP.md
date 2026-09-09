@@ -2,6 +2,13 @@
 
 This milestone separates developer build dependencies from consumer runtime dependencies.
 
+Current note: the live native Personal Team path no longer relies on a user
+signing into Xcode Accounts. The packaged app still uses installed Xcode
+developer tooling, especially `/usr/bin/xcrun devicectl`, but the intended
+consumer authorization flow happens inside IOSSim. See
+[../PROVISIONING_AND_SIGNING.md](../PROVISIONING_AND_SIGNING.md) and
+[../RELEASE_AND_DISTRIBUTION.md](../RELEASE_AND_DISTRIBUTION.md).
+
 ## Runtime Architecture
 
 Development app builds still use:
@@ -44,9 +51,9 @@ It must not include repository source, `.git`, the Python bootstrap, Node module
 | Node/npm | frontend engineering UI/tests | Yes | No | Yes from runtime | N/A | No | No | No for packaged app | Avoids frontend source/runtime exposure |
 | Rust/cargo/rustup | build idevice FFI static archive | Yes | No | Yes from runtime | Yes | No | No | No for packaged app | Rust paths are remapped before packaging |
 | Swift compiler | build Mac/helper/iOS apps | Yes | No | Yes from runtime | Yes | No | Xcode-provided | No for packaged app | No source shipped |
-| Xcode/xcodebuild | build profile-free artifacts at package time; generate temporary signing shells at consumer install time | Yes | Yes for Personal Team provisioning | No in current proven path | Yes | No | Full Xcode | Sign in through Xcode | Account credentials remain Xcode-managed |
+| Xcode/xcodebuild | build profile-free artifacts at package time; compatibility signing-shell fallback | Yes | Compatibility only in current native flow | No in current proven device path | Yes | No | Full Xcode | Install Xcode; clean-Mac first-launch requirements unproven | Current native path authorizes Apple Account inside IOSSim |
 | xcrun/devicectl | discover devices and install bundled apps | Yes | Yes | Not yet | No | No | Xcode/Apple developer tools | Install/select Apple developer tools | Current proven install path |
-| codesign/security | prepare profile-free artifacts; sign and inspect selected-team artifacts | Yes | Yes during provisioning | No | N/A | No | macOS/Xcode | Xcode-managed signing identity required | No private key material packaged |
+| codesign/security | prepare profile-free artifacts; sign and inspect selected-team artifacts | Yes | Yes during provisioning | No | N/A | No | macOS/Xcode | IOSSim-managed native identity or compatibility Xcode identity | No private key material packaged |
 | DeveloperDiskImage/developer services | CoreDevice install/XCTest support | Yes via Xcode | Yes indirectly through devicectl/XCTest runner | Not yet proven | No | No | Xcode/private Apple stack | Apple tools required | Apple-controlled boundary |
 | IOSSim iPhone app | owned runtime app | Yes | Installed from bundle | No | Yes | Yes | No | Device must accept profile | Development profile limits devices |
 | Witness app | developer validation only | Yes | No | Yes from consumer package | Yes | No | No | None for consumers | Retained in source and development workflows |
@@ -57,11 +64,13 @@ It must not include repository source, `.git`, the Python bootstrap, Node module
 
 ## Xcode Boundary
 
-Xcode remains required on the consumer Mac. The packaged helper uses
-`xcodebuild` to obtain Xcode-managed Personal Team profiles and uses
-`codesign`, `security`, and `/usr/bin/xcrun devicectl` to prepare, verify, and
-install the two artifacts. It does not call Git, Python, Node, npm, cargo,
-rustup, repository scripts, or an IOSSim source project at runtime.
+Xcode remains required on the consumer Mac because the current physical device
+path uses Apple's installed CoreDevice tooling through `/usr/bin/xcrun
+devicectl`. The native Personal Team path obtains Apple authorization inside
+IOSSim and reuses IOSSim-managed signing material. The packaged helper still
+uses `codesign`, `security`, and `devicectl` to prepare, verify, and install the
+two artifacts. It does not call Git, Python, Node, npm, cargo, rustup,
+repository scripts, or an IOSSim source project at runtime.
 
 Removing `xcrun devicectl` should be handled as a later focused milestone behind an Apple tooling adapter or a direct compiled idevice/CoreDevice integration.
 

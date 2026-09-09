@@ -5,7 +5,10 @@ import SwiftUI
 enum POCAppDependencies {
   static let recorder = SessionDiagnosticRecorder.shared
   static let store = KeychainRPPairingStore()
-  static let tunnelClient = IdeviceOnDeviceTunnelClient(recorder: recorder)
+  static let tunnelClient = IdeviceOnDeviceTunnelClient(
+    recorder: recorder,
+    pairingStore: store
+  )
   static let locationCoordinator = LocationCoordinator(
     pairingStore: store,
     tunnelClient: tunnelClient,

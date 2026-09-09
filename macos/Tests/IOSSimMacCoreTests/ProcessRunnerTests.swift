@@ -36,4 +36,23 @@ final class ProcessRunnerTests: XCTestCase {
 
         XCTAssertEqual(result.stdout, identifier)
     }
+
+    func testCodesigningFingerprintIsRedactedByDefaultButPreservedForInternalMatching() async throws {
+        let fingerprint = "ECB013F5978D9E00E71989ECFE71FCF2DDB4D6A2"
+        let runner = ProcessRunner()
+        let redacted = try await runner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+            arguments: [fingerprint],
+            workingDirectory: URL(fileURLWithPath: "/tmp")
+        )
+        let internalResult = try await runner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/printf"),
+            arguments: [fingerprint],
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            redactOutput: false
+        )
+
+        XCTAssertEqual(redacted.stdout, "[REDACTED_HEX]")
+        XCTAssertEqual(internalResult.stdout, fingerprint)
+    }
 }

@@ -63,6 +63,7 @@ public actor ConsumerProvisioningStateStore {
         } else {
             try fileManager.moveItem(at: temporaryURL, to: manifestURL)
         }
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifestURL.path)
     }
 
     public func markRuntimeSetupReady(checkedAt: Date = Date()) throws -> ConsumerProvisioningManifest {
@@ -94,6 +95,7 @@ public actor ConsumerProvisioningStateStore {
         } else {
             try data.write(to: logURL, options: [.atomic])
         }
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
     }
 
     public func loadEvents(limit: Int = 500) -> [ProvisioningLogEvent] {
@@ -139,7 +141,12 @@ public actor ConsumerProvisioningStateStore {
     }
 
     private func ensureDirectory() throws {
-        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
     }
 }
 
