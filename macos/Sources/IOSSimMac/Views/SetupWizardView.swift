@@ -169,7 +169,9 @@ struct MacCheckView: View {
     }
 
     private func rowState(component: String) -> CheckState {
-        let equivalentComponents: Set<String> = component == "Apple Tooling" ? ["Apple Tooling", "Xcode"] : [component]
+        let equivalentComponents: Set<String> = component == "Apple Tooling"
+            ? ["Apple Tooling", "Xcode", "Apple Developer Components"]
+            : [component]
         guard let checks = store.status?.checks.filter({ equivalentComponents.contains($0.component) }), !checks.isEmpty else {
             return store.isRunning ? .skip : .warn
         }
@@ -423,13 +425,13 @@ struct RuntimeSetupView: View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Finish setup on your iPhone")
                 .font(.title2.weight(.semibold))
-            Text("Open IOSSim, tap Set Up IOSSim, and run Setup until the iPhone shows Setup Complete. Keep LocalDevVPN enabled while setup runs.")
+            Text("Open LocalDevVPN and enable the connection. Keep your iPhone unlocked, then return here; IOSSim will prepare and verify the secure connection automatically.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(store.status?.runtimeActionChecks ?? []) { check in
                 runtimeBlock(for: check)
             }
-            Text("After the iPhone shows Setup Complete, return here and confirm below.")
+            Text("When LocalDevVPN is active, continue below to finish setup.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

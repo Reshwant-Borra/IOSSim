@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Guided first-run / recovery setup flow. Translates the same diagnostic
 /// stages the original developer console showed (Pairing, LocalDevVPN,
@@ -9,7 +8,6 @@ import UniformTypeIdentifiers
 /// translated.
 struct SetupView: View {
     @ObservedObject private var connectionStatus = POCAppDependencies.connectionStatus
-    @State private var showingImporter = false
 
     var body: some View {
         List {
@@ -22,9 +20,9 @@ struct SetupView: View {
             step(
                 title: "Pairing",
                 state: connectionStatus.pairingStep,
-                detail: "Import the RPPairing file you generated on your Mac.",
-                actionLabel: "Import RPPairing File",
-                action: { showingImporter = true }
+                detail: "Keep this iPhone unlocked while IOSSim on your Mac prepares the secure connection.",
+                actionLabel: nil,
+                action: nil
             )
 
             step(
@@ -74,20 +72,6 @@ struct SetupView: View {
         .navigationTitle("Set Up IOSSim")
         .task {
             await connectionStatus.refreshFromCurrentState()
-        }
-        .fileImporter(
-            isPresented: $showingImporter,
-            allowedContentTypes: [.propertyList, .data, .item],
-            allowsMultipleSelection: false
-        ) { result in
-            Task {
-                guard case .success(let urls) = result, let url = urls.first else { return }
-                let access = url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
-                guard let data = try? Data(contentsOf: url) else { return }
-                _ = try? await POCAppDependencies.runner.importPairing(data)
-                await connectionStatus.runSetup()
-            }
         }
     }
 

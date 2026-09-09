@@ -45,6 +45,7 @@ The packaged consumer app contains:
 
 - `Contents/MacOS/IOSSim`
 - `Contents/MacOS/IOSSimProvisioner`
+- `Contents/Helpers/IOSSimPairingHelper`
 - `Contents/Resources/DeviceArtifacts/manifest.json`
 - profile-free, re-signable `IOSSim DVT POC.app`
 - profile-free, re-signable `IOSSimLocationControlUITests-Runner.app`
@@ -83,12 +84,19 @@ Current audited uses include:
 | `/usr/bin/xcrun devicectl device info apps` | Authoritative installed-app inventory |
 | `/usr/bin/xcrun devicectl device process launch` | Developer-profile trust/runtime mapping launch check |
 | `/usr/bin/xcrun devicectl device copy from` | Runtime configuration readback |
+| `/usr/bin/xcrun devicectl device copy to` | Pairing candidate transfer into the private iPhone app data container |
 | `/usr/bin/codesign` | Consumer-time artifact signing and signature verification |
 | `/usr/bin/security` | Profile decoding, Keychain/certificate identity support |
 | `/usr/bin/xcodebuild` through `xcrun xcodebuild` | Compatibility Xcode fallback signing shell only; native Personal Team path does not use it for current prepared profiles |
 
-`DEVELOPER_DIR` is preserved from the environment when set; otherwise the system
-developer directory selected for `xcrun` is used.
+`DEVELOPER_DIR` is now selected per process from the best compatible stable
+Xcode. IOSSim does not modify the global `xcode-select` setting.
+
+The packaged Rust pairing helper is built for the configured Mac architectures
+from its lockfile at idevice commit
+`c442bd235bd14d6d5c8f28f85c9e6179e3a4c3d5`. Consumers do not need Rust,
+Cargo, Homebrew, or a separate `idevice_pair` download. Release builds remap
+developer paths and strip helper symbols before the package secret/path audit.
 
 ## Xcode Product Requirement
 

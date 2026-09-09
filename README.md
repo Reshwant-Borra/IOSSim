@@ -17,6 +17,7 @@ Current engineer entry points:
 - [Release and Distribution](docs/RELEASE_AND_DISTRIBUTION.md)
 - [Next Steps](docs/NEXT_STEPS.md)
 - [Engineering History](docs/ENGINEERING_HISTORY.md)
+- [Experimental Xcode and RPPairing Bootstrap](docs/XCODE_AND_RPPAIRING_BOOTSTRAP.md)
 
 Developer commands remain:
 

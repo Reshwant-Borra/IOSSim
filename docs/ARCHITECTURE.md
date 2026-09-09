@@ -18,11 +18,13 @@ IOSSim Mac app
   SetupStore
   BundledProvisioningEngine
   IOSSimProvisioner helper
+  Xcode prerequisite/bootstrap services (experimental)
+  isolated IOSSimPairingHelper (experimental)
   Keychain signing identity
   codesign/security
   xcrun devicectl / CoreDevice
         |
-        | sign, install, launch, inventory, runtime readback
+        | sign, install, launch, inventory, private pairing transfer/readback
         v
 Selected iPhone
   IOSSim iPhone app
@@ -53,6 +55,8 @@ Simulated system location
 | --- | --- | --- |
 | macOS IOSSim app | Onboarding, device selection, Apple Account authorization, provisioning orchestration, signing, installation, refresh, repair, support export | Implemented and locally packaged; current local RC physically pending regression |
 | `IOSSimProvisioner` helper | Bundled command boundary for doctor, consumer provisioning, resume, runtime confirmation, and support export | Implemented in `macos/Sources/IOSSimProvisioner/main.swift` |
+| `IOSSimPairingHelper` | Exact-device USB RPPairing generation and validation, isolated from the runtime dependency path | Implemented and automated-tested at the unchanged pinned idevice revision; physical pairing pending |
+| Xcode bootstrap services | Detect, download, validate, install, initialize, and qualify a per-process Xcode toolchain | Primitives automated-tested; Apple download-login adapter/UI and clean-Mac proof pending |
 | iPhone IOSSim app | User-facing runtime app for setup, Spoof, Drive, diagnostics, pairing import, and location simulation controls | Physically validated in earlier runtime gates and latest install/setup path |
 | XCTest runner | Signed support app used for XCUILocation runner launch and rich location simulation | Physically validated in Gate 3 and Personal Team install paths |
 | LocalDevVPN | iPhone-local network route that lets the app reach the local developer endpoint | Physically validated runtime dependency, not owned by this repo |
@@ -89,6 +93,9 @@ select exact iPhone
   -> guide Apple developer-profile trust if required
   -> launch main app only to write runtime mapping
   -> read back runtime configuration
+  -> create and validate selected-device RPPairing
+  -> transfer through the private app data container
+  -> verify iPhone-side tunnel use before Keychain commit
   -> COMPLETE
 ```
 
@@ -119,6 +126,11 @@ This architecture is feature-frozen. Do not redesign LocalDevVPN, RPPairing,
 RSD, DVT, TestManager, XCTest, XCUILocation, Spoof, Rich Drive, transport
 fallbacks, cadence, pause/resume, Stop & Hold, Clear Simulation, destination
 hold, or single-writer semantics unless a future task explicitly authorizes it.
+
+The new Mac pairing path changes only how an initial pairing record is created
+and delivered. The established Keychain store, RPPairing tunnel, retained RSD,
+DVT/TestManager, XCTest runner, XCUILocation, Spoof, Rich Drive, and
+single-writer runtime remain unchanged.
 
 ## Rich Drive
 

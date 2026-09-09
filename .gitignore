@@ -49,6 +49,7 @@ venv/
 .swiftpm/
 ios/.build/
 ios/.swiftpm/
+tools/iossim-pairing-helper/target/
 
 # Xcode user-local state
 **/xcuserdata/

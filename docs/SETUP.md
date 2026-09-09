@@ -8,17 +8,19 @@ For current architecture and evidence, start with
 The packaged IOSSim Mac app provides the current consumer setup flow:
 
 1. Open IOSSim on the Mac.
-2. Connect, unlock, and choose the iPhone.
-3. Tap "Trust This Computer?" on the iPhone if iOS asks.
-4. Enable Developer Mode if IOSSim asks.
-5. Authorize the Apple Account inside IOSSim with normal Apple 2FA.
-6. IOSSim discovers the Personal Team and prepares/reuses signing material.
-7. IOSSim signs and installs the main app and XCTest runner on the selected
+2. IOSSim verifies a compatible initialized Xcode and `devicectl` capability.
+3. Connect, unlock, and choose the iPhone.
+4. Tap "Trust This Computer?" on the iPhone if iOS asks.
+5. Enable Developer Mode if IOSSim asks.
+6. Authorize the Apple Account inside IOSSim with normal Apple 2FA.
+7. IOSSim discovers the Personal Team and prepares/reuses signing material.
+8. IOSSim signs and installs the main app and XCTest runner on the selected
    iPhone.
-8. If iOS requires it, trust the developer profile in Settings -> General ->
+9. If iOS requires it, trust the developer profile in Settings -> General ->
    VPN & Device Management.
-9. Continue in IOSSim so it verifies trust and runtime configuration.
-10. Finish iPhone runtime setup and reach Complete.
+10. Enable LocalDevVPN; IOSSim creates, privately transfers, and verifies
+    pairing for the exact selected iPhone.
+11. Finish iPhone runtime setup and reach Complete.
 
 Current requirement:
 
@@ -35,6 +37,13 @@ Current requirement:
 Xcode remains required because the current physical device backend uses Apple's
 `xcrun devicectl` / CoreDevice tooling. The clean-Mac test has not yet proven
 that installing Xcode without launching/configuring it is sufficient.
+
+The experimental branch detects and qualifies Xcode without changing global
+`xcode-select`. Its official HTTPS download, verification, macOS-owned install
+authorization, explicit license gate, and command-line initialization
+primitives exist, but the dedicated Apple download authentication adapter and
+consumer Install Xcode screen are not complete. See
+[Experimental Xcode and RPPairing Bootstrap](XCODE_AND_RPPAIRING_BOOTSTRAP.md).
 
 Read the current handoff docs:
 

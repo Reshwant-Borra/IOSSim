@@ -133,6 +133,8 @@ struct ProvisionerTool {
                     data: manifest
                 ))
                 return 0
+            case "prepare-pairing":
+                return await preparePairing(arguments: Array(args.dropFirst()), context: context)
             case "consumer-provision":
                 return await consumerProvision(arguments: Array(args.dropFirst()), context: context)
             case "consumer-resume-setup":
@@ -160,6 +162,53 @@ struct ProvisionerTool {
             }
         } catch {
             fputs("\(Redactor.redact(String(describing: error)))\n", stderr)
+            return 1
+        }
+    }
+
+    private func preparePairing(arguments: [String], context: RuntimeProvisioningContext) async -> Int32 {
+        do {
+            guard let selector = optionValue("--device", in: arguments), !selector.isEmpty else {
+                fputs("DEVICE_SELECTION_REQUIRED: choose one connected iPhone.\n", stderr)
+                return 2
+            }
+            guard let rawDeviceIdentifier = await AppleDeviceTool.rawDeviceIdentifier(
+                matching: selector,
+                context: context
+            ) else {
+                fputs("IPHONE_DISCONNECTED: reconnect the selected iPhone.\n", stderr)
+                return 2
+            }
+            guard let manifest = try await ConsumerProvisioningStateStore().loadManifest(),
+                  manifest.deviceIdentifierHash == PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier) else {
+                fputs("SELECTED_DEVICE_MISMATCH: setup state belongs to another iPhone.\n", stderr)
+                return 2
+            }
+            let generation = UInt64(optionValue("--generation", in: arguments) ?? "") ?? 0
+            let helperURL = context.resourcesURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("Helpers", isDirectory: true)
+                .appendingPathComponent("IOSSimPairingHelper")
+            let coordinator = AutomaticRPPairingCoordinator(
+                generator: BundledRPPairingHelper(helperURL: helperURL),
+                transfer: DevicectlRPPairingTransfer(runner: context.runner)
+            )
+            let receipt = try await coordinator.prepare(
+                selectedDeviceIdentifier: rawDeviceIdentifier,
+                mainBundleIdentifier: manifest.installedMainBundleID,
+                generation: generation,
+                isCurrent: { device, operationGeneration in
+                    device == rawDeviceIdentifier && operationGeneration == generation
+                }
+            )
+            try printJSON(ProvisionerOutput(
+                ok: true,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                data: receipt
+            ))
+            return 0
+        } catch {
+            fputs("PAIRING_PREPARATION_FAILED: \(Redactor.redact(String(describing: error)))\n", stderr)
             return 1
         }
     }
@@ -246,6 +295,8 @@ struct ProvisionerTool {
         ))
         let consumerSelection = RuntimeProvisioning.consumerBackendSelection(resourcesURL: context.resourcesURL)
         let xcodePresent = consumerSelection.xcodePresent
+        let xcodeReport = await XcodePrerequisiteDetector().detect()
+        let deviceTransportNeedsXcode = ProvisioningBackendKind.selected() == .devicectl
         let usesXcodeBackend = consumerSelection.backend.map {
             [.xcodeFallback, .xcodeInvisible].contains($0)
         } == true
@@ -268,9 +319,19 @@ struct ProvisionerTool {
         let fullXcodeAvailable = xcodeResult?.exitCode == 0
         let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil
             || RuntimeProvisioning.devicectlForbidden()
-            || devicectlResult?.exitCode != 0
+            || (deviceTransportNeedsXcode ? !xcodeReport.isReady : devicectlResult?.exitCode != 0)
         let appleToolingReady = consumerSelection.ready
             && (!usesXcodeBackend || (fullXcodeAvailable && !devicectlUnavailable))
+        checks.append(DoctorCheck(
+            state: deviceTransportNeedsXcode && !xcodeReport.isReady ? .action : .pass,
+            component: "Apple Developer Components",
+            name: "Xcode and devicectl",
+            detail: xcodeReport.detail,
+            action: deviceTransportNeedsXcode && !xcodeReport.isReady
+                ? "Install and prepare Apple developer components. You will not need to open Xcode."
+                : nil,
+            requiredFor: "mac"
+        ))
         checks.append(DoctorCheck(
             state: .pass,
             component: "Provisioning",
@@ -468,6 +529,7 @@ struct ProvisionerTool {
           doctor --json
           device-status --json
           install [--device <id>]
+          prepare-pairing --device <id> --generation <number> --json
           repair [--device <id>]
           verify [--device <id>]
           verify-artifacts --json

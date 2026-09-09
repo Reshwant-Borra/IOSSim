@@ -8,6 +8,11 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
     case waitingForDeviceSelection = "WAITING_FOR_DEVICE_SELECTION"
     case checkingDevice = "CHECKING_DEVICE"
     case checkingDeveloperMode = "CHECKING_DEVELOPER_MODE"
+    case checkingComputerTrust = "CHECKING_COMPUTER_TRUST"
+    case generatingPairing = "GENERATING_PAIRING"
+    case validatingPairing = "VALIDATING_PAIRING"
+    case transferringPairing = "TRANSFERRING_PAIRING"
+    case verifyingPairing = "VERIFYING_PAIRING"
     case discoveringAppleAccounts = "DISCOVERING_APPLE_ACCOUNTS"
     case waitingForTeamSelection = "WAITING_FOR_TEAM_SELECTION"
     case validatingTeam = "VALIDATING_TEAM"
@@ -57,7 +62,9 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
         case .idle: return "Ready to begin"
         case .checkingMac, .checkingXcodeSupport: return "Checking this Mac"
         case .discoveringDevices, .waitingForDeviceSelection: return "Finding your iPhone"
-        case .checkingDevice, .checkingDeveloperMode: return "Preparing your iPhone"
+        case .checkingDevice, .checkingDeveloperMode, .checkingComputerTrust,
+             .generatingPairing, .validatingPairing, .transferringPairing, .verifyingPairing:
+            return "Preparing your iPhone"
         case .discoveringAppleAccounts, .waitingForTeamSelection, .validatingTeam: return "Checking Apple signing"
         case .preparedNativeContextReused, .preparingIdentities, .profileCertificatePresent,
              .keychainCertificateFound, .keychainPrivateKeyFound, .certificatePublicKeyMatch,

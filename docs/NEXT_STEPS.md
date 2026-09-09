@@ -3,40 +3,53 @@
 Do not merge, redesign runtime architecture, replace signing architecture, or
 replace `devicectl` until the relevant phase below calls for it.
 
-## Phase 1: Same-Mac/Same-iPhone Regression
+## Immediate Boundary: Download Authentication and UI
 
-Test the current RC:
+Continue only on `work/automated-xcode-rppairing-bootstrap`. Implement a
+licensed, independently reviewed adapter that authenticates directly with
+Apple's developer-download service and returns an ephemeral authorized request
+to `AppleXcodeArchiveDownloader`. Then wire the existing bootstrap states into
+the Mac setup UI.
 
-```text
-.build/iossim/local-release/IOSSim-0.1.0-local.dmg
-sha256: 5ca34d69a9a80a1bf4469026c63e879a3d147f3f0c50e1cc436f1600134e18ba
-source: 06478bab66e5dc117932cff1c9575c607c35b72e
-classification: LOCAL_TEST_ONLY
-```
+Do not reuse the Personal Team Developer Services session without proof that
+Apple supports that session for downloads. Do not copy the reviewed
+`XcodesLoginKit` source unless its licensing is resolved. Password, 2FA,
+cookies, and authorization headers must not enter checkpoints or logs.
 
-Acceptance:
+## Phase 1: Local Opt-In Bootstrap Integration
 
-- existing authorization reused where valid;
-- current signing identity reused;
-- profiles reused where valid;
-- signing succeeds;
-- main installs;
-- runner installs;
-- automatic post-install inventory stabilization occurs;
-- no false "Cannot Verify Installation";
-- no unnecessary Try Again;
-- no unnecessary Fresh Install;
-- no false historical-team conflict;
-- developer-profile trust is shown only if actually required;
-- already-trusted profile skips the trust screen correctly;
-- runtime configuration writes and verifies;
-- setup reaches `COMPLETE`.
+With the authentication adapter and UI complete:
 
-Do not require the tester to delete Apple account state, delete certificates,
-delete profiles, remove Xcode state, reset the iPhone, or use another Mac for
-this phase.
+- exercise catalog/authentication with deterministic fixtures;
+- test password, 2FA, expired-session, cancellation, resume, and low-disk paths;
+- run one explicit opt-in official archive download only after displaying disk
+  requirements;
+- verify archive identity, signature, Apple Team ID, and Gatekeeper status;
+- install under a distinct IOSSim-owned Xcode name;
+- do not change global `xcode-select` or disturb existing Xcode;
+- require explicit license consent before `xcodebuild -runFirstLaunch`;
+- prove the selected per-process `DEVELOPER_DIR` passes the bounded
+  `devicectl`/CoreDevice probe.
 
-## Phase 2: Runtime Requalification
+## Phase 2: Same-Mac/Same-iPhone Pairing Regression
+
+Test the experimental automatic pairing path on an explicit test iPhone:
+
+- explicit selected-device identity remains stable;
+- Apple computer-trust prompts remain user-controlled;
+- the bundled helper creates and validates a new record over USB;
+- transfer uses only the private app data container;
+- failed validation preserves the existing Keychain record;
+- successful validation commits the device-updated record;
+- the non-secret receipt returns for the same transaction;
+- disconnecting the Mac leaves Spoof and Drive working.
+
+The current implementation regenerates the Mac candidate after a transfer
+failure. Add a protected, non-loggable retry checkpoint only if physical
+testing shows regeneration is disruptive; do not persist pairing material for
+convenience without a security review.
+
+## Phase 3: Frozen Runtime Requalification
 
 After Phase 1 passes, requalify the frozen iPhone runtime on the current flow:
 
@@ -55,49 +68,35 @@ After Phase 1 passes, requalify the frozen iPhone runtime on the current flow:
 
 This phase should not redesign the runtime.
 
-## Phase 3: Audit Xcode Dependencies
-
-Determine exactly what still requires:
-
-- Xcode installed;
-- Xcode first-launch initialization;
-- Xcode license acceptance;
-- Xcode Accounts;
-- developer directory selection;
-- `xcrun`;
-- `devicectl`;
-- CoreDevice;
-- `xcodebuild`;
-- iPhoneOS SDK;
-- DeveloperDiskImage/developer services.
-
-Document whether each dependency is build-time only, packaged runtime, consumer
-setup-time, or iPhone runtime.
-
 ## Phase 4: Clean-Mac Test
 
 Use a fresh Mac with no IOSSim repo or copied local development state:
 
-1. Install Xcode.
-2. Do not open Xcode.
-3. Do not configure Xcode Accounts.
-4. Install the IOSSim DMG.
-5. Launch IOSSim.
-6. Connect/unlock/trust the iPhone.
-7. Authorize Apple Account inside IOSSim.
-8. Run consumer setup through installation, trust if required, runtime config,
-   and `COMPLETE`.
+1. Install and launch the IOSSim DMG with no Xcode installed.
+2. Choose automatic Apple developer-components installation.
+3. Complete Apple download authentication and 2FA only inside IOSSim.
+4. Approve the macOS-owned installation prompt.
+5. Explicitly consent to the Xcode license step.
+6. Let IOSSim run command-line first-launch initialization and qualify
+   `devicectl`.
+7. Never open Xcode or configure Xcode Accounts.
+8. Connect, unlock, explicitly select, and trust the iPhone.
+9. Complete Personal Team authorization, signing, installation, developer
+   profile trust if required, runtime mapping, automatic pairing, and receipt
+   verification.
+10. Reach `COMPLETE`, disconnect the Mac, and test Spoof, Rich XCUILocation,
+    and Rich Drive.
 
 This is the qualification for the target claim: Xcode may be installed but the
 user does not need to open or configure it.
 
-## Phase 5A: If Clean-Mac Xcode-Only Passes
+## Phase 5A: If Clean-Mac Automatic Xcode Passes
 
 If Phase 4 passes, keeping an installed-Xcode dependency can remain a product
 decision. Then prioritize reliability, support reporting, refresh/expiry tests,
 and Developer ID/notarization.
 
-## Phase 5B: If Clean-Mac Xcode-Only Fails
+## Phase 5B: If Clean-Mac Automatic Xcode Fails
 
 If Phase 4 fails because Xcode must be opened/configured or `devicectl` carries
 unacceptable dependencies, remove the offending dependency. The likely path is a

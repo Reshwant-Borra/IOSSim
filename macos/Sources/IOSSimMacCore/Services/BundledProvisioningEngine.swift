@@ -2,6 +2,7 @@ import Foundation
 
 public struct BundledProvisioningEngine: IOSSimSetupEngine {
     public let consumerProvisioningEnabled = true
+    public let automaticPairingEnabled = true
     public let helperURL: URL
     public let resourcesURL: URL
     private let runner: ProcessRunner
@@ -141,6 +142,24 @@ public struct BundledProvisioningEngine: IOSSimSetupEngine {
             throw ProcessFailure(commandName: "consumer-runtime-ready", result: redacted(result))
         }
         return try decodeEnvelope(ConsumerProvisioningManifest.self, from: result.stdout)
+    }
+
+    public func prepareAutomaticPairing(
+        selectedDeviceIdentifier: String,
+        generation: UInt64
+    ) async throws -> AutomaticPairingReceipt {
+        let result = try await runHelper(
+            arguments: [
+                "prepare-pairing", "--json",
+                "--device", selectedDeviceIdentifier,
+                "--generation", String(generation)
+            ],
+            commandName: "prepare-pairing"
+        )
+        guard result.exitCode == 0 else {
+            throw ProcessFailure(commandName: "prepare-pairing", result: redacted(result))
+        }
+        return try decodeEnvelope(AutomaticPairingReceipt.self, from: result.stdout)
     }
 
     public func exportSupportBundle() async throws -> URL {

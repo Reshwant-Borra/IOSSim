@@ -17,6 +17,9 @@ the current-state overview.
 | False install verification | Do not let pre-install inventory overrule post-install authoritative evidence. |
 | Developer-profile trust classification | Installed is not trusted, and trusted is not runtime-ready. Model all three explicitly. |
 | Fresh Install misuse | Fresh Install is a deliberate repair operation, not the default response to trust, runtime, or transient inventory issues. |
+| Xcode selection | A compatible toolchain must be capability-qualified and remembered for per-process `DEVELOPER_DIR`; a directory name or global `xcode-select` value is not sufficient evidence. |
+| Download authentication licensing | Architectural inspiration is not permission to copy source. The reviewed `XcodesLoginKit` checkout had no license file, so no authentication code was integrated. |
+| Automatic pairing replacement | Generate into isolated staging, bind to the exact selected device/generation, validate with the real tunnel, and commit to the primary Keychain item only after success. |
 
 ## RPPairing History
 
@@ -29,6 +32,12 @@ update fails.
 Physical evidence proves the runtime chain with valid pairing material. Clean
 recovery behavior across all pairing update edge cases remains a test area, not a
 license to redesign the runtime.
+
+The experimental automatic path deliberately keeps pairing generation in a
+narrow helper at the existing pinned idevice revision. Pairing material travels
+through the private CoreDevice app-data-container domain, not public Documents
+sharing. These implementation results remain physically unproven until tested
+with a newly paired device.
 
 ## Legacy Host Architecture
 

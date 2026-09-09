@@ -29,7 +29,7 @@ public enum RuntimeProvisioning {
     public static let helperSchemaVersion = 1
     public static let minimumMacOS = OperatingSystemVersion(majorVersion: 13, minorVersion: 0, patchVersion: 0)
 
-    public static func deterministicEnvironment() -> [String: String] {
+    public static func baseDeterministicEnvironment() -> [String: String] {
         var env: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "LC_ALL": "C",
@@ -38,7 +38,17 @@ public enum RuntimeProvisioning {
         if !NSHomeDirectory().isEmpty {
             env["HOME"] = NSHomeDirectory()
         }
-        if let developerDir = ProcessInfo.processInfo.environment["DEVELOPER_DIR"], !developerDir.isEmpty {
+        return env
+    }
+
+    public static func deterministicEnvironment(
+        preferredDeveloperDirectory: URL? = XcodeApplicationDiscovery.preferredDeveloperDirectory(),
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var env = baseDeterministicEnvironment()
+        if let developerDir = preferredDeveloperDirectory {
+            env["DEVELOPER_DIR"] = developerDir.path
+        } else if let developerDir = processEnvironment["DEVELOPER_DIR"], !developerDir.isEmpty {
             env["DEVELOPER_DIR"] = developerDir
         }
         return env

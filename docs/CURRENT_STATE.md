@@ -11,13 +11,13 @@ the selected iPhone, records setup checkpoints, and exports diagnostics. The
 iPhone app and its XCTest runner perform the on-device location simulation
 runtime.
 
-Current branch: `work/physical-install-state-stabilization`
+Current experimental branch: `work/automated-xcode-rppairing-bootstrap`
 
-Current HEAD: `06478bab66e5dc117932cff1c9575c607c35b72e`
+Experimental branch base, `main`, and `origin/main` at branch creation:
+`ed233af070f5b751c22f6d8b9f86f4fc01885ce7`.
 
-Base before physical-install stabilization: `e43aa181379f0b35f2aa6d11809136acc2fc0ab2`
-
-`main` and `origin/main`: `b938c8898afabffc0329ad096773349a0b544e02`
+The physical-install stabilization history through
+`f4b719fc62240eb3aa148c87c57a6862f161f2c1` is merged and pushed on `main`.
 
 Current local RC:
 
@@ -35,7 +35,8 @@ What currently works:
 | --- | --- |
 | Is Personal Team Apple authorization implemented? | Yes. Locally implemented GrandSlam/SRP + 2FA + Xcode-scoped Developer Services session. Physical evidence exists on the current Mac/iPhone. |
 | Does the user need to open Xcode in the current intended flow? | Target answer: no. Current product flow asks for Apple Account login inside IOSSim, not Xcode Accounts. |
-| Does Xcode need to be installed right now? | Yes. Current physical device operations still use Apple's `xcrun devicectl` / CoreDevice tooling supplied with Xcode. |
+| Does Xcode need to be installed right now? | Yes. Detection/bootstrap primitives are implemented and tested, but Apple download authentication and consumer UI wiring remain incomplete. |
+| Is automatic RPPairing implemented? | The isolated pinned helper, private transfer, and transactional iPhone import are implemented and automated-tested; a new physical pairing has not been run. |
 | Is "Xcode installed but never opened/configured" physically proven on a clean Mac? | No. The current development Mac has historical Xcode/development state. |
 | Is the iPhone runtime architecture feature-frozen? | Yes, unless a future task explicitly authorizes runtime architecture changes. |
 | Is the current RC public-release ready? | No. It is ad-hoc signed, not notarized, and LOCAL_TEST_ONLY. |
@@ -93,11 +94,10 @@ Preserve this separation:
 
 ## What Remains Before Consumer Release
 
-The next required test is a same-Mac/same-iPhone physical regression of the
-current stabilization RC. Acceptance is no false "Cannot Verify Installation",
-no unnecessary Try Again, no unnecessary Fresh Install, no stale historical-team
-failure, correct developer-profile trust handling, runtime configuration
-verified, and `COMPLETE`.
+The next engineering boundary is a licensed Apple developer-download
+authentication adapter, followed by end-to-end UI wiring. The next physical
+boundary is a clean-Mac qualification that never opens Xcode, followed by a
+new-iPhone automatic pairing and frozen-runtime requalification.
 
 After that, requalify the runtime gates, audit clean-Mac Xcode requirements, run
 a clean-Mac "Xcode installed but never opened/configured" test, choose whether
@@ -112,3 +112,4 @@ Developer ID/notarization/public distribution.
 - [Release and Distribution](RELEASE_AND_DISTRIBUTION.md)
 - [Next Steps](NEXT_STEPS.md)
 - [Engineering History](ENGINEERING_HISTORY.md)
+- [Experimental Xcode and RPPairing Bootstrap](XCODE_AND_RPPAIRING_BOOTSTRAP.md)

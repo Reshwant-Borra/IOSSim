@@ -9,6 +9,7 @@ enum POCAppDependencies {
     recorder: recorder,
     pairingStore: store
   )
+  static let pairingInbox = AutomaticPairingInboxProcessor(primaryStore: store)
   static let locationCoordinator = LocationCoordinator(
     pairingStore: store,
     tunnelClient: tunnelClient,

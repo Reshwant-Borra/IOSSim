@@ -30,11 +30,11 @@ struct SettingsView: View {
                 Text(pairingSummaryText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Button("Import RPPairing File") {
+                Button("Choose Pairing File (Advanced)") {
                     showingImporter = true
                 }
             } header: {
-                Text("Pairing")
+                Text("Pairing Diagnostics")
             }
 
             Section("Simulation") {

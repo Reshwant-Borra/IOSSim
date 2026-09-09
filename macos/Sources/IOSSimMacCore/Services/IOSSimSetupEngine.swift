@@ -2,6 +2,7 @@ import Foundation
 
 public protocol IOSSimSetupEngine: Sendable {
     var consumerProvisioningEnabled: Bool { get }
+    var automaticPairingEnabled: Bool { get }
     func doctor() async throws -> DoctorStatus
     func setup() async throws -> ProcessResult
     func build() async throws -> ProcessResult
@@ -11,11 +12,13 @@ public protocol IOSSimSetupEngine: Sendable {
     func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest?
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest
+    func prepareAutomaticPairing(selectedDeviceIdentifier: String, generation: UInt64) async throws -> AutomaticPairingReceipt
     func exportSupportBundle() async throws -> URL
 }
 
 public extension IOSSimSetupEngine {
     var consumerProvisioningEnabled: Bool { false }
+    var automaticPairingEnabled: Bool { false }
     func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] { [] }
 
     func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
@@ -39,6 +42,13 @@ public extension IOSSimSetupEngine {
     }
 
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { nil }
+
+    func prepareAutomaticPairing(
+        selectedDeviceIdentifier: String,
+        generation: UInt64
+    ) async throws -> AutomaticPairingReceipt {
+        throw AutomaticPairingError.helperUnavailable
+    }
 
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest {
         throw ConsumerProvisioningFailure(

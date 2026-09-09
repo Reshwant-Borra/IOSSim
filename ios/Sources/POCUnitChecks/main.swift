@@ -12,6 +12,8 @@ struct POCUnitChecks {
     try inMemoryStoreValidatesBeforeSaving()
     try deleteRemovesPairing()
     try updatedPairingStatePersistsOnlyWhenChangedAndValid()
+    try await automaticPairingInboxCommitsOnlyAfterFunctionalValidation()
+    try await automaticPairingInboxPreservesKnownGoodRecordOnFailure()
     try localDevVPNRouteDetection()
     await routeProbeSurfacesEndpointAndTCPResult()
     await localDevVPNReadinessUsesDeveloperEndpointReachability()
@@ -188,6 +190,56 @@ struct POCUnitChecks {
     }
     let afterInvalidUpdate = try store.loadPairingData()
     try require(afterInvalidUpdate == updated, "invalid update cannot replace usable pairing state")
+  }
+
+  static func automaticPairingInboxCommitsOnlyAfterFunctionalValidation() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("iossim-pairing-inbox-success-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let old = try makePairingPlist(identifier: "11111111-1111-1111-1111-111111111111")
+    let candidate = try makePairingPlist(identifier: "22222222-2222-2222-2222-222222222222")
+    let primary = InMemoryRPPairingStore(data: old)
+    let transaction = UUID()
+    let inbox = root.appendingPathComponent("PairingInbox", isDirectory: true)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    try candidate.write(to: inbox.appendingPathComponent("\(transaction.uuidString).plist"))
+    let processor = AutomaticPairingInboxProcessor(
+      primaryStore: primary,
+      rootURL: root,
+      clientFactory: { _ in PairingValidationTunnel(shouldFail: false) })
+
+    let receipts = await processor.processPending()
+
+    try require(receipts == [.init(transactionID: transaction, state: "PAIRING_READY")],
+                "functional pairing candidate produces ready receipt")
+    let committed = try primary.loadPairingData()
+    try require(committed == candidate,
+                "functionally validated candidate replaces primary pairing")
+  }
+
+  static func automaticPairingInboxPreservesKnownGoodRecordOnFailure() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("iossim-pairing-inbox-failure-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let old = try makePairingPlist(identifier: "33333333-3333-3333-3333-333333333333")
+    let candidate = try makePairingPlist(identifier: "44444444-4444-4444-4444-444444444444")
+    let primary = InMemoryRPPairingStore(data: old)
+    let transaction = UUID()
+    let inbox = root.appendingPathComponent("PairingInbox", isDirectory: true)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    try candidate.write(to: inbox.appendingPathComponent("\(transaction.uuidString).plist"))
+    let processor = AutomaticPairingInboxProcessor(
+      primaryStore: primary,
+      rootURL: root,
+      clientFactory: { _ in PairingValidationTunnel(shouldFail: true) })
+
+    let receipts = await processor.processPending()
+
+    try require(receipts == [.init(transactionID: transaction, state: "PAIRING_FAILED")],
+                "failed functional validation produces failure receipt")
+    let preserved = try primary.loadPairingData()
+    try require(preserved == old,
+                "failed candidate never replaces known-good pairing")
   }
 
   static func localDevVPNRouteDetection() throws {
@@ -2616,6 +2668,34 @@ private struct FakeTCPProber: TCPProbing {
 
   func probe(endpoint: DeveloperEndpoint, timeout: TimeInterval) async -> TCPProbeResult {
     result
+  }
+}
+
+private actor PairingValidationTunnel: OnDeviceTunnelClient {
+  let shouldFail: Bool
+
+  init(shouldFail: Bool) {
+    self.shouldFail = shouldFail
+  }
+
+  func connect(pairingData: Data, endpoint: DeveloperEndpoint) async throws {
+    if shouldFail {
+      throw POCError(.tlsPskFailed, "synthetic pairing validation failure")
+    }
+  }
+
+  func set(latitude: Double, longitude: Double) async throws {}
+  func clear() async throws {}
+  func disconnect() async {}
+
+  func status() async -> DvtBridgeStatus {
+    DvtBridgeStatus(
+      state: shouldFail ? .failed : .tunnelEstablished,
+      endpoint: DeveloperEndpoint(),
+      ideviceLinked: true,
+      timings: [],
+      lastError: nil
+    )
   }
 }
 

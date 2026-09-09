@@ -311,6 +311,19 @@ public final class SetupStore: ObservableObject {
                         developerDetail: "Runtime setup requires a valid provisioning manifest and deterministic runner mapping."
                     )
                 }
+                if engine.automaticPairingEnabled {
+                    let device = try selectedDeviceIdentifierForOperation()
+                    consumerStage = .generatingPairing
+                    let receipt = try await engine.prepareAutomaticPairing(
+                        selectedDeviceIdentifier: device,
+                        generation: generation
+                    )
+                    try requireCurrentOperation(generation)
+                    guard receipt.state == AutomaticPairingState.ready.rawValue else {
+                        throw AutomaticPairingError.onDeviceValidationFailed
+                    }
+                    consumerStage = .verifyingPairing
+                }
                 let manifest = try await engine.confirmRuntimeSetup()
                 try requireCurrentOperation(generation)
                 provisioningManifest = manifest

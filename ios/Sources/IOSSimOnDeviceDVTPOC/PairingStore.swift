@@ -128,3 +128,110 @@ public final class InMemoryRPPairingStore: RPPairingStore, @unchecked Sendable {
         data = nil
     }
 }
+
+public struct AutomaticPairingReceipt: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let transactionID: UUID
+    public let state: String
+
+    public init(schemaVersion: Int = 1, transactionID: UUID, state: String) {
+        self.schemaVersion = schemaVersion
+        self.transactionID = transactionID
+        self.state = state
+    }
+}
+
+/// Consumes pairing candidates placed in the app's private data container by
+/// the Mac setup app. A candidate is committed to the primary Keychain item
+/// only after the pinned runtime establishes a real tunnel with it.
+public actor AutomaticPairingInboxProcessor {
+    public typealias ClientFactory = @Sendable (RPPairingStore) -> any OnDeviceTunnelClient
+
+    private let primaryStore: RPPairingStore
+    private let fileManager: FileManager
+    private let rootURL: URL
+    private let clientFactory: ClientFactory
+
+    public init(
+        primaryStore: RPPairingStore = KeychainRPPairingStore(),
+        rootURL: URL? = nil,
+        fileManager: FileManager = .default,
+        clientFactory: @escaping ClientFactory = { stagingStore in
+            IdeviceOnDeviceTunnelClient(recorder: nil, pairingStore: stagingStore)
+        }
+    ) {
+        self.primaryStore = primaryStore
+        self.fileManager = fileManager
+        self.rootURL = rootURL ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("IOSSim", isDirectory: true)
+        self.clientFactory = clientFactory
+    }
+
+    @discardableResult
+    public func processPending() async -> [AutomaticPairingReceipt] {
+        let inbox = rootURL.appendingPathComponent("PairingInbox", isDirectory: true)
+        let receipts = rootURL.appendingPathComponent("PairingReceipts", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: inbox, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: receipts, withIntermediateDirectories: true)
+            try applyPrivateProtection(to: inbox)
+            try applyPrivateProtection(to: receipts)
+        } catch {
+            return []
+        }
+        let candidates = (try? fileManager.contentsOfDirectory(
+            at: inbox,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ))?.filter { $0.pathExtension == "plist" }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+
+        var results: [AutomaticPairingReceipt] = []
+        for candidateURL in candidates {
+            guard let transactionID = UUID(uuidString: candidateURL.deletingPathExtension().lastPathComponent) else {
+                try? fileManager.removeItem(at: candidateURL)
+                continue
+            }
+            let receipt: AutomaticPairingReceipt
+            do {
+                let candidateData = try Data(contentsOf: candidateURL, options: .mappedIfSafe)
+                _ = try RPPairingValidator.validate(candidateData)
+                let stagingStore = InMemoryRPPairingStore(data: candidateData)
+                let client = clientFactory(stagingStore)
+                defer { Task { await client.disconnect() } }
+                try await client.connect(pairingData: candidateData, endpoint: DeveloperEndpoint())
+                let deviceVerifiedData = try stagingStore.loadPairingData()
+                _ = try RPPairingValidator.validate(deviceVerifiedData)
+                _ = try primaryStore.importPairingData(deviceVerifiedData)
+                receipt = AutomaticPairingReceipt(transactionID: transactionID, state: "PAIRING_READY")
+            } catch {
+                // The primary Keychain item has not been touched, so a prior
+                // known-good record remains authoritative.
+                receipt = AutomaticPairingReceipt(transactionID: transactionID, state: "PAIRING_FAILED")
+            }
+            do {
+                let receiptURL = receipts.appendingPathComponent("\(transactionID.uuidString).json")
+                let data = try JSONEncoder().encode(receipt)
+                #if os(iOS)
+                try data.write(to: receiptURL, options: [.atomic, .completeFileProtection])
+                #else
+                // Complete file protection is an iOS data-protection class;
+                // macOS package checks still enforce owner-only permissions.
+                try data.write(to: receiptURL, options: .atomic)
+                #endif
+                try applyPrivateProtection(to: receiptURL)
+                try fileManager.removeItem(at: candidateURL)
+                results.append(receipt)
+            } catch {
+                // Keep the candidate for retry if receipt persistence or
+                // cleanup did not complete.
+            }
+        }
+        return results
+    }
+
+    private func applyPrivateProtection(to url: URL) throws {
+        var attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        if !url.hasDirectoryPath { attributes[.posixPermissions] = 0o600 }
+        try fileManager.setAttributes(attributes, ofItemAtPath: url.path)
+    }
+}

@@ -29,6 +29,8 @@ MAC_HELPER_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisioner.entitlements"
 MAC_ICON_SOURCE = MAC_DIR / "Resources" / "IOSSimIcon.png"
 IDEVICE_LICENSE_SOURCE = IOS_DIR / "Vendor" / "idevice" / "LICENSE.txt"
 BIGINT_LICENSE_SOURCE = MAC_DIR / "ThirdPartyNotices" / "BigInt-LICENSE.txt"
+PAIRING_HELPER_DIR = ROOT / "tools" / "iossim-pairing-helper"
+PAIRING_HELPER_MANIFEST = PAIRING_HELPER_DIR / "Cargo.toml"
 IOS_PROJECT = IOS_DIR / "IOSSimOnDevicePOC.xcodeproj"
 DERIVED_DATA = IOS_DIR / ".build" / "DerivedData"
 MAC_APP_PATH = ROOT / ".build" / "iossim" / "mac" / "IOSSim.app"
@@ -1192,6 +1194,50 @@ def build_universal_macos_products(runner: Runner, local_test_only: bool = False
     return universal
 
 
+def build_pairing_helper(runner: Runner) -> Path:
+    cargo = discover_tool("cargo")
+    if not cargo:
+        raise RuntimeError("Rust cargo is required to build the pinned pairing helper")
+    outputs: list[Path] = []
+    target_dir = RELEASE_OUTPUT_DIR / "intermediates" / "pairing-helper"
+    existing_rustflags = merged_env().get("RUSTFLAGS", "").strip()
+    path_remapping = " ".join([
+        f"--remap-path-prefix={Path.home()}=/iossim-build",
+        f"--remap-path-prefix={ROOT}=/iossim-source",
+    ])
+    cargo_environment = merged_env({
+        "RUSTFLAGS": " ".join(filter(None, [existing_rustflags, path_remapping])),
+        "CARGO_PROFILE_RELEASE_DEBUG": "false",
+        "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+    })
+    for architecture in RELEASE_CONFIG.architectures:
+        rust_architecture = "aarch64" if architecture == "arm64" else architecture
+        target = f"{rust_architecture}-apple-darwin"
+        result = runner.run(
+            f"pairing-helper-{architecture}",
+            [
+                cargo, "build", "--manifest-path", str(PAIRING_HELPER_MANIFEST),
+                "--locked", "--release", "--target", target,
+                "--target-dir", str(target_dir),
+            ],
+            env=cargo_environment,
+            check=False,
+        )
+        if result.code != 0:
+            raise CommandError(f"pairing-helper-{architecture}", result)
+        outputs.append(target_dir / target / "release" / "iossim-pairing-helper")
+    universal = target_dir / "IOSSimPairingHelper"
+    if len(outputs) == 1:
+        shutil.copy2(outputs[0], universal)
+    else:
+        runner.run(
+            "lipo-pairing-helper",
+            ["/usr/bin/lipo", "-create", *map(str, outputs), "-output", str(universal)],
+        )
+    os.chmod(universal, 0o755)
+    return universal
+
+
 def build_app_icon(runner: Runner, resources_dir: Path) -> None:
     if not MAC_ICON_SOURCE.is_file():
         raise RuntimeError(f"Mac app icon source is missing: {MAC_ICON_SOURCE}")
@@ -1250,11 +1296,13 @@ def assemble_self_contained_app(
     app_dir = SELF_CONTAINED_APP_PATH
     contents = app_dir / "Contents"
     macos_dir = contents / "MacOS"
+    helpers_dir = contents / "Helpers"
     resources = contents / "Resources"
     device_artifacts = resources / "DeviceArtifacts"
     if app_dir.exists():
         shutil.rmtree(app_dir)
     macos_dir.mkdir(parents=True)
+    helpers_dir.mkdir(parents=True)
     device_artifacts.mkdir(parents=True)
 
     shutil.copy2(bin_path / "IOSSimMac", macos_dir / "IOSSim")
@@ -1267,6 +1315,9 @@ def assemble_self_contained_app(
     notices.mkdir()
     shutil.copy2(IDEVICE_LICENSE_SOURCE, notices / "idevice-LICENSE.txt")
     shutil.copy2(BIGINT_LICENSE_SOURCE, notices / "BigInt-LICENSE.txt")
+    pairing_helper = build_pairing_helper(runner)
+    shutil.copy2(pairing_helper, helpers_dir / "IOSSimPairingHelper")
+    os.chmod(helpers_dir / "IOSSimPairingHelper", 0o755)
 
     components: list[dict[str, Any]] = []
     for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
@@ -1322,7 +1373,11 @@ def assemble_self_contained_app(
 def sign_self_contained_app(runner: Runner, app_dir: Path) -> bool:
     identity = os.environ.get("IOSSIM_MAC_CODE_SIGN_IDENTITY", "-") or "-"
     ok = True
-    for executable in [app_dir / "Contents" / "MacOS" / "IOSSimProvisioner", app_dir / "Contents" / "MacOS" / "IOSSim"]:
+    for executable in [
+        app_dir / "Contents" / "Helpers" / "IOSSimPairingHelper",
+        app_dir / "Contents" / "MacOS" / "IOSSimProvisioner",
+        app_dir / "Contents" / "MacOS" / "IOSSim",
+    ]:
         ok &= run_step(runner, f"Strip {executable.name}", f"strip-{executable.name}", ["/usr/bin/strip", "-x", str(executable)])
         ok &= run_step(runner, f"Sign {executable.name}", f"codesign-{executable.name}", ["codesign", "--force", "--sign", identity, str(executable)])
     ok &= run_step(runner, "Sign IOSSim.app", "codesign-iossim-app", ["codesign", "--force", "--deep", "--sign", identity, str(app_dir)])
@@ -1469,6 +1524,16 @@ def update_device_artifact_hashes(app_dir: Path) -> None:
 
 
 def distribution_sign_macos_app(runner: Runner, app_dir: Path, identity: DeveloperIDIdentity) -> None:
+    pairing_helper = app_dir / "Contents" / "Helpers" / "IOSSimPairingHelper"
+    runner.run("strip-IOSSimPairingHelper-release", ["/usr/bin/strip", "-x", str(pairing_helper)])
+    runner.run(
+        "developer-id-IOSSimPairingHelper",
+        [
+            "/usr/bin/codesign", "--force", "--sign", identity.fingerprint,
+            "--identifier", f"{RELEASE_CONFIG.bundle_identifier}.pairing-helper",
+            "--options", "runtime", "--timestamp", str(pairing_helper),
+        ],
+    )
     helper = app_dir / "Contents" / "MacOS" / "IOSSimProvisioner"
     runner.run("strip-IOSSimProvisioner-release", ["/usr/bin/strip", "-x", str(helper)])
     runner.run(
@@ -1496,6 +1561,16 @@ def distribution_sign_macos_app(runner: Runner, app_dir: Path, identity: Develop
 
 def local_sign_macos_app(runner: Runner, app_dir: Path) -> None:
     """Apply explicit hardened-runtime ad-hoc signatures for local physical testing."""
+    pairing_helper = app_dir / "Contents" / "Helpers" / "IOSSimPairingHelper"
+    runner.run("strip-IOSSimPairingHelper-local", ["/usr/bin/strip", "-x", str(pairing_helper)])
+    runner.run(
+        "local-sign-IOSSimPairingHelper",
+        [
+            "/usr/bin/codesign", "--force", "--sign", "-",
+            "--identifier", f"{RELEASE_CONFIG.bundle_identifier}.pairing-helper",
+            "--options", "runtime", "--timestamp=none", str(pairing_helper),
+        ],
+    )
     helper = app_dir / "Contents" / "MacOS" / "IOSSimProvisioner"
     runner.run("strip-IOSSimProvisioner-local", ["/usr/bin/strip", "-x", str(helper)])
     runner.run(
@@ -1678,7 +1753,7 @@ def command_package_app(args: argparse.Namespace) -> int:
         app_dir = assemble_self_contained_app(runner, ios_configuration="Release")
         print_step("PASS", "Assemble self-contained IOSSim.app", str(app_dir))
     except Exception as exc:
-        print_step("FAIL", "Assemble self-contained IOSSim.app", Redactor.redact(str(exc)))
+        print_step("FAIL", "Assemble self-contained IOSSim.app", redact(str(exc)))
         return 1
     ok &= sign_self_contained_app(runner, app_dir)
     ok &= audit_app(app_dir, verbose=args.verbose)
@@ -2129,6 +2204,8 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
     ok &= audit_pass("App bundle exists", str(app_dir)) if app_dir.is_dir() else audit_fail("App bundle exists", str(app_dir))
     ok &= audit_pass("Mac executable exists", "Contents/MacOS/IOSSim") if os.access(macos_dir / "IOSSim", os.X_OK) else audit_fail("Mac executable exists", "Contents/MacOS/IOSSim")
     ok &= audit_pass("Provisioner executable exists", "Contents/MacOS/IOSSimProvisioner") if os.access(macos_dir / "IOSSimProvisioner", os.X_OK) else audit_fail("Provisioner executable exists", "Contents/MacOS/IOSSimProvisioner")
+    pairing_helper = contents / "Helpers" / "IOSSimPairingHelper"
+    ok &= audit_pass("Pinned pairing helper exists", "private USB RPPairing helper") if os.access(pairing_helper, os.X_OK) else audit_fail("Pinned pairing helper exists", "Contents/Helpers/IOSSimPairingHelper")
     ok &= audit_pass("Development repository locator absent") if not (resources / "DevelopmentRepositoryRoot.txt").exists() else audit_fail("Development repository locator absent")
     try:
         with (contents / "Info.plist").open("rb") as info_file:

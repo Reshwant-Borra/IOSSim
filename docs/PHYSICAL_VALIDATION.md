@@ -98,6 +98,10 @@ FINISHED
 | Rich Drive | Route playback through rich transport | PROVEN | PROVEN | PHYSICALLY PROVEN in earlier cycles | UNPROVEN | UNPROVEN |
 | Profile refresh | Same-team refresh architecture | PROVEN | PROVEN | PARTIAL; immediate refresh/update proven, true expiration renewal unproven | UNPROVEN | UNPROVEN |
 | Xcode installed, never opened/configured | Target product assumption | PARTIAL | UNPROVEN | UNPROVEN | UNPROVEN | UNPROVEN |
+| Xcode prerequisite detector | `XcodePrerequisiteDetector` | AUTOMATED TESTED | PROVEN against local Xcode 26.6 | NOT APPLICABLE | UNPROVEN | UNPROVEN |
+| Xcode automatic download/install | Streaming/bootstrap primitives; download auth adapter incomplete | PARTIAL | UNPROVEN | NOT APPLICABLE | UNPROVEN | UNPROVEN |
+| Automatic RPPairing | Exact-device isolated helper at pinned revision | AUTOMATED TESTED / BUILDS | helper build proven | UNPROVEN | UNPROVEN | UNPROVEN |
+| Automatic private pairing transfer | CoreDevice app-data-container + transactional iPhone inbox | AUTOMATED TESTED | generic iOS build proven | UNPROVEN | UNPROVEN | UNPROVEN |
 | Public distribution | Developer ID + notarized DMG | AUTOMATED PATH IMPLEMENTED | LOCAL_TEST_ONLY package proven | UNPROVEN | UNPROVEN | UNPROVEN |
 
 ## Current Known Test Issue
@@ -116,8 +120,10 @@ The latest stabilization report recorded this unresolved environment issue:
   no-sign builds, POC unit checks, and package scans passed in the stabilization
   run.
 
-This should remain classified as a test-environment issue until reproduced or
-resolved without weakening production file-protection or Keychain security.
+The Phase 1 preservation run on 2026-09-09 did not reproduce this issue: the
+full current `./iossim test` path passed. Production iOS complete file
+protection was not weakened; Mac-only package fixtures use owner-only
+permissions because iOS data-protection classes do not apply on macOS.
 
 ## Milestone History
 

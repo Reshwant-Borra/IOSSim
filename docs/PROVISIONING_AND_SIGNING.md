@@ -30,6 +30,12 @@ Accounts, manage certificates in Xcode, build in Xcode, or install from Xcode.
 That "Xcode installed but never opened/configured" target is not yet clean-Mac
 qualified.
 
+The experimental bootstrap keeps Xcode download authentication separate from
+the existing Developer Services session. There is no evidence that those
+session types are interchangeable, and IOSSim does not reuse or scrape Xcode
+Accounts. Download password and 2FA inputs must remain ephemeral when that
+adapter is completed.
+
 ## Apple Authorization
 
 `ApplePersonalTeamLive.swift` implements the private Personal Team flow used by
@@ -190,6 +196,11 @@ Installation, trust, and runtime readiness are separate:
 | Runtime mapping written | `RUNTIME_CONFIGURATION_WRITTEN` checkpoint |
 | Runtime mapping read back | `RUNTIME_CONFIGURATION_VERIFIED` checkpoint |
 | User confirmed iPhone setup | `COMPLETE` checkpoint |
+
+Experimental pairing adds independent generate, validate, private transfer,
+and iPhone functional-verification phases before runtime readiness. The
+candidate uses an in-memory iPhone staging store; the primary Keychain record
+is replaced only after the pinned runtime establishes a real connection.
 
 The current consumer-facing trust UI says "Trust IOSSim on your iPhone" and
 guides the user through Settings -> General -> VPN & Device Management ->
