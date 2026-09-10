@@ -2706,6 +2706,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("release-local", "build and audit an ad-hoc signed local-test-only DMG"),
         ("release-local-audit", "verify a local-test-only DMG without public release claims"),
         ("test", "run current main validation suite"),
+        ("diagnose-apple-srp-init", "run the password-free Apple SRP initialization probe"),
         ("device", "build and install internal device-side components"),
         ("info", "print dependency matrix"),
         ("clean", "remove CLI-owned generated state"),
@@ -2752,6 +2753,13 @@ def main(argv: list[str] | None = None) -> int:
         return command_local_release_audit(args)
     if args.command == "test":
         return command_test(args)
+    if args.command == "diagnose-apple-srp-init":
+        return subprocess.run(
+            ["swift", "run", "IOSSimAuthDiagnostic"],
+            cwd=str(MAC_DIR),
+            env=merged_env(),
+            check=False,
+        ).returncode
     if args.command == "device":
         return command_device(args)
     if args.command == "info":

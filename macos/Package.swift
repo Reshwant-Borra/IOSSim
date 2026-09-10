@@ -9,7 +9,8 @@ let package = Package(
     products: [
         .library(name: "IOSSimMacCore", targets: ["IOSSimMacCore"]),
         .executable(name: "IOSSimMac", targets: ["IOSSimMac"]),
-        .executable(name: "IOSSimProvisioner", targets: ["IOSSimProvisioner"])
+        .executable(name: "IOSSimProvisioner", targets: ["IOSSimProvisioner"]),
+        .executable(name: "IOSSimAuthDiagnostic", targets: ["IOSSimAuthDiagnostic"])
     ],
     dependencies: [
         // Pure-Swift arbitrary precision arithmetic used only for the
@@ -30,6 +31,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "IOSSimProvisioner",
+            dependencies: ["IOSSimMacCore"]
+        ),
+        .executableTarget(
+            name: "IOSSimAuthDiagnostic",
             dependencies: ["IOSSimMacCore"]
         ),
         .testTarget(

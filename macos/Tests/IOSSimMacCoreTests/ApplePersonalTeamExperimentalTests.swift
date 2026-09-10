@@ -226,7 +226,7 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
 
     func testVersionedPrivateAdapterAllowsOnlyExpectedHTTPSHostsAndContent() throws {
         let adapter = PrivateAppleProtocolAdapter.researched2026
-        XCTAssertEqual(adapter.version, "research-2026-09")
+        XCTAssertEqual(adapter.version, "research-2026-09-akd")
         XCTAssertEqual(
             try adapter.developerURL(operation: "ios/listDevices").absoluteString,
             "https://developerservices2.apple.com/services/QH65B2/ios/listDevices.action"

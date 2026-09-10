@@ -54,6 +54,10 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
     public let osStatus: Int?
     public let keyApplicationTagIdentifier: String?
     public let certificateFingerprintPrefix: String?
+    public let responseContentType: String?
+    public let responseBodyKind: String?
+    public let serverIdentifier: String?
+    public let requestIdentifier: String?
 
     public init(
         timestamp: Date,
@@ -90,7 +94,11 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         currentGeneration: Bool? = nil,
         osStatus: Int? = nil,
         keyApplicationTagIdentifier: String? = nil,
-        certificateFingerprintPrefix: String? = nil
+        certificateFingerprintPrefix: String? = nil,
+        responseContentType: String? = nil,
+        responseBodyKind: String? = nil,
+        serverIdentifier: String? = nil,
+        requestIdentifier: String? = nil
     ) {
         self.timestamp = timestamp
         self.checkpoint = checkpoint
@@ -127,6 +135,10 @@ public struct ApplePersonalTeamDiagnosticEvent: Codable, Equatable, Sendable {
         self.osStatus = osStatus
         self.keyApplicationTagIdentifier = keyApplicationTagIdentifier
         self.certificateFingerprintPrefix = certificateFingerprintPrefix
+        self.responseContentType = responseContentType
+        self.responseBodyKind = responseBodyKind
+        self.serverIdentifier = serverIdentifier
+        self.requestIdentifier = requestIdentifier
     }
 }
 
@@ -412,11 +424,7 @@ public final class LocalMacAppleMachineIdentityProvider: AppleMachineIdentityPro
 {
     private let aosKitPath = "/System/Library/PrivateFrameworks/AOSKit.framework"
     private let frameworkPath = "/System/Library/PrivateFrameworks/AuthKit.framework/AuthKit"
-    private let xcodeBundleVersion: String
-
-    public init(xcodeBundleVersion: String = PrivateAppleProtocolAdapter.researched2026.xcodeBundleVersion) {
-        self.xcodeBundleVersion = xcodeBundleVersion
-    }
+    public init() {}
 
     public func headers(for request: URLRequest) async throws -> [String: String] {
         if let headers = aosKitHeaders(for: request) { return headers }
@@ -456,12 +464,24 @@ public final class LocalMacAppleMachineIdentityProvider: AppleMachineIdentityPro
         result["X-Apple-I-MD-RINFO"] = "84215040"
         result["X-Mme-Device-Id"] = udid
         result["X-Apple-I-SRL-NO"] = serial
-        result["X-MMe-Client-Info"] =
-            "<\(model)> <macOS;\(osVersion);\(build)> <com.apple.AuthKit/1 (com.apple.dt.Xcode/\(xcodeBundleVersion))>"
+        // Apple's GrandSlam edge began rejecting the Xcode bundle identifier
+        // with HTTP 503 in September 2026. akd is the macOS process that owns
+        // this system-provided AuthKit/AOSKit identity and is accepted by the
+        // same endpoint. Developer Services still receives its Xcode audience
+        // and version through X-Apple-App-Info and X-Xcode-Version.
+        result["X-MMe-Client-Info"] = Self.grandSlamClientInformation(
+            model: model,
+            osVersion: osVersion,
+            build: build
+        )
         result["X-Apple-I-Client-Time"] = result["X-Apple-I-Client-Time"] ?? Self.clientTimestamp()
         result["X-Apple-Locale"] = result["X-Apple-I-Locale"] ?? Locale.current.identifier
         result["X-Apple-I-TimeZone"] = result["X-Apple-I-TimeZone"] ?? TimeZone.current.identifier
         return result
+    }
+
+    static func grandSlamClientInformation(model: String, osVersion: String, build: String) -> String {
+        "<\(model)> <macOS;\(osVersion);\(build)> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
     }
 
     private func genericAuthKitHeaders(for request: URLRequest) -> [String: String] {
@@ -1974,6 +1994,7 @@ private struct AppleServiceFailure: Error {
     let reauthorizationRequired: Bool
     let safeMessage: String?
     let deviceRegistrationCategory: AppleDeviceRegistrationCategory?
+    let responseMetadata: SafeAppleHTTPFailureMetadata?
 
     init(
         error: ExperimentalBackendError,
@@ -1983,7 +2004,8 @@ private struct AppleServiceFailure: Error {
         retryable: Bool,
         reauthorizationRequired: Bool,
         safeMessage: String? = nil,
-        deviceRegistrationCategory: AppleDeviceRegistrationCategory? = nil
+        deviceRegistrationCategory: AppleDeviceRegistrationCategory? = nil,
+        responseMetadata: SafeAppleHTTPFailureMetadata? = nil
     ) {
         self.error = error
         self.status = status
@@ -1993,7 +2015,17 @@ private struct AppleServiceFailure: Error {
         self.reauthorizationRequired = reauthorizationRequired
         self.safeMessage = safeMessage
         self.deviceRegistrationCategory = deviceRegistrationCategory
+        self.responseMetadata = responseMetadata
     }
+}
+
+private struct SafeAppleHTTPFailureMetadata {
+    let endpoint: String?
+    let method: String?
+    let contentType: String?
+    let bodyKind: String
+    let serverIdentifier: String?
+    let requestIdentifier: String?
 }
 
 private struct DeviceRegistrationDiagnosticContext {
@@ -2037,7 +2069,28 @@ enum AppleHTTPFailureClassifier {
         if status == 429 { return .rateLimited }
         if stage == "xcodeScopedToken" { return .xcodeScopedTokenFailed }
         if stage.hasPrefix("developerServices/") { return .developerServicesFailed }
+        if status == 503 { return .serviceUnavailable }
         return .networkFailure
+    }
+}
+
+public enum AppleSRPInitializationDiagnosticResult: Equatable, Sendable {
+    case success
+    case http503
+    case appleError(Int)
+    case networkFailure
+    case protocolFailure
+    case responseParseFailure
+
+    public var outputCode: String {
+        switch self {
+        case .success: return "SRP_INIT_SUCCESS"
+        case .http503: return "SRP_INIT_HTTP_503"
+        case .appleError(let code): return "SRP_INIT_APPLE_ERROR_\(code)"
+        case .networkFailure: return "SRP_INIT_NETWORK_FAILURE"
+        case .protocolFailure: return "SRP_INIT_PROTOCOL_FAILURE"
+        case .responseParseFailure: return "SRP_INIT_RESPONSE_PARSE_FAILURE"
+        }
     }
 }
 
@@ -2270,6 +2323,45 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         appIdentifierIDs = [:]
         try? sessionStore.remove()
         diagnostics.update(adapterVersion: adapter.version) { $0.sessionValid = false }
+    }
+
+    /// Performs only the credentials-free GrandSlam SRP initialization phase.
+    /// The Apple Account name is sent directly to Apple and is neither logged
+    /// nor persisted. No password or 2FA code is accepted by this probe.
+    public func diagnoseSRPInitialization(account: String) async -> AppleSRPInitializationDiagnosticResult {
+        let canonicalAccount = account.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard canonicalAccount.contains("@"), canonicalAccount.utf8.count <= 1_024 else {
+            return .protocolFailure
+        }
+        do {
+            let srp = try AppleSRPClient(randomBytes: srpRandomBytesForTesting)
+            let machineHeaders = try await machineIdentity.headers(for: URLRequest(url: adapter.grandSlamService))
+            let initial = try await grandSlam([
+                "A2k": srp.clientPublicKey,
+                "ps": ["s2k", "s2k_fo"],
+                "cpd": clientProvidedData(machineHeaders),
+                "u": canonicalAccount,
+                "o": "init"
+            ], machineHeaders: machineHeaders, stage: "srpInitDiagnostic")
+            _ = try AppleSRPClient.parseChallenge(initial.response)
+            return .success
+        } catch let failure as AppleServiceFailure {
+            if failure.status == 503 { return .http503 }
+            if let code = failure.appleCode { return .appleError(code) }
+            if failure.error == .networkFailure { return .networkFailure }
+            return .protocolFailure
+        } catch let error as ExperimentalBackendError {
+            switch error {
+            case .networkFailure: return .networkFailure
+            case .authenticationProtocolMismatch, .responseChanged, .responseTooLarge,
+                 .localAnisetteUnavailable, .srpAuthFailed:
+                return .protocolFailure
+            default:
+                return .protocolFailure
+            }
+        } catch {
+            return .responseParseFailure
+        }
     }
 
     private enum AuthenticationOutcome {
@@ -2840,13 +2932,15 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                   response.body.count <= maximumBytes,
                   allowEmpty || !response.body.isEmpty else {
                 let error = AppleHTTPFailureClassifier.error(status: response.statusCode, stage: stage)
+                let responseMetadata = safeHTTPFailureMetadata(response: response, request: request)
                 throw AppleServiceFailure(
                     error: error,
                     status: response.statusCode,
                     appleCode: nil,
                     retryAfter: retryAfter(response.headers),
                     retryable: response.statusCode == 429 || response.statusCode == 503,
-                    reauthorizationRequired: false
+                    reauthorizationRequired: false,
+                    responseMetadata: responseMetadata
                 )
             }
             if !allowEmpty {
@@ -3096,7 +3190,13 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
                 appleErrorCode: failure.appleCode, retryAfterSeconds: failure.retryAfter,
                 retryable: failure.retryable, reauthorizationRequired: failure.reauthorizationRequired,
                 safeServerMessage: failure.safeMessage,
-                safeMessagePresent: failure.status == nil ? nil : failure.safeMessage != nil
+                safeMessagePresent: failure.status == nil ? nil : failure.safeMessage != nil,
+                endpoint: failure.responseMetadata?.endpoint,
+                httpMethod: failure.responseMetadata?.method,
+                responseContentType: failure.responseMetadata?.contentType,
+                responseBodyKind: failure.responseMetadata?.bodyKind,
+                serverIdentifier: failure.responseMetadata?.serverIdentifier,
+                requestIdentifier: failure.responseMetadata?.requestIdentifier
             ))
         }
     }
@@ -3106,6 +3206,72 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             String(describing: key).localizedCaseInsensitiveCompare("Retry-After") == .orderedSame
         }.flatMap { Int(String(describing: $0.value)) }
     }
+
+    private func safeHTTPFailureMetadata(
+        response: AppleHTTPResponse,
+        request: URLRequest
+    ) -> SafeAppleHTTPFailureMetadata {
+        let contentType = safeHTTPHeader("Content-Type", in: response.headers, maximumLength: 128)?
+            .lowercased()
+        let server = safeHTTPHeader("Server", in: response.headers, maximumLength: 128)
+        let requestIDNames = [
+            "X-Apple-I-Retry-Request-UUID", "X-Apple-Request-UUID",
+            "X-Apple-Request-ID", "X-Request-ID"
+        ]
+        let requestIdentifier = requestIDNames.lazy.compactMap {
+            safeASCIIHTTPHeader($0, in: response.headers, maximumLength: 128)
+        }.first.map(safeCorrelationFingerprint)
+        return SafeAppleHTTPFailureMetadata(
+            endpoint: response.url.host.map { $0 + response.url.path },
+            method: request.httpMethod,
+            contentType: contentType,
+            bodyKind: safeResponseBodyKind(response.body, contentType: contentType),
+            serverIdentifier: server,
+            requestIdentifier: requestIdentifier
+        )
+    }
+}
+
+private func safeCorrelationFingerprint(_ value: String) -> String {
+    let digest = Data(SHA256.hash(data: Data(value.utf8))).hexLowercase
+    return "sha256:\(digest.prefix(16))"
+}
+
+private func safeHTTPHeader(
+    _ name: String,
+    in headers: [AnyHashable: Any],
+    maximumLength: Int
+) -> String? {
+    safeASCIIHTTPHeader(name, in: headers, maximumLength: maximumLength).map(Redactor.redact)
+}
+
+private func safeASCIIHTTPHeader(
+    _ name: String,
+    in headers: [AnyHashable: Any],
+    maximumLength: Int
+) -> String? {
+    guard let raw = headers.first(where: {
+        String(describing: $0.key).localizedCaseInsensitiveCompare(name) == .orderedSame
+    }).map({ String(describing: $0.value) }),
+          !raw.isEmpty, raw.utf8.count <= maximumLength,
+          raw.unicodeScalars.allSatisfy({ $0.isASCII && !CharacterSet.controlCharacters.contains($0) }) else {
+        return nil
+    }
+    return raw
+}
+
+private func safeResponseBodyKind(_ body: Data, contentType: String?) -> String {
+    if body.isEmpty { return "empty" }
+    let prefix = String(decoding: body.prefix(256), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    if contentType?.contains("plist") == true || prefix.hasPrefix("<?xml") { return "plist-or-xml" }
+    if contentType?.contains("json") == true || prefix.hasPrefix("{") || prefix.hasPrefix("[") { return "json" }
+    if contentType?.contains("html") == true || prefix.hasPrefix("<!doctype html") || prefix.hasPrefix("<html") {
+        return "html"
+    }
+    if contentType?.hasPrefix("text/") == true { return "text" }
+    return "binary-or-unknown"
 }
 
 private func safeFieldNames(_ names: Dictionary<String, Any>.Keys) -> [String] {

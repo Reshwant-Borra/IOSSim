@@ -439,6 +439,7 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
     case responseChanged
     case rateLimited
     case unavailable
+    case serviceUnavailable
     case networkFailure
     case localAnisetteUnavailable
     case srpAuthFailed
@@ -482,6 +483,7 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
         case .xcodeScopedTokenFailed: return "XCODE_SCOPED_TOKEN_FAILED"
         case .developerServicesFailed: return "DEVELOPER_SERVICES_FAILED"
         case .rateLimited: return "APPLE_SERVICE_RATE_LIMITED"
+        case .serviceUnavailable: return "APPLE_SERVICE_UNAVAILABLE"
         case .responseTooLarge: return "APPLE_RESPONSE_TOO_LARGE"
         case .redirectRejected: return "APPLE_REDIRECT_REJECTED"
         default: return String(describing: self).uppercased()
@@ -843,7 +845,7 @@ public struct UnavailableExperimentalPersonalTeamBackend: ExperimentalPersonalTe
 
 public struct PrivateAppleProtocolAdapter: Equatable, Sendable {
     public static let researched2026 = PrivateAppleProtocolAdapter(
-        version: "research-2026-09",
+        version: "research-2026-09-akd",
         grandSlamService: URL(string: "https://gsa.apple.com/grandslam/GsService2")!,
         trustedDeviceVerification: URL(string: "https://gsa.apple.com/auth/verify/trusteddevice")!,
         verificationValidation: URL(string: "https://gsa.apple.com/grandslam/GsService2/validate")!,

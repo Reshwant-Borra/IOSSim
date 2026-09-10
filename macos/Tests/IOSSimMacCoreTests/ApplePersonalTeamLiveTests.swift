@@ -6,6 +6,20 @@ import XCTest
 @testable import IOSSimMacCore
 
 final class ApplePersonalTeamLiveTests: XCTestCase {
+    func testGrandSlamClientIdentityUsesAKDInsteadOfBlockedXcodeIdentifier() {
+        let value = LocalMacAppleMachineIdentityProvider.grandSlamClientInformation(
+            model: "Mac15,7",
+            osVersion: "26.0",
+            build: "25A000"
+        )
+
+        XCTAssertEqual(
+            value,
+            "<Mac15,7> <macOS;26.0;25A000> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        )
+        XCTAssertFalse(value.contains("com.apple.dt.Xcode"))
+    }
+
     func testLocalMachineIdentityWhenExplicitlyEnabled() async throws {
         guard ProcessInfo.processInfo.environment["IOSSIM_TEST_LOCAL_MACHINE_IDENTITY"] == "1" else {
             throw XCTSkip("Credentials-free local system adapter probe is opt-in")
@@ -214,8 +228,65 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
             AppleHTTPFailureClassifier.error(status: 503, stage: "developerServices/listTeams"),
             .developerServicesFailed
         )
-        XCTAssertEqual(AppleHTTPFailureClassifier.error(status: 503, stage: "srpInit"), .networkFailure)
+        XCTAssertEqual(AppleHTTPFailureClassifier.error(status: 503, stage: "srpInit"), .serviceUnavailable)
         XCTAssertEqual(AppleHTTPFailureClassifier.error(status: 429, stage: "xcodeScopedToken"), .rateLimited)
+    }
+
+    func testSRPInitializationDiagnosticStopsAfterChallengeWithoutPassword() async throws {
+        let challenge: [String: Any] = [
+            "Status": ["ec": 0, "hsc": 200],
+            "sp": "s2k",
+            "s": Data(repeating: 1, count: 16),
+            "i": 1_000,
+            "B": Data(repeating: 2, count: 256),
+            "c": "synthetic-cookie"
+        ]
+        let transport = ScriptedAppleTransport([.plist(["Response": challenge])])
+        let backend = diagnosticBackend(transport: transport, diagnostics: temporaryDiagnostics().store)
+
+        let result = await backend.diagnoseSRPInitialization(account: " Fixture.User@Example.Invalid ")
+
+        XCTAssertEqual(result, .success)
+        XCTAssertEqual(result.outputCode, "SRP_INIT_SUCCESS")
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.count, 1)
+        let root = try XCTUnwrap(try parseApplePlist(XCTUnwrap(requests[0].httpBody)))
+        let request = try XCTUnwrap(root["Request"] as? [String: Any])
+        XCTAssertEqual(request["u"] as? String, "fixture.user@example.invalid")
+        XCTAssertEqual(request["o"] as? String, "init")
+    }
+
+    func testSRPInitializationDiagnosticClassifies503AndRecordsOnlySafeMetadata() async throws {
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let transport = ScriptedAppleTransport([.raw(
+            status: 503,
+            headers: [
+                "Content-Type": "text/html",
+                "Server": "Apple",
+                "X-Apple-I-Retry-Request-UUID": "00000000-0000-4000-8000-000000000000"
+            ],
+            body: Data("<html>Service Temporarily Unavailable</html>".utf8)
+        )])
+        let backend = diagnosticBackend(transport: transport, diagnostics: diagnostics.store)
+
+        let result = await backend.diagnoseSRPInitialization(account: "fixture@example.invalid")
+
+        XCTAssertEqual(result, .http503)
+        XCTAssertEqual(result.outputCode, "SRP_INIT_HTTP_503")
+        let event = try XCTUnwrap(diagnostics.store.load()?.events.last)
+        XCTAssertEqual(event.stage, "srpInitDiagnostic")
+        XCTAssertEqual(event.safeErrorCode, "APPLE_SERVICE_UNAVAILABLE")
+        XCTAssertEqual(event.httpStatus, 503)
+        XCTAssertEqual(event.endpoint, "gsa.apple.com/grandslam/GsService2")
+        XCTAssertEqual(event.httpMethod, "POST")
+        XCTAssertEqual(event.responseContentType, "text/html")
+        XCTAssertEqual(event.responseBodyKind, "html")
+        XCTAssertEqual(event.serverIdentifier, "Apple")
+        XCTAssertEqual(event.requestIdentifier, "sha256:db8055e0e0307d5a")
+        let serialized = try String(contentsOf: diagnostics.url, encoding: .utf8)
+        XCTAssertFalse(serialized.contains("Service Temporarily Unavailable"))
+        XCTAssertFalse(serialized.contains("fixture@example.invalid"))
     }
 
     func testTeamCertificateAndProfileResponseParsing() throws {
@@ -1248,6 +1319,10 @@ private actor ScriptedAppleTransport: AppleHTTPTransport {
         static func empty(status: Int = 200, headers: [AnyHashable: Any] = [:]) -> Response {
             Response(status: status, headers: headers, body: Data())
         }
+
+        static func raw(status: Int, headers: [AnyHashable: Any], body: Data) -> Response {
+            Response(status: status, headers: headers, body: body)
+        }
     }
 
     private var scripted: [Response]
@@ -1372,6 +1447,19 @@ private func makeRegistrationBackend(
         machineIdentity: FixtureMachineIdentity(),
         sessionStore: MemoryAuthorizationSessionStore(session: fixtureSession()),
         diagnostics: diagnostics
+    )
+}
+
+private func diagnosticBackend(
+    transport: ScriptedAppleTransport,
+    diagnostics: ApplePersonalTeamDiagnosticsStore
+) -> LiveApplePersonalTeamBackend {
+    LiveApplePersonalTeamBackend(
+        transport: transport,
+        machineIdentity: FixtureMachineIdentity(),
+        sessionStore: MemoryAuthorizationSessionStore(),
+        diagnostics: diagnostics,
+        srpRandomBytesForTesting: Data(repeating: 1, count: 32)
     )
 }
 
