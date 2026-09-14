@@ -21,6 +21,8 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[2]
 IOS_DIR = ROOT / "ios"
 MAC_DIR = ROOT / "macos"
+HOST_BRIDGE_DIR = ROOT / "native" / "iossim-device-bridge"
+HOST_BRIDGE_LIB = HOST_BRIDGE_DIR / "target" / "release" / "libiossim_device_bridge.dylib"
 RELEASE_CONFIG_PATH = ROOT / "config" / "release.json"
 RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "release"
 LOCAL_RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "local-release"
@@ -834,6 +836,19 @@ def build_idevice(runner: Runner) -> bool:
     return run_step(runner, "Build pinned idevice FFI", "build-idevice-ios", [str(IOS_DIR / "scripts" / "build_idevice_ios.sh")])
 
 
+def build_host_device_bridge(runner: Runner) -> bool:
+    cargo = discover_tool("cargo")
+    if not cargo:
+        print_step("FAIL", "Native Mac device bridge", "cargo is unavailable")
+        return False
+    return run_step(
+        runner,
+        "Build native Mac device bridge",
+        "build-host-device-bridge",
+        [cargo, "build", "--manifest-path", str(HOST_BRIDGE_DIR / "Cargo.toml"), "--release"],
+    ) and HOST_BRIDGE_LIB.is_file()
+
+
 def verify_idevice(runner: Runner) -> bool:
     return run_step(runner, "Verify idevice FFI symbols", "verify-idevice-symbols", [str(IOS_DIR / "scripts" / "verify_idevice_symbols.sh")])
 
@@ -957,6 +972,7 @@ def command_build(args: argparse.Namespace) -> int:
     ok = True
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
+    ok &= build_host_device_bridge(runner)
     ok &= build_ios(runner)
     ok &= build_mac_app(runner)
     print("")
@@ -983,6 +999,7 @@ def command_test(args: argparse.Namespace) -> int:
     ok &= build_mac_app(runner)
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
+    ok &= build_host_device_bridge(runner)
     cargo = discover_tool("cargo")
     source = IOS_DIR / ".build" / "idevice-src"
     if cargo and (source / "Cargo.toml").exists():
@@ -1267,6 +1284,12 @@ def assemble_self_contained_app(
     notices.mkdir()
     shutil.copy2(IDEVICE_LICENSE_SOURCE, notices / "idevice-LICENSE.txt")
     shutil.copy2(BIGINT_LICENSE_SOURCE, notices / "BigInt-LICENSE.txt")
+    if not HOST_BRIDGE_LIB.is_file():
+        raise RuntimeError("native Mac device bridge dylib is missing; run the host bridge build first")
+    bridge_resources = resources / "NativeDeviceBridge"
+    bridge_resources.mkdir()
+    shutil.copy2(HOST_BRIDGE_LIB, bridge_resources / HOST_BRIDGE_LIB.name)
+    os.chmod(bridge_resources / HOST_BRIDGE_LIB.name, 0o755)
 
     components: list[dict[str, Any]] = []
     for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
@@ -1668,6 +1691,7 @@ def command_package_app(args: argparse.Namespace) -> int:
     ok &= check_bundle_identifiers(runner)
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
+    ok &= build_host_device_bridge(runner)
     ok &= build_ios(runner, configuration="Release", packaged=True)
     ok &= build_self_contained_macos_products(runner)
     if not ok:
@@ -1966,6 +1990,7 @@ def command_release(args: argparse.Namespace) -> int:
     ok = check_bundle_identifiers(runner)
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
+    ok &= build_host_device_bridge(runner)
     ok &= build_ios(runner, configuration="Release", packaged=True)
     if not ok:
         print_step("FAIL", "Production prerequisites", "build did not complete")
@@ -2046,6 +2071,7 @@ def command_release_local(args: argparse.Namespace) -> int:
     ok = check_bundle_identifiers(runner)
     ok &= build_idevice(runner)
     ok &= verify_idevice(runner)
+    ok &= build_host_device_bridge(runner)
     ok &= build_ios(runner, configuration="Release", packaged=True)
     if not ok:
         print_step("FAIL", "Local release prerequisites", "build did not complete")
