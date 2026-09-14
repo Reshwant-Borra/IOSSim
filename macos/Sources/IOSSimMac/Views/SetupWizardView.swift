@@ -138,7 +138,7 @@ struct WelcomeView: View {
                 .font(.largeTitle.weight(.semibold))
             Text("Set up IOSSim on your iPhone.")
                 .font(.title3)
-            Text("IOSSim requires a one-time setup on this Mac and your iPhone.")
+            Text("IOSSim prepares your iPhone automatically. You only need to unlock it and approve Apple’s security prompts.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Get Started") {
@@ -163,7 +163,7 @@ struct MacCheckView: View {
             Text("Checking this Mac...")
                 .font(.title2.weight(.semibold))
             FriendlyCheckRow(title: "macOS supported", state: rowState(component: "Mac"))
-            FriendlyCheckRow(title: "Required Apple tools ready", state: rowState(component: "Apple Tooling"))
+            FriendlyCheckRow(title: "Native device bridge ready", state: rowState(component: "Apple Tooling"))
             FriendlyCheckRow(title: "IOSSim components ready", state: componentReadiness)
         }
     }
