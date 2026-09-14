@@ -64,6 +64,28 @@ iossim_bridge_result *iossim_bridge_mount_developer_support(
     size_t build_manifest_path_len,
     uint64_t timeout_ms
 );
+iossim_bridge_result *iossim_bridge_app_inventory(iossim_device_handle *handle, uint64_t timeout_ms);
+iossim_bridge_result *iossim_bridge_install_app(
+    iossim_device_handle *handle, const uint8_t *local_path, size_t local_path_len,
+    bool upgrade, uint64_t timeout_ms
+);
+iossim_bridge_result *iossim_bridge_uninstall_app(
+    iossim_device_handle *handle, const uint8_t *bundle_id, size_t bundle_id_len,
+    uint64_t timeout_ms
+);
+iossim_bridge_result *iossim_bridge_container_write(
+    iossim_device_handle *handle,
+    const uint8_t *bundle_id, size_t bundle_id_len,
+    const uint8_t *relative_path, size_t relative_path_len,
+    const uint8_t *bytes, size_t bytes_len,
+    uint64_t timeout_ms
+);
+iossim_bridge_result *iossim_bridge_container_read(
+    iossim_device_handle *handle,
+    const uint8_t *bundle_id, size_t bundle_id_len,
+    const uint8_t *relative_path, size_t relative_path_len,
+    uint64_t timeout_ms
+);
 void iossim_bridge_cancel(iossim_device_handle *handle);
 void iossim_bridge_close_device(iossim_device_handle *handle);
 void iossim_bridge_result_free(iossim_bridge_result *result);

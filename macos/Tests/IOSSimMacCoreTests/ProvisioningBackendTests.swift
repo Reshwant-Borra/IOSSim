@@ -132,7 +132,7 @@ final class ProvisioningBackendTests: XCTestCase {
         XCTAssertFalse(RuntimeProvisioning.devicectlForbidden(environment: [:]))
     }
 
-    func testIdeviceBackendFailsExplicitlyUntilMacOSFfiExists() async throws {
+    func testIdeviceBackendFailsExplicitlyWhenBundledBridgeIsUnavailable() async throws {
         let backend = IdeviceProvisioningBackend()
         let result = try await backend.install(
             component: DeviceArtifactComponent(
@@ -142,11 +142,11 @@ final class ProvisioningBackendTests: XCTestCase {
                 relativePath: "DeviceArtifacts/IOSSim DVT POC.app",
                 sha256: "unused"
             ),
-            rawDeviceIdentifier: "A",
+            rawDeviceIdentifier: "PHONE-0001",
             context: RuntimeProvisioningContext(resourcesURL: FileManager.default.temporaryDirectory)
         )
-        XCTAssertEqual(result.exitCode, 78)
-        XCTAssertTrue(result.stderr.contains("IDEVICE_BACKEND_UNAVAILABLE"))
+        XCTAssertEqual(result.exitCode, 70)
+        XCTAssertTrue(result.stderr.contains("NATIVE_INSTALL_FAILED"))
     }
 
     func testDevicectlDiscoveryKeepsPairedPhysicalIPhoneWhenLockStateSucceeds() async throws {

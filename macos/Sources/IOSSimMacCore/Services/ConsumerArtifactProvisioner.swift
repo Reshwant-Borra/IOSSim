@@ -13,6 +13,9 @@ public actor ConsumerArtifactProvisioner {
     private let fileManager: FileManager
     private let workspaceRootURL: URL?
     private let inventoryReader: any DeviceApplicationInventoryReading
+    /// Legacy comparison backend retained until physical qualification. The
+    /// no-Xcode readiness/onboarding coordinator does not construct this type.
+    private let deviceBackend: any DeviceProvisioningBackend
     private let inventoryRetryPolicy: InstallationInventoryRetryPolicy
     private let profileWriteOptions: Data.WritingOptions
     private var operationGeneration: UInt64?
@@ -27,6 +30,7 @@ public actor ConsumerArtifactProvisioner {
         fileManager: FileManager = .default,
         workspaceRootURL: URL? = nil,
         inventoryReader: any DeviceApplicationInventoryReading = DevicectlApplicationInventoryReader(),
+        deviceBackend: any DeviceProvisioningBackend = DevicectlProvisioningBackend(),
         inventoryRetryPolicy: InstallationInventoryRetryPolicy = .postInstall,
         profileWriteOptions: Data.WritingOptions = [.atomic, .completeFileProtection]
     ) {
@@ -40,6 +44,7 @@ public actor ConsumerArtifactProvisioner {
         self.fileManager = fileManager
         self.workspaceRootURL = workspaceRootURL
         self.inventoryReader = inventoryReader
+        self.deviceBackend = deviceBackend
         self.inventoryRetryPolicy = inventoryRetryPolicy
         self.profileWriteOptions = profileWriteOptions
     }
@@ -66,7 +71,7 @@ public actor ConsumerArtifactProvisioner {
                 try await stateStore.saveManifest(prior.recordingRefreshAttempt(at: started))
             }
             _ = try context.verifyArtifacts()
-            let connectedRawDeviceIdentifier = await AppleDeviceTool.rawDeviceIdentifier(
+            let connectedRawDeviceIdentifier = await deviceBackend.rawDeviceIdentifier(
                 matching: request.selectedDeviceIdentifier,
                 context: context
             )
@@ -75,7 +80,7 @@ public actor ConsumerArtifactProvisioner {
             let nativeArtifacts: NativeProvisioningArtifacts?
             if request.backend == .nativePersonalTeam {
                 if let connectedRawDeviceIdentifier,
-                   let physicalIdentifier = await AppleDeviceTool.signingDeviceIdentifier(
+                   let physicalIdentifier = await deviceBackend.signingDeviceIdentifier(
                        matching: connectedRawDeviceIdentifier,
                        context: context
                    ) {
@@ -109,7 +114,7 @@ public actor ConsumerArtifactProvisioner {
                     )
                 }
                 rawDeviceIdentifier = connectedRawDeviceIdentifier
-                guard let physicalIdentifier = await AppleDeviceTool.signingDeviceIdentifier(
+                guard let physicalIdentifier = await deviceBackend.signingDeviceIdentifier(
                     matching: connectedRawDeviceIdentifier,
                     context: context
                 ) else {
@@ -156,7 +161,7 @@ public actor ConsumerArtifactProvisioner {
             )
             let previous = try? await stateStore.loadManifest()
             let now = Date()
-            let selectedDevice = await AppleDeviceTool.discoverDevices(context: context)
+            let selectedDevice = await deviceBackend.discoverDevices(context: context)
                 .first(where: { $0.selectionIdentifier == rawDeviceIdentifier })
             try await installArtifacts(prepared, rawDeviceIdentifier: rawDeviceIdentifier)
             var manifest = ConsumerProvisioningManifest(
@@ -265,7 +270,7 @@ public actor ConsumerArtifactProvisioner {
                 developerDetail: "Persisted checkpoint team does not match the current provisioning context."
             )
         }
-        guard let rawDeviceIdentifier = await AppleDeviceTool.rawDeviceIdentifier(
+        guard let rawDeviceIdentifier = await deviceBackend.rawDeviceIdentifier(
             matching: request.selectedDeviceIdentifier,
             context: context
         ) else {
@@ -343,11 +348,11 @@ public actor ConsumerArtifactProvisioner {
     public func availableTeams(selectedDeviceIdentifier: String?) async -> [PersonalTeamCandidate] {
         let profileDeviceIdentifier: String?
         if let selectedDeviceIdentifier,
-           let rawDeviceIdentifier = await AppleDeviceTool.rawDeviceIdentifier(
+           let rawDeviceIdentifier = await deviceBackend.rawDeviceIdentifier(
                matching: selectedDeviceIdentifier,
                context: context
            ) {
-            profileDeviceIdentifier = await AppleDeviceTool.signingDeviceIdentifier(
+            profileDeviceIdentifier = await deviceBackend.signingDeviceIdentifier(
                 matching: rawDeviceIdentifier,
                 context: context
             )
@@ -362,7 +367,7 @@ public actor ConsumerArtifactProvisioner {
     }
 
     private func resolveDevice(_ selector: String) async throws -> String {
-        guard let raw = await AppleDeviceTool.rawDeviceIdentifier(matching: selector, context: context) else {
+        guard let raw = await deviceBackend.rawDeviceIdentifier(matching: selector, context: context) else {
             throw ConsumerProvisioningFailure(
                 code: .deviceUnavailable,
                 stage: .checkingDevice,
@@ -1066,7 +1071,7 @@ public actor ConsumerArtifactProvisioner {
             sha256: "prepared"
         )
         let installContext = RuntimeProvisioningContext(resourcesURL: URL(fileURLWithPath: "/"), runner: context.runner)
-        let result = try await AppleDeviceTool.install(
+        let result = try await deviceBackend.install(
             component: component,
             rawDeviceIdentifier: rawDeviceIdentifier,
             context: installContext

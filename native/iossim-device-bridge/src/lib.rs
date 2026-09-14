@@ -1,8 +1,13 @@
 use idevice::{
     IdeviceService,
     provider::IdeviceProvider,
-    services::{amfi::AmfiClient, lockdown::LockdownClient, mobile_image_mounter::ImageMounter},
+    services::{
+        afc::opcode::AfcFopenMode, amfi::AmfiClient, house_arrest::HouseArrestClient,
+        installation_proxy::InstallationProxyClient, lockdown::LockdownClient,
+        mobile_image_mounter::ImageMounter,
+    },
     usbmuxd::{Connection, UsbmuxdAddr},
+    utils::installation,
 };
 use serde::Serialize;
 use std::{
@@ -19,6 +24,7 @@ use std::{
 const VERSION: &[u8] = b"iossim-device-bridge/0.1.0+idevice-1838db1\0";
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const MAX_PATH_BYTES: usize = 4096;
+const MAX_CONTAINER_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 
 #[repr(i32)]
@@ -76,6 +82,14 @@ struct DeviceInspection {
     trust: &'static str,
     lock_state: &'static str,
     developer_mode: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppRecord {
+    bundle_id: String,
+    version: Option<String>,
+    team_id: Option<String>,
 }
 
 fn clean_diagnostic(value: impl AsRef<str>) -> String {
@@ -209,6 +223,48 @@ unsafe fn path_argument<'a>(ptr: *const u8, len: usize) -> Result<&'a str, *mut 
         ));
     }
     Ok(value)
+}
+
+unsafe fn bounded_utf8_argument<'a>(
+    ptr: *const u8,
+    len: usize,
+    maximum: usize,
+    label: &str,
+) -> Result<&'a str, *mut BridgeResult> {
+    if ptr.is_null() || len == 0 || len > maximum {
+        return Err(make_result(
+            Status::InvalidArgument,
+            vec![],
+            format!("{label} is invalid"),
+        ));
+    }
+    // SAFETY: caller provides a readable buffer of `len`; bounds are checked above.
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+    std::str::from_utf8(bytes).map_err(|_| {
+        make_result(
+            Status::InvalidArgument,
+            vec![],
+            format!("{label} is not UTF-8"),
+        )
+    })
+}
+
+fn validate_bundle_id(value: &str) -> bool {
+    (3..=255).contains(&value.len())
+        && value.contains('.')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+}
+
+fn validate_container_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && !value.starts_with('/')
+        && !value.contains('\0')
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 async fn devices() -> Result<Vec<idevice::usbmuxd::UsbmuxdDevice>, idevice::IdeviceError> {
@@ -585,6 +641,314 @@ pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_app_inventory(
+    handle: *mut DeviceHandle,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let mut proxy = InstallationProxyClient::connect(&provider).await?;
+            let apps = proxy.get_apps(Some("User"), None).await?;
+            Ok(apps
+                .into_iter()
+                .map(|(bundle_id, value)| {
+                    let dictionary = value.as_dictionary();
+                    let version = dictionary
+                        .and_then(|item| item.get("CFBundleShortVersionString"))
+                        .and_then(|item| item.as_string())
+                        .map(ToOwned::to_owned);
+                    let team_id = dictionary
+                        .and_then(|item| item.get("TeamIdentifier"))
+                        .and_then(|item| item.as_string())
+                        .map(ToOwned::to_owned);
+                    AppRecord {
+                        bundle_id,
+                        version,
+                        team_id,
+                    }
+                })
+                .collect::<Vec<_>>())
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(records)) => json_result(&records),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "app inventory timed out"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_install_app(
+    handle: *mut DeviceHandle,
+    local_path: *const u8,
+    local_path_len: usize,
+    upgrade: bool,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: path is validated and copied before use.
+        let local_path = match unsafe { path_argument(local_path, local_path_len) } {
+            Ok(value) => value.to_string(),
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            if upgrade {
+                installation::upgrade_package(&provider, local_path, None).await
+            } else {
+                installation::install_package(&provider, local_path, None).await
+            }
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(())) => make_result(Status::Ok, vec![], "application operation completed"),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "application install timed out"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_uninstall_app(
+    handle: *mut DeviceHandle,
+    bundle_id: *const u8,
+    bundle_id_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: identifier is bounded and copied before use.
+        let bundle_id = match unsafe {
+            bounded_utf8_argument(bundle_id, bundle_id_len, 255, "bundle identifier")
+        } {
+            Ok(value) if validate_bundle_id(value) => value.to_string(),
+            Ok(_) => {
+                return make_result(
+                    Status::InvalidArgument,
+                    vec![],
+                    "bundle identifier is invalid",
+                );
+            }
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let mut proxy = InstallationProxyClient::connect(&provider).await?;
+            proxy.uninstall(bundle_id, None).await
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(())) => make_result(Status::Ok, vec![], "application removed"),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "application uninstall timed out"),
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_container_write(
+    handle: *mut DeviceHandle,
+    bundle_id: *const u8,
+    bundle_id_len: usize,
+    relative_path: *const u8,
+    relative_path_len: usize,
+    bytes: *const u8,
+    bytes_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() || bytes.is_null() || bytes_len > MAX_CONTAINER_BYTES {
+            return make_result(
+                Status::InvalidArgument,
+                vec![],
+                "container write arguments are invalid",
+            );
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: string buffers are bounded and copied before use.
+        let bundle_id = match unsafe {
+            bounded_utf8_argument(bundle_id, bundle_id_len, 255, "bundle identifier")
+        } {
+            Ok(value) if validate_bundle_id(value) => value.to_string(),
+            Ok(_) => {
+                return make_result(
+                    Status::InvalidArgument,
+                    vec![],
+                    "bundle identifier is invalid",
+                );
+            }
+            Err(result) => return result,
+        };
+        let relative_path = match unsafe {
+            bounded_utf8_argument(relative_path, relative_path_len, 512, "container path")
+        } {
+            Ok(value) if validate_container_path(value) => value.to_string(),
+            Ok(_) => {
+                return make_result(Status::InvalidArgument, vec![], "container path is unsafe");
+            }
+            Err(result) => return result,
+        };
+        // SAFETY: byte buffer is bounded and copied before asynchronous use.
+        let bytes = unsafe { slice::from_raw_parts(bytes, bytes_len) }.to_vec();
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let house = HouseArrestClient::connect(&provider).await?;
+            let mut afc = house.vend_container(bundle_id).await?;
+            let mut parent = String::new();
+            let components: Vec<_> = relative_path.split('/').collect();
+            for component in components.iter().take(components.len().saturating_sub(1)) {
+                if !parent.is_empty() {
+                    parent.push('/');
+                }
+                parent.push_str(component);
+                let _ = afc.mk_dir(&parent).await;
+            }
+            let mut file = afc.open(relative_path, AfcFopenMode::WrOnly).await?;
+            let write = file.write_entire(&bytes).await;
+            let close = file.close().await;
+            write.and(close)
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(())) => make_result(Status::Ok, vec![], "container write completed"),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "container write timed out"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_container_read(
+    handle: *mut DeviceHandle,
+    bundle_id: *const u8,
+    bundle_id_len: usize,
+    relative_path: *const u8,
+    relative_path_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: string buffers are bounded and copied before use.
+        let bundle_id = match unsafe {
+            bounded_utf8_argument(bundle_id, bundle_id_len, 255, "bundle identifier")
+        } {
+            Ok(value) if validate_bundle_id(value) => value.to_string(),
+            Ok(_) => {
+                return make_result(
+                    Status::InvalidArgument,
+                    vec![],
+                    "bundle identifier is invalid",
+                );
+            }
+            Err(result) => return result,
+        };
+        let relative_path = match unsafe {
+            bounded_utf8_argument(relative_path, relative_path_len, 512, "container path")
+        } {
+            Ok(value) if validate_container_path(value) => value.to_string(),
+            Ok(_) => {
+                return make_result(Status::InvalidArgument, vec![], "container path is unsafe");
+            }
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let house = HouseArrestClient::connect(&provider).await?;
+            let mut afc = house.vend_container(bundle_id).await?;
+            let mut file = afc.open(relative_path, AfcFopenMode::RdOnly).await?;
+            let data = file.read_n(MAX_CONTAINER_BYTES + 1).await?;
+            file.close().await?;
+            Ok(data)
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(data)) if data.len() <= MAX_CONTAINER_BYTES => {
+                make_result(Status::Ok, data, "container read completed")
+            }
+            Ok(Ok(_)) => make_result(
+                Status::ProtocolError,
+                vec![],
+                "container response exceeded size limit",
+            ),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "container read timed out"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iossim_bridge_cancel(handle: *mut DeviceHandle) {
     if !handle.is_null() {
         // SAFETY: caller owns this live handle; only the atomic flag is accessed.
@@ -653,5 +1017,17 @@ mod tests {
             assert_eq!((*result).status, Status::InvalidArgument as i32);
             iossim_bridge_result_free(result);
         }
+    }
+
+    #[test]
+    fn container_and_bundle_paths_are_scoped() {
+        assert!(validate_bundle_id("com.example.iossim"));
+        assert!(!validate_bundle_id("../bad"));
+        assert!(validate_container_path(
+            "Library/Application Support/IOSSim/runtime.json"
+        ));
+        assert!(!validate_container_path("../outside"));
+        assert!(!validate_container_path("/private/var/tmp/outside"));
+        assert!(!validate_container_path("Library//outside"));
     }
 }

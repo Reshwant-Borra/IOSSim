@@ -206,6 +206,12 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         let developerMode: DeveloperModeReadiness
     }
 
+    private struct WireApp: Decodable {
+        let bundleId: String
+        let version: String?
+        let teamId: String?
+    }
+
     private typealias ABIFn = @convention(c) () -> UInt32
     private typealias ListFn = @convention(c) (UInt64) -> UnsafeMutableRawPointer?
     private typealias OpenFn = @convention(c) (
@@ -220,6 +226,21 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         UnsafePointer<UInt8>?, Int,
         UInt64
     ) -> UnsafeMutableRawPointer?
+    private typealias InventoryFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
+    private typealias InstallFn = @convention(c) (
+        UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int, Bool, UInt64
+    ) -> UnsafeMutableRawPointer?
+    private typealias UninstallFn = @convention(c) (
+        UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int, UInt64
+    ) -> UnsafeMutableRawPointer?
+    private typealias ContainerWriteFn = @convention(c) (
+        UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int,
+        UnsafePointer<UInt8>?, Int, UnsafePointer<UInt8>?, Int, UInt64
+    ) -> UnsafeMutableRawPointer?
+    private typealias ContainerReadFn = @convention(c) (
+        UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int,
+        UnsafePointer<UInt8>?, Int, UInt64
+    ) -> UnsafeMutableRawPointer?
     private typealias CloseFn = @convention(c) (UnsafeMutableRawPointer?) -> Void
     private typealias FreeFn = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
@@ -229,6 +250,11 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
     private let inspectFunction: InspectFn?
     private let developerSupportStatusFunction: DeveloperSupportStatusFn?
     private let mountDeveloperSupportFunction: MountDeveloperSupportFn?
+    private let inventoryFunction: InventoryFn?
+    private let installFunction: InstallFn?
+    private let uninstallFunction: UninstallFn?
+    private let containerWriteFunction: ContainerWriteFn?
+    private let containerReadFunction: ContainerReadFn?
     private let closeFunction: CloseFn?
     private let freeFunction: FreeFn?
     public let loadError: NativeDeviceBridgeError?
@@ -250,6 +276,11 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             inspectFunction = nil
             developerSupportStatusFunction = nil
             mountDeveloperSupportFunction = nil
+            inventoryFunction = nil
+            installFunction = nil
+            uninstallFunction = nil
+            containerWriteFunction = nil
+            containerReadFunction = nil
             closeFunction = nil
             freeFunction = nil
             loadError = .libraryUnavailable
@@ -264,6 +295,11 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             inspectFunction = nil
             developerSupportStatusFunction = nil
             mountDeveloperSupportFunction = nil
+            inventoryFunction = nil
+            installFunction = nil
+            uninstallFunction = nil
+            containerWriteFunction = nil
+            containerReadFunction = nil
             closeFunction = nil
             freeFunction = nil
             loadError = .incompatibleABI
@@ -275,11 +311,18 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         inspectFunction = Self.symbol("iossim_bridge_inspect_device", in: loaded)
         developerSupportStatusFunction = Self.symbol("iossim_bridge_developer_support_status", in: loaded)
         mountDeveloperSupportFunction = Self.symbol("iossim_bridge_mount_developer_support", in: loaded)
+        inventoryFunction = Self.symbol("iossim_bridge_app_inventory", in: loaded)
+        installFunction = Self.symbol("iossim_bridge_install_app", in: loaded)
+        uninstallFunction = Self.symbol("iossim_bridge_uninstall_app", in: loaded)
+        containerWriteFunction = Self.symbol("iossim_bridge_container_write", in: loaded)
+        containerReadFunction = Self.symbol("iossim_bridge_container_read", in: loaded)
         closeFunction = Self.symbol("iossim_bridge_close_device", in: loaded)
         freeFunction = Self.symbol("iossim_bridge_result_free", in: loaded)
         loadError = [
             listFunction != nil, openFunction != nil, inspectFunction != nil,
             developerSupportStatusFunction != nil, mountDeveloperSupportFunction != nil,
+            inventoryFunction != nil, installFunction != nil, uninstallFunction != nil,
+            containerWriteFunction != nil, containerReadFunction != nil,
             closeFunction != nil, freeFunction != nil
         ]
             .allSatisfy { $0 } ? nil : .incompatibleABI
@@ -374,6 +417,107 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
                             timeoutMS
                         )
                     }
+                }
+            }
+            return try consume(pointer)
+        }
+    }
+
+    public func applicationInventory(
+        on identity: IOSSimDeviceIdentity,
+        timeout: Duration = .seconds(20)
+    ) throws -> [NativeInstalledApplication] {
+        guard let inventoryFunction else { throw NativeDeviceBridgeError.incompatibleABI }
+        return try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let data = try consume(inventoryFunction(handle, timeoutMS))
+            return try JSONDecoder().decode([WireApp].self, from: data).map {
+                NativeInstalledApplication(bundleIdentifier: $0.bundleId, version: $0.version, teamIdentifier: $0.teamId)
+            }
+        }
+    }
+
+    public func installApplication(
+        on identity: IOSSimDeviceIdentity,
+        localURL: URL,
+        upgrade: Bool,
+        timeout: Duration = .seconds(120)
+    ) throws {
+        guard localURL.isFileURL, localURL.path.hasPrefix("/"), let installFunction else {
+            throw NativeDeviceBridgeError.invalidIdentity
+        }
+        _ = try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let path = Array(localURL.path.utf8)
+            let pointer = path.withUnsafeBufferPointer {
+                installFunction(handle, $0.baseAddress, $0.count, upgrade, timeoutMS)
+            }
+            return try consume(pointer)
+        }
+    }
+
+    public func uninstallApplication(
+        on identity: IOSSimDeviceIdentity,
+        bundleIdentifier: String,
+        timeout: Duration = .seconds(60)
+    ) throws {
+        guard NativeApplicationPathPolicy.isValidBundleIdentifier(bundleIdentifier), let uninstallFunction else {
+            throw NativeDeviceBridgeError.invalidIdentity
+        }
+        _ = try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let bundle = Array(bundleIdentifier.utf8)
+            let pointer = bundle.withUnsafeBufferPointer {
+                uninstallFunction(handle, $0.baseAddress, $0.count, timeoutMS)
+            }
+            return try consume(pointer)
+        }
+    }
+
+    public func writeContainer(
+        on identity: IOSSimDeviceIdentity,
+        bundleIdentifier: String,
+        relativePath: String,
+        data: Data,
+        timeout: Duration = .seconds(30)
+    ) throws {
+        guard NativeApplicationPathPolicy.isValidBundleIdentifier(bundleIdentifier),
+              NativeApplicationPathPolicy.isSafeContainerPath(relativePath), data.count <= 16 * 1_024 * 1_024,
+              let containerWriteFunction else { throw NativeApplicationManagementError.unsafePath }
+        _ = try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let bundle = Array(bundleIdentifier.utf8)
+            let path = Array(relativePath.utf8)
+            let pointer = bundle.withUnsafeBufferPointer { bundleBuffer in
+                path.withUnsafeBufferPointer { pathBuffer in
+                    data.withUnsafeBytes { dataBuffer in
+                        containerWriteFunction(
+                            handle, bundleBuffer.baseAddress, bundleBuffer.count,
+                            pathBuffer.baseAddress, pathBuffer.count,
+                            dataBuffer.bindMemory(to: UInt8.self).baseAddress, dataBuffer.count, timeoutMS
+                        )
+                    }
+                }
+            }
+            return try consume(pointer)
+        }
+    }
+
+    public func readContainer(
+        on identity: IOSSimDeviceIdentity,
+        bundleIdentifier: String,
+        relativePath: String,
+        timeout: Duration = .seconds(30)
+    ) throws -> Data {
+        guard NativeApplicationPathPolicy.isValidBundleIdentifier(bundleIdentifier),
+              NativeApplicationPathPolicy.isSafeContainerPath(relativePath), let containerReadFunction else {
+            throw NativeApplicationManagementError.unsafePath
+        }
+        return try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let bundle = Array(bundleIdentifier.utf8)
+            let path = Array(relativePath.utf8)
+            let pointer = bundle.withUnsafeBufferPointer { bundleBuffer in
+                path.withUnsafeBufferPointer { pathBuffer in
+                    containerReadFunction(
+                        handle, bundleBuffer.baseAddress, bundleBuffer.count,
+                        pathBuffer.baseAddress, pathBuffer.count, timeoutMS
+                    )
                 }
             }
             return try consume(pointer)

@@ -135,9 +135,14 @@ public enum DeviceProvisioningBackendFactory {
 
 public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     private let bridge: IOSSimDeviceBridge
+    private let applicationService: any NativeApplicationServicing
 
-    public init(bridge: IOSSimDeviceBridge = IOSSimDeviceBridge()) {
+    public init(
+        bridge: IOSSimDeviceBridge = IOSSimDeviceBridge(),
+        applicationService: any NativeApplicationServicing = NativeApplicationService()
+    ) {
         self.bridge = bridge
+        self.applicationService = applicationService
     }
 
     public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
@@ -175,15 +180,25 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     }
 
     public func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
-        nil
+        guard let identity = try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier),
+              let inventory = try? await applicationService.inventory(on: identity) else { return nil }
+        return inventory.contains { $0.bundleIdentifier == bundleIdentifier }
     }
 
     public func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
-        ProcessResult(
-            exitCode: 78,
-            stdout: "",
-            stderr: "IDEVICE_BACKEND_UNAVAILABLE: host-side idevice provisioning requires a macOS idevice FFI library; the current bundled library is iOS-only."
-        )
+        guard let identity = try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier) else {
+            return ProcessResult(exitCode: 64, stdout: "", stderr: "NATIVE_DEVICE_IDENTITY_INVALID")
+        }
+        let appURL = context.resourcesURL.appendingPathComponent(component.relativePath)
+        do {
+            let inventory = try await applicationService.inventory(on: identity)
+            let mode: NativeApplicationInstallMode = inventory.contains { $0.bundleIdentifier == component.bundleIdentifier }
+                ? .upgrade : .fresh
+            try await applicationService.install(appURL: appURL, mode: mode, on: identity)
+            return ProcessResult(exitCode: 0, stdout: "native \(mode.rawValue) completed", stderr: "")
+        } catch {
+            return ProcessResult(exitCode: 70, stdout: "", stderr: "NATIVE_INSTALL_FAILED: \(Redactor.redact(String(describing: error)))")
+        }
     }
 
 }
