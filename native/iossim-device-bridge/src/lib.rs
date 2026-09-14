@@ -1,7 +1,7 @@
 use idevice::{
     IdeviceService,
     provider::IdeviceProvider,
-    services::{amfi::AmfiClient, lockdown::LockdownClient},
+    services::{amfi::AmfiClient, lockdown::LockdownClient, mobile_image_mounter::ImageMounter},
     usbmuxd::{Connection, UsbmuxdAddr},
 };
 use serde::Serialize;
@@ -18,6 +18,7 @@ use std::{
 
 const VERSION: &[u8] = b"iossim-device-bridge/0.1.0+idevice-1838db1\0";
 const MAX_IDENTIFIER_BYTES: usize = 256;
+const MAX_PATH_BYTES: usize = 4096;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 
 #[repr(i32)]
@@ -183,6 +184,33 @@ unsafe fn utf8_argument<'a>(ptr: *const u8, len: usize) -> Result<&'a str, *mut 
     })
 }
 
+unsafe fn path_argument<'a>(ptr: *const u8, len: usize) -> Result<&'a str, *mut BridgeResult> {
+    if ptr.is_null() || len == 0 || len > MAX_PATH_BYTES {
+        return Err(make_result(
+            Status::InvalidArgument,
+            vec![],
+            "developer-support path is invalid",
+        ));
+    }
+    // SAFETY: caller provides a readable buffer of `len`; bounds are checked above.
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+    let value = std::str::from_utf8(bytes).map_err(|_| {
+        make_result(
+            Status::InvalidArgument,
+            vec![],
+            "developer-support path is not UTF-8",
+        )
+    })?;
+    if !std::path::Path::new(value).is_absolute() || value.contains("/../") {
+        return Err(make_result(
+            Status::InvalidArgument,
+            vec![],
+            "developer-support path must be absolute and normalized",
+        ));
+    }
+    Ok(value)
+}
+
 async fn devices() -> Result<Vec<idevice::usbmuxd::UsbmuxdDevice>, idevice::IdeviceError> {
     let addr = UsbmuxdAddr::default();
     let mut mux = addr.connect(0x4953_0001).await?;
@@ -212,6 +240,21 @@ fn error_result(error: &idevice::IdeviceError) -> *mut BridgeResult {
         Status::ProtocolError
     };
     make_result(status, vec![], message)
+}
+
+async fn selected_device(
+    stable_id: &str,
+    expected_mux: u32,
+) -> Result<idevice::usbmuxd::UsbmuxdDevice, idevice::IdeviceError> {
+    let selected = devices()
+        .await?
+        .into_iter()
+        .find(|device| device.udid == stable_id)
+        .ok_or(idevice::IdeviceError::DeviceNotFound)?;
+    if selected.device_id != expected_mux {
+        return Err(idevice::IdeviceError::DeviceNotFound);
+    }
+    Ok(selected)
 }
 
 #[unsafe(no_mangle)]
@@ -337,14 +380,7 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
             Err(result) => return result,
         };
         let task = async move {
-            let selected = devices()
-                .await?
-                .into_iter()
-                .find(|device| device.udid == stable_id)
-                .ok_or(idevice::IdeviceError::DeviceNotFound)?;
-            if selected.device_id != expected_mux {
-                return Err(idevice::IdeviceError::DeviceNotFound);
-            }
+            let selected = selected_device(&stable_id, expected_mux).await?;
             let connection = connection_name(&selected.connection_type);
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut lockdown = LockdownClient::connect(&provider).await?;
@@ -421,6 +457,129 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
             }
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(Status::TimedOut, vec![], "device inspection timed out"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_developer_support_status(
+    handle: *mut DeviceHandle,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let mut mounter = ImageMounter::connect(&provider).await?;
+            Ok(mounter.lookup_image("Personalized").await.is_ok())
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(mounted)) => json_result(&serde_json::json!({ "mounted": mounted })),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(
+                Status::TimedOut,
+                vec![],
+                "developer-support status timed out",
+            ),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
+    handle: *mut DeviceHandle,
+    image_path: *const u8,
+    image_path_len: usize,
+    trust_cache_path: *const u8,
+    trust_cache_path_len: usize,
+    build_manifest_path: *const u8,
+    build_manifest_path_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: each path is validated and copied before use.
+        let image_path = match unsafe { path_argument(image_path, image_path_len) } {
+            Ok(value) => value.to_string(),
+            Err(result) => return result,
+        };
+        let trust_path = match unsafe { path_argument(trust_cache_path, trust_cache_path_len) } {
+            Ok(value) => value.to_string(),
+            Err(result) => return result,
+        };
+        let manifest_path =
+            match unsafe { path_argument(build_manifest_path, build_manifest_path_len) } {
+                Ok(value) => value.to_string(),
+                Err(result) => return result,
+            };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let mut lockdown = LockdownClient::connect(&provider).await?;
+            let unique_chip_id = match lockdown
+                .get_value(Some("UniqueChipID"), None)
+                .await?
+                .as_unsigned_integer()
+            {
+                Some(value) => value,
+                None => {
+                    return Err(idevice::IdeviceError::UnexpectedResponse(
+                        "UniqueChipID is not an unsigned integer".into(),
+                    ));
+                }
+            };
+            let image = tokio::fs::read(image_path).await?;
+            let trust_cache = tokio::fs::read(trust_path).await?;
+            let build_manifest = tokio::fs::read(manifest_path).await?;
+            let mut mounter = ImageMounter::connect(&provider).await?;
+            mounter
+                .mount_personalized(
+                    &provider,
+                    image,
+                    trust_cache,
+                    &build_manifest,
+                    None,
+                    unique_chip_id,
+                )
+                .await
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(())) => make_result(Status::Ok, vec![], "developer support mounted"),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(
+                Status::TimedOut,
+                vec![],
+                "developer-support mount timed out",
+            ),
         }
     })
 }

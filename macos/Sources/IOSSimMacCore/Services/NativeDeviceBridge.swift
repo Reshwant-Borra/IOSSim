@@ -212,6 +212,14 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         UnsafePointer<UInt8>?, Int, UInt64, UInt64, UnsafeMutablePointer<UnsafeMutableRawPointer?>?
     ) -> UnsafeMutableRawPointer?
     private typealias InspectFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
+    private typealias DeveloperSupportStatusFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
+    private typealias MountDeveloperSupportFn = @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafePointer<UInt8>?, Int,
+        UnsafePointer<UInt8>?, Int,
+        UnsafePointer<UInt8>?, Int,
+        UInt64
+    ) -> UnsafeMutableRawPointer?
     private typealias CloseFn = @convention(c) (UnsafeMutableRawPointer?) -> Void
     private typealias FreeFn = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
@@ -219,6 +227,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
     private let listFunction: ListFn?
     private let openFunction: OpenFn?
     private let inspectFunction: InspectFn?
+    private let developerSupportStatusFunction: DeveloperSupportStatusFn?
+    private let mountDeveloperSupportFunction: MountDeveloperSupportFn?
     private let closeFunction: CloseFn?
     private let freeFunction: FreeFn?
     public let loadError: NativeDeviceBridgeError?
@@ -238,6 +248,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             listFunction = nil
             openFunction = nil
             inspectFunction = nil
+            developerSupportStatusFunction = nil
+            mountDeveloperSupportFunction = nil
             closeFunction = nil
             freeFunction = nil
             loadError = .libraryUnavailable
@@ -250,6 +262,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             listFunction = nil
             openFunction = nil
             inspectFunction = nil
+            developerSupportStatusFunction = nil
+            mountDeveloperSupportFunction = nil
             closeFunction = nil
             freeFunction = nil
             loadError = .incompatibleABI
@@ -259,9 +273,15 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         listFunction = Self.symbol("iossim_bridge_list_devices", in: loaded)
         openFunction = Self.symbol("iossim_bridge_open_device", in: loaded)
         inspectFunction = Self.symbol("iossim_bridge_inspect_device", in: loaded)
+        developerSupportStatusFunction = Self.symbol("iossim_bridge_developer_support_status", in: loaded)
+        mountDeveloperSupportFunction = Self.symbol("iossim_bridge_mount_developer_support", in: loaded)
         closeFunction = Self.symbol("iossim_bridge_close_device", in: loaded)
         freeFunction = Self.symbol("iossim_bridge_result_free", in: loaded)
-        loadError = [listFunction != nil, openFunction != nil, inspectFunction != nil, closeFunction != nil, freeFunction != nil]
+        loadError = [
+            listFunction != nil, openFunction != nil, inspectFunction != nil,
+            developerSupportStatusFunction != nil, mountDeveloperSupportFunction != nil,
+            closeFunction != nil, freeFunction != nil
+        ]
             .allSatisfy { $0 } ? nil : .incompatibleABI
     }
 
@@ -318,6 +338,48 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         )
     }
 
+    public func developerSupportMounted(
+        on identity: IOSSimDeviceIdentity,
+        timeout: Duration = .seconds(20)
+    ) throws -> Bool {
+        guard let developerSupportStatusFunction else { throw NativeDeviceBridgeError.incompatibleABI }
+        return try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            struct Status: Decodable { let mounted: Bool }
+            let data = try consume(developerSupportStatusFunction(handle, timeoutMS))
+            return try JSONDecoder().decode(Status.self, from: data).mounted
+        }
+    }
+
+    public func mountDeveloperSupport(
+        on identity: IOSSimDeviceIdentity,
+        artifact: DeveloperSupportArtifact,
+        timeout: Duration = .seconds(120)
+    ) throws {
+        guard let trustCache = artifact.trustCacheURL else {
+            throw DeveloperSupportFailure.corruptAsset
+        }
+        guard let mountDeveloperSupportFunction else { throw NativeDeviceBridgeError.incompatibleABI }
+        _ = try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let image = Array(artifact.imageURL.path.utf8)
+            let trust = Array(trustCache.path.utf8)
+            let manifest = Array(artifact.buildManifestURL.path.utf8)
+            let pointer = image.withUnsafeBufferPointer { imageBuffer in
+                trust.withUnsafeBufferPointer { trustBuffer in
+                    manifest.withUnsafeBufferPointer { manifestBuffer in
+                        mountDeveloperSupportFunction(
+                            handle,
+                            imageBuffer.baseAddress, imageBuffer.count,
+                            trustBuffer.baseAddress, trustBuffer.count,
+                            manifestBuffer.baseAddress, manifestBuffer.count,
+                            timeoutMS
+                        )
+                    }
+                }
+            }
+            return try consume(pointer)
+        }
+    }
+
     public static func libraryCandidates(
         environment: [String: String],
         bundle: Bundle
@@ -356,6 +418,25 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             throw NativeDeviceBridgeError.internalFailure("native bridge returned an invalid buffer")
         }
         return result.payload.map { Data(bytes: $0, count: result.payloadLength) } ?? Data()
+    }
+
+    private func withHandle<T>(
+        _ identity: IOSSimDeviceIdentity,
+        timeout: Duration,
+        operation: (UnsafeMutableRawPointer, UInt64) throws -> T
+    ) throws -> T {
+        if let loadError { throw loadError }
+        guard let openFunction, let closeFunction else { throw NativeDeviceBridgeError.incompatibleABI }
+        let timeoutMS = Self.milliseconds(timeout)
+        let bytes = Array(identity.udid.utf8)
+        var deviceHandle: UnsafeMutableRawPointer?
+        let result = bytes.withUnsafeBufferPointer { buffer in
+            openFunction(buffer.baseAddress, buffer.count, identity.connectionGeneration, timeoutMS, &deviceHandle)
+        }
+        _ = try consume(result)
+        guard let deviceHandle else { throw NativeDeviceBridgeError.internalFailure("native bridge did not return a handle") }
+        defer { closeFunction(deviceHandle) }
+        return try operation(deviceHandle, timeoutMS)
     }
 
     private static func error(status: Int32, diagnostic: String) -> NativeDeviceBridgeError {

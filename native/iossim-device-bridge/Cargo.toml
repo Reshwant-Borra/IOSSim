@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib"]
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "1838db107d38701b4044361163aac049006c2627", default-features = false, features = ["ring", "usbmuxd", "pair", "amfi", "afc", "house_arrest", "installation_proxy", "mobile_image_mounter", "tss", "remote_pairing", "rsd", "core_device", "core_device_proxy"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.48", features = ["rt-multi-thread", "time", "sync"] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "time", "sync", "fs"] }
 
 [profile.release]
 codegen-units = 1

@@ -50,6 +50,20 @@ iossim_bridge_result *iossim_bridge_inspect_device(
     iossim_device_handle *handle,
     uint64_t timeout_ms
 );
+iossim_bridge_result *iossim_bridge_developer_support_status(
+    iossim_device_handle *handle,
+    uint64_t timeout_ms
+);
+iossim_bridge_result *iossim_bridge_mount_developer_support(
+    iossim_device_handle *handle,
+    const uint8_t *image_path,
+    size_t image_path_len,
+    const uint8_t *trust_cache_path,
+    size_t trust_cache_path_len,
+    const uint8_t *build_manifest_path,
+    size_t build_manifest_path_len,
+    uint64_t timeout_ms
+);
 void iossim_bridge_cancel(iossim_device_handle *handle);
 void iossim_bridge_close_device(iossim_device_handle *handle);
 void iossim_bridge_result_free(iossim_bridge_result *result);
