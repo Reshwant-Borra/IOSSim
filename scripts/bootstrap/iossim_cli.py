@@ -1290,6 +1290,9 @@ def assemble_self_contained_app(
     bridge_resources.mkdir()
     shutil.copy2(HOST_BRIDGE_LIB, bridge_resources / HOST_BRIDGE_LIB.name)
     os.chmod(bridge_resources / HOST_BRIDGE_LIB.name, 0o755)
+    sanitized_bridge = sanitize_packaged_artifact_paths(bridge_resources)
+    if sanitized_bridge:
+        print_step("PASS", "Sanitized source paths in native bridge", f"{sanitized_bridge} file(s)")
 
     components: list[dict[str, Any]] = []
     for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
