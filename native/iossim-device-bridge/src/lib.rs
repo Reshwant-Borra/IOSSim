@@ -2,13 +2,17 @@ use idevice::{
     IdeviceService,
     provider::IdeviceProvider,
     services::{
-        afc::opcode::AfcFopenMode, amfi::AmfiClient, house_arrest::HouseArrestClient,
-        installation_proxy::InstallationProxyClient, lockdown::LockdownClient,
+        afc::opcode::AfcFopenMode,
+        amfi::AmfiClient,
+        house_arrest::HouseArrestClient,
+        installation_proxy::InstallationProxyClient,
+        lockdown::LockdownClient,
         mobile_image_mounter::ImageMounter,
     },
     usbmuxd::{Connection, UsbmuxdAddr},
     utils::installation,
 };
+use idevice::remote_pairing::{RemotePairingLockdownService, RpPairingFile};
 use serde::Serialize;
 use std::{
     ffi::{CString, c_char},
@@ -513,6 +517,122 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
             }
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(Status::TimedOut, vec![], "device inspection timed out"),
+        }
+    })
+}
+
+/// Creates and stores a legitimate RPPairing record over the already trusted
+/// USB lockdown channel. The private key is returned only in the bounded
+/// result buffer so the Swift layer can put it directly into Keychain.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_create_remote_pairing(
+    handle: *mut DeviceHandle,
+    hostname: *const u8,
+    hostname_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let hostname =
+            match unsafe { bounded_utf8_argument(hostname, hostname_len, 256, "hostname") } {
+                Ok(value) => value.to_string(),
+                Err(result) => return result,
+            };
+        let handle = unsafe { &*handle };
+        if handle.cancelled.load(Ordering::Acquire) {
+            return make_result(Status::Cancelled, vec![], "operation cancelled");
+        }
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let service = RemotePairingLockdownService::connect(&provider).await?;
+            let mut client = service.into_client(&hostname)?;
+            let mut pairing = RpPairingFile::generate(&hostname);
+            client
+                .connect(&mut pairing, async || "000000".to_string())
+                .await?;
+            Ok::<Vec<u8>, idevice::IdeviceError>(pairing.to_bytes())
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(bytes)) => make_result(Status::Ok, bytes, "ok"),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(
+                Status::TimedOut,
+                vec![],
+                "remote pairing creation timed out",
+            ),
+        }
+    })
+}
+
+/// Validates an existing RPPairing record against the selected phone. This
+/// never regenerates a record; callers decide whether a targeted repair is
+/// appropriate after this proof fails.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
+    handle: *mut DeviceHandle,
+    hostname: *const u8,
+    hostname_len: usize,
+    pairing_bytes: *const u8,
+    pairing_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        if pairing_bytes.is_null() || pairing_len == 0 || pairing_len > MAX_CONTAINER_BYTES {
+            return make_result(Status::InvalidArgument, vec![], "pairing record is invalid");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let hostname =
+            match unsafe { bounded_utf8_argument(hostname, hostname_len, 256, "hostname") } {
+                Ok(value) => value.to_string(),
+                Err(result) => return result,
+            };
+        let bytes = unsafe { slice::from_raw_parts(pairing_bytes, pairing_len) }.to_vec();
+        let handle = unsafe { &*handle };
+        if handle.cancelled.load(Ordering::Acquire) {
+            return make_result(Status::Cancelled, vec![], "operation cancelled");
+        }
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let mut pairing = RpPairingFile::from_bytes(&bytes)?;
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let service = RemotePairingLockdownService::connect(&provider).await?;
+            let mut client = service.into_client(&hostname)?;
+            client.attempt_pair_verify().await?;
+            client.validate_pairing(&mut pairing).await
+        };
+        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+            Ok(Ok(())) => make_result(Status::Ok, vec![], "ok"),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(
+                Status::TimedOut,
+                vec![],
+                "remote pairing validation timed out",
+            ),
         }
     })
 }

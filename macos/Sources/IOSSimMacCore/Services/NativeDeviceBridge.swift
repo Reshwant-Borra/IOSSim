@@ -218,6 +218,13 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         UnsafePointer<UInt8>?, Int, UInt64, UInt64, UnsafeMutablePointer<UnsafeMutableRawPointer?>?
     ) -> UnsafeMutableRawPointer?
     private typealias InspectFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
+    private typealias CreatePairingFn = @convention(c) (
+        UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int, UInt64
+    ) -> UnsafeMutableRawPointer?
+    private typealias ValidatePairingFn = @convention(c) (
+        UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int,
+        UnsafePointer<UInt8>?, Int, UInt64
+    ) -> UnsafeMutableRawPointer?
     private typealias DeveloperSupportStatusFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
     private typealias MountDeveloperSupportFn = @convention(c) (
         UnsafeMutableRawPointer?,
@@ -248,6 +255,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
     private let listFunction: ListFn?
     private let openFunction: OpenFn?
     private let inspectFunction: InspectFn?
+    private let createPairingFunction: CreatePairingFn?
+    private let validatePairingFunction: ValidatePairingFn?
     private let developerSupportStatusFunction: DeveloperSupportStatusFn?
     private let mountDeveloperSupportFunction: MountDeveloperSupportFn?
     private let inventoryFunction: InventoryFn?
@@ -274,6 +283,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             listFunction = nil
             openFunction = nil
             inspectFunction = nil
+            createPairingFunction = nil
+            validatePairingFunction = nil
             developerSupportStatusFunction = nil
             mountDeveloperSupportFunction = nil
             inventoryFunction = nil
@@ -293,6 +304,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             listFunction = nil
             openFunction = nil
             inspectFunction = nil
+            createPairingFunction = nil
+            validatePairingFunction = nil
             developerSupportStatusFunction = nil
             mountDeveloperSupportFunction = nil
             inventoryFunction = nil
@@ -309,6 +322,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         listFunction = Self.symbol("iossim_bridge_list_devices", in: loaded)
         openFunction = Self.symbol("iossim_bridge_open_device", in: loaded)
         inspectFunction = Self.symbol("iossim_bridge_inspect_device", in: loaded)
+        createPairingFunction = Self.symbol("iossim_bridge_create_remote_pairing", in: loaded)
+        validatePairingFunction = Self.symbol("iossim_bridge_validate_remote_pairing", in: loaded)
         developerSupportStatusFunction = Self.symbol("iossim_bridge_developer_support_status", in: loaded)
         mountDeveloperSupportFunction = Self.symbol("iossim_bridge_mount_developer_support", in: loaded)
         inventoryFunction = Self.symbol("iossim_bridge_app_inventory", in: loaded)
@@ -320,6 +335,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         freeFunction = Self.symbol("iossim_bridge_result_free", in: loaded)
         loadError = [
             listFunction != nil, openFunction != nil, inspectFunction != nil,
+            createPairingFunction != nil, validatePairingFunction != nil,
             developerSupportStatusFunction != nil, mountDeveloperSupportFunction != nil,
             inventoryFunction != nil, installFunction != nil, uninstallFunction != nil,
             containerWriteFunction != nil, containerReadFunction != nil,
@@ -379,6 +395,48 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             lockState: value.lockState,
             developerMode: value.developerMode
         )
+    }
+
+    public func createRemotePairing(
+        on identity: IOSSimDeviceIdentity,
+        hostname: String,
+        timeout: Duration = .seconds(120)
+    ) throws -> Data {
+        guard !hostname.isEmpty, hostname.utf8.count <= 256, let createPairingFunction else {
+            throw NativeDeviceBridgeError.incompatibleABI
+        }
+        return try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let host = Array(hostname.utf8)
+            let pointer = host.withUnsafeBufferPointer {
+                createPairingFunction(handle, $0.baseAddress, $0.count, timeoutMS)
+            }
+            return try consume(pointer)
+        }
+    }
+
+    public func validateRemotePairing(
+        on identity: IOSSimDeviceIdentity,
+        hostname: String,
+        pairingData: Data,
+        timeout: Duration = .seconds(60)
+    ) throws {
+        guard !hostname.isEmpty, hostname.utf8.count <= 256, !pairingData.isEmpty,
+              pairingData.count <= 16 * 1_024 * 1_024, let validatePairingFunction else {
+            throw NativeDeviceBridgeError.incompatibleABI
+        }
+        _ = try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            let host = Array(hostname.utf8)
+            let pointer = host.withUnsafeBufferPointer { hostBuffer in
+                pairingData.withUnsafeBytes { dataBuffer in
+                    validatePairingFunction(
+                        handle, hostBuffer.baseAddress, hostBuffer.count,
+                        dataBuffer.bindMemory(to: UInt8.self).baseAddress, dataBuffer.count,
+                        timeoutMS
+                    )
+                }
+            }
+            return try consume(pointer)
+        }
     }
 
     public func developerSupportMounted(

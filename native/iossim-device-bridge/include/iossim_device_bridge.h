@@ -50,6 +50,17 @@ iossim_bridge_result *iossim_bridge_inspect_device(
     iossim_device_handle *handle,
     uint64_t timeout_ms
 );
+iossim_bridge_result *iossim_bridge_create_remote_pairing(
+    iossim_device_handle *handle,
+    const uint8_t *hostname, size_t hostname_len,
+    uint64_t timeout_ms
+);
+iossim_bridge_result *iossim_bridge_validate_remote_pairing(
+    iossim_device_handle *handle,
+    const uint8_t *hostname, size_t hostname_len,
+    const uint8_t *pairing_bytes, size_t pairing_len,
+    uint64_t timeout_ms
+);
 iossim_bridge_result *iossim_bridge_developer_support_status(
     iossim_device_handle *handle,
     uint64_t timeout_ms
