@@ -279,7 +279,7 @@ private enum AppleLiveTransportError: Error {
     case redirectRejected
     case responseTooLarge
     case invalidResponse
-    case network
+    case network(AppleNetworkFailureCategory)
 }
 
 /// Streaming URLSession transport. It rejects unexpected redirects before
@@ -389,8 +389,10 @@ public final class BoundedAppleHTTPTransport: NSObject, AppleHTTPTransport, URLS
         guard let item else { return }
         if let failure = item.failure {
             item.continuation.resume(throwing: failure)
-        } else if error != nil {
-            item.continuation.resume(throwing: AppleLiveTransportError.network)
+        } else if let error {
+            item.continuation.resume(throwing: AppleLiveTransportError.network(
+                AppleTransportFailureClassifier.category(for: error)
+            ))
         } else if let response = item.response, let url = response.url {
             item.continuation.resume(returning: AppleHTTPResponse(
                 url: url,
@@ -2065,6 +2067,20 @@ enum AppleDeviceRegistrationCategory: String, Equatable, Sendable {
 }
 
 enum AppleHTTPFailureClassifier {
+    static func kind(status: Int, stage: String, bodyKind: String? = nil) -> AppleHTTPFailureKind {
+        if status == 429 { return .rateLimited }
+        if status == 503 {
+            if stage.hasPrefix("srp") && bodyKind == "plist-or-xml" {
+                return .clientMetadataRejected
+            }
+            return .serviceUnavailable
+        }
+        if stage == "validateVerification" && (400..<500).contains(status) { return .twoFactorRejected }
+        if stage == "srpComplete" && (400..<500).contains(status) { return .srpProofRejected }
+        if stage.hasPrefix("srp") && (400..<500).contains(status) { return .grandSlamChallengeRejected }
+        return .httpServiceResponse
+    }
+
     static func error(status: Int, stage: String) -> ExperimentalBackendError {
         if status == 429 { return .rateLimited }
         if stage == "xcodeScopedToken" { return .xcodeScopedTokenFailed }
@@ -2168,6 +2184,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
     private let adapter: PrivateAppleProtocolAdapter
     private let transport: any AppleHTTPTransport
     private let machineIdentity: any AppleMachineIdentityProviding
+    private let endpointResolver: any GrandSlamEndpointResolving
     private let sessionStore: any AppleAuthorizationSessionStoring
     private let diagnostics: ApplePersonalTeamDiagnosticsStore
     private let identityKeychain: any IOSSimManagedIdentityKeychain
@@ -2188,6 +2205,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         self.adapter = adapter
         self.transport = transport
         self.machineIdentity = machineIdentity
+        endpointResolver = URLBagGrandSlamEndpointResolver(transport: transport)
         self.sessionStore = sessionStore
         self.diagnostics = diagnostics
         identityKeychain = IOSSimIdentityMetadataStore()
@@ -2202,11 +2220,13 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         sessionStore: any AppleAuthorizationSessionStoring,
         diagnostics: ApplePersonalTeamDiagnosticsStore,
         srpRandomBytesForTesting: Data,
-        identityKeychain: any IOSSimManagedIdentityKeychain = IOSSimIdentityMetadataStore()
+        identityKeychain: any IOSSimManagedIdentityKeychain = IOSSimIdentityMetadataStore(),
+        endpointResolver: (any GrandSlamEndpointResolving)? = nil
     ) {
         self.adapter = adapter
         self.transport = transport
         self.machineIdentity = machineIdentity
+        self.endpointResolver = endpointResolver ?? FixedGrandSlamEndpointResolver(adapter: adapter)
         self.sessionStore = sessionStore
         self.diagnostics = diagnostics
         self.identityKeychain = identityKeychain
@@ -2236,6 +2256,13 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             try saveSession(envelope, metadata: metadata)
             diagnostics.update(adapterVersion: adapter.version) { $0.sessionValid = true }
             return teams
+        } catch let failure as AppleServiceFailure where !failure.reauthorizationRequired {
+            diagnostics.update(adapterVersion: adapter.version) { $0.sessionValid = true }
+            throw failure.error
+        } catch let error as ExperimentalBackendError
+            where [.networkFailure, .rateLimited, .serviceUnavailable, .developerServicesFailed].contains(error) {
+            diagnostics.update(adapterVersion: adapter.version) { $0.sessionValid = true }
+            throw error
         } catch {
             session = nil
             authorizedTeamIdentifier = nil
@@ -2614,17 +2641,19 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         closeConnection: Bool = false
     ) async throws -> GrandSlamResponse {
         let body = try serializePlist(["Header": ["Version": "1.0.1"], "Request": parameters])
-        var request = URLRequest(url: adapter.grandSlamService)
+        let normalizedHeaders = try GrandSlamRequestIdentity.normalizedMachineHeaders(machineHeaders)
+        let endpoint = try await endpointResolver.endpoint(.gsService, machineHeaders: normalizedHeaders)
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = body
         request.setValue("text/x-xml-plist", forHTTPHeaderField: "Content-Type")
         request.setValue("text/x-xml-plist", forHTTPHeaderField: "Accept")
-        request.setValue(machineHeaders[caseInsensitive: "X-MMe-Client-Info"] ?? adapter.authUserAgent,
+        request.setValue(normalizedHeaders[caseInsensitive: "X-MMe-Client-Info"],
                          forHTTPHeaderField: "X-MMe-Client-Info")
-        request.setValue(adapter.authUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("akd/1.0", forHTTPHeaderField: "User-Agent")
         request.setValue("Xcode", forHTTPHeaderField: "X-Apple-Client-App-Name")
         for name in ["X-Apple-I-MD", "X-Apple-I-MD-M", "X-Apple-I-MD-RINFO", "X-Mme-Device-Id"] {
-            if let value = machineHeaders[caseInsensitive: name] {
+            if let value = normalizedHeaders[caseInsensitive: name] {
                 request.setValue(value, forHTTPHeaderField: name)
             }
         }
@@ -2714,7 +2743,9 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
 
     private func requestTrustedDeviceCode(_ pending: PendingTwoFactor) async throws {
         let identity = Data("\(pending.dsid):\(pending.idmsToken)".utf8).base64EncodedString()
-        var request = URLRequest(url: adapter.trustedDeviceVerification)
+        let machineHeaders = try await machineIdentity.headers(for: URLRequest(url: adapter.grandSlamService))
+        let endpoint = try await endpointResolver.endpoint(.trustedDeviceSecondaryAuth, machineHeaders: machineHeaders)
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
         request.setValue(identity, forHTTPHeaderField: "X-Apple-Identity-Token")
         try await applyMachineAndServiceHeaders(to: &request, dsid: nil, token: nil)
@@ -2726,10 +2757,13 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         guard let codeString = String(data: code, encoding: .utf8) else {
             throw ExperimentalBackendError.verificationRejected
         }
-        var request = URLRequest(url: adapter.verificationValidation)
-        request.httpMethod = "POST"
-        request.setValue(identity, forHTTPHeaderField: "X-Apple-Identity-Token")
-        request.setValue(codeString, forHTTPHeaderField: "security-code")
+        let machineHeaders = try await machineIdentity.headers(for: URLRequest(url: adapter.grandSlamService))
+        let endpoint = try await endpointResolver.endpoint(.validateCode, machineHeaders: machineHeaders)
+        var request = try GrandSlamVerificationRequestBuilder.trustedDeviceValidation(
+            endpoint: endpoint,
+            identityToken: identity,
+            verificationCode: codeString
+        )
         try await applyMachineAndServiceHeaders(to: &request, dsid: nil, token: nil)
         let http = try await send(request, maximumBytes: 1_048_576, stage: "validateVerification")
         guard let root = try parseApplePlist(http.body) else {

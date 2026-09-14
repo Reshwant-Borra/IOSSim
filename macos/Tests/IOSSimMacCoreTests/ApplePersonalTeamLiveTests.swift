@@ -20,6 +20,103 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertFalse(value.contains("com.apple.dt.Xcode"))
     }
 
+    func testFinalGrandSlamIdentityNormalizerReplacesEveryUpstreamClientToken() throws {
+        for upstream in [
+            "<com.apple.AuthKit/1>",
+            "<com.apple.dt.Xcode/23792>",
+            "<com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        ] {
+            let normalized = try GrandSlamRequestIdentity.normalizedClientInfo(
+                "<Mac15,7> <macOS;26.0;25A000> \(upstream)"
+            )
+            XCTAssertEqual(
+                normalized,
+                "<Mac15,7> <macOS;26.0;25A000> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+            )
+            XCTAssertEqual(GrandSlamRequestIdentity.classification(normalized), "akd")
+            XCTAssertFalse(normalized.contains("com.apple.dt.Xcode"))
+        }
+        XCTAssertThrowsError(try GrandSlamRequestIdentity.normalizedClientInfo(nil))
+        XCTAssertThrowsError(try GrandSlamRequestIdentity.normalizedClientInfo("Xcode/23792"))
+        let headers = try GrandSlamRequestIdentity.normalizedMachineHeaders([
+            "X-MMe-Client-Info": "<Mac> <macOS;26.0;25A> <com.apple.dt.Xcode/23792>",
+            "Cookie": "must-not-survive",
+            "Authorization": "must-not-survive",
+            "X-Apple-I-MD": "structural-fixture"
+        ])
+        XCTAssertNil(headers["Cookie"])
+        XCTAssertNil(headers["Authorization"])
+        XCTAssertEqual(headers["X-Apple-I-MD"], "structural-fixture")
+    }
+
+    func testURLBagParsingSelectionCachingAndInvalidation() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let body = try plistData(["urls": [
+            "gsService": "https://gsa.apple.com/grandslam/GsService2",
+            "trustedDeviceSecondaryAuth": "https://gsa.apple.com/auth/verify/trusteddevice",
+            "validateCode": "https://gsa.apple.com/grandslam/GsService2/validate"
+        ]])
+        let bag = try GrandSlamEndpointBag.parse(body, now: now, ttl: 900)
+        XCTAssertEqual(try bag.endpoint(.validateCode).path, "/grandslam/GsService2/validate")
+        XCTAssertEqual(bag.expiresAt, now.addingTimeInterval(900))
+
+        let transport = ScriptedAppleTransport([])
+        let resolver = URLBagGrandSlamEndpointResolver(transport: transport, now: { now })
+        _ = try await resolver.endpoint(.gsService, machineHeaders: FixtureMachineIdentity.headers)
+        _ = try await resolver.endpoint(.validateCode, machineHeaders: FixtureMachineIdentity.headers)
+        let firstLookupCount = await transport.urlBagRequestCount()
+        XCTAssertEqual(firstLookupCount, 1)
+        await resolver.invalidate()
+        _ = try await resolver.endpoint(.gsService, machineHeaders: FixtureMachineIdentity.headers)
+        let secondLookupCount = await transport.urlBagRequestCount()
+        XCTAssertEqual(secondLookupCount, 2)
+
+        let wrongHost = try plistData(["urls": [
+            "gsService": "https://example.invalid/grandslam",
+            "trustedDeviceSecondaryAuth": "https://gsa.apple.com/auth/verify/trusteddevice",
+            "validateCode": "https://gsa.apple.com/grandslam/GsService2/validate"
+        ]])
+        XCTAssertThrowsError(try GrandSlamEndpointBag.parse(wrongHost))
+    }
+
+    func testTrustedDeviceValidationUsesGETAndSixDigitHeader() throws {
+        let request = try GrandSlamVerificationRequestBuilder.trustedDeviceValidation(
+            endpoint: PrivateAppleProtocolAdapter.researched2026.verificationValidation,
+            identityToken: "synthetic-identity",
+            verificationCode: "123456"
+        )
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "security-code"), "123456")
+        XCTAssertThrowsError(try GrandSlamVerificationRequestBuilder.trustedDeviceValidation(
+            endpoint: PrivateAppleProtocolAdapter.researched2026.verificationValidation,
+            identityToken: "synthetic-identity",
+            verificationCode: "12345x"
+        ))
+    }
+
+    func testHTTPAndTransportFailuresRemainStructurallyDistinct() {
+        XCTAssertEqual(AppleHTTPFailureClassifier.kind(status: 429, stage: "srpInit"), .rateLimited)
+        XCTAssertEqual(AppleHTTPFailureClassifier.kind(status: 503, stage: "srpInit"), .serviceUnavailable)
+        XCTAssertEqual(
+            AppleHTTPFailureClassifier.kind(status: 503, stage: "srpInit", bodyKind: "plist-or-xml"),
+            .clientMetadataRejected
+        )
+        XCTAssertEqual(AppleHTTPFailureClassifier.kind(status: 401, stage: "srpComplete"), .srpProofRejected)
+        XCTAssertEqual(
+            AppleHTTPFailureClassifier.kind(status: 401, stage: "validateVerification"),
+            .twoFactorRejected
+        )
+        XCTAssertEqual(
+            AppleTransportFailureClassifier.category(for: URLError(.cannotFindHost)), .dns
+        )
+        XCTAssertEqual(
+            AppleTransportFailureClassifier.category(for: URLError(.secureConnectionFailed)), .tls
+        )
+        XCTAssertEqual(
+            AppleTransportFailureClassifier.category(for: URLError(.notConnectedToInternet)), .unreachable
+        )
+    }
+
     func testLocalMachineIdentityWhenExplicitlyEnabled() async throws {
         guard ProcessInfo.processInfo.environment["IOSSIM_TEST_LOCAL_MACHINE_IDENTITY"] == "1" else {
             throw XCTSkip("Credentials-free local system adapter probe is opt-in")
@@ -1295,12 +1392,14 @@ private extension Data {
 }
 
 private struct FixtureMachineIdentity: AppleMachineIdentityProviding {
+    static let headers = [
+        "X-Apple-I-MD": "synthetic-md",
+        "X-Apple-I-MD-M": "synthetic-mdm",
+        "X-MMe-Client-Info": "<MacBookPro> <macOS;13.0;22A> <com.apple.AuthKit/1>"
+    ]
+
     func headers(for request: URLRequest) async throws -> [String: String] {
-        [
-            "X-Apple-I-MD": "synthetic-md",
-            "X-Apple-I-MD-M": "synthetic-mdm",
-            "X-MMe-Client-Info": "<MacBookPro> <macOS;13.0;22A> <com.apple.AuthKit/1>"
-        ]
+        Self.headers
     }
 }
 
@@ -1327,10 +1426,23 @@ private actor ScriptedAppleTransport: AppleHTTPTransport {
 
     private var scripted: [Response]
     private var captured: [URLRequest] = []
+    private var lookupCount = 0
 
     init(_ scripted: [Response]) { self.scripted = scripted }
 
     func send(_ request: URLRequest, maximumBytes: Int) async throws -> AppleHTTPResponse {
+        if request.url == URLBagGrandSlamEndpointResolver.lookupURL {
+            lookupCount += 1
+            let body = try plistData(["urls": [
+                "gsService": PrivateAppleProtocolAdapter.researched2026.grandSlamService.absoluteString,
+                "trustedDeviceSecondaryAuth": PrivateAppleProtocolAdapter.researched2026.trustedDeviceVerification.absoluteString,
+                "validateCode": PrivateAppleProtocolAdapter.researched2026.verificationValidation.absoluteString
+            ]])
+            return AppleHTTPResponse(
+                url: request.url!, statusCode: 200,
+                headers: ["Content-Type": "text/x-xml-plist"], body: body
+            )
+        }
         captured.append(request)
         guard !scripted.isEmpty else { throw URLError(.badServerResponse) }
         let response = scripted.removeFirst()
@@ -1340,6 +1452,7 @@ private actor ScriptedAppleTransport: AppleHTTPTransport {
     }
 
     func requests() -> [URLRequest] { captured }
+    func urlBagRequestCount() -> Int { lookupCount }
 }
 
 private final class MemoryAuthorizationSessionStore: AppleAuthorizationSessionStoring, @unchecked Sendable {
