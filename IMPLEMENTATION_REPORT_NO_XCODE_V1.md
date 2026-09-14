@@ -18,7 +18,7 @@ fakes/fixtures, and packaged. Real Apple/device behavior remains explicitly
 
 ## 3. Final Branch and Commit
 
-Branch: `work/no-xcode-productization-v1`  
+Branch: `work/no-xcode-productization-v1`
 HEAD: `d7d1795d8effc157bd8e44be92196be65ae572f3`
 
 ## 4. Eight Requested Features
