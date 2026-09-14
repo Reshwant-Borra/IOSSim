@@ -1495,6 +1495,8 @@ def update_device_artifact_hashes(app_dir: Path) -> None:
 
 
 def distribution_sign_macos_app(runner: Runner, app_dir: Path, identity: DeveloperIDIdentity) -> None:
+    bridge = app_dir / "Contents" / "Resources" / "NativeDeviceBridge" / HOST_BRIDGE_LIB.name
+    runner.run("developer-id-native-device-bridge", ["/usr/bin/codesign", "--force", "--sign", identity.fingerprint, "--options", "runtime", "--timestamp", str(bridge)])
     helper = app_dir / "Contents" / "MacOS" / "IOSSimProvisioner"
     runner.run("strip-IOSSimProvisioner-release", ["/usr/bin/strip", "-x", str(helper)])
     runner.run(
@@ -1522,6 +1524,8 @@ def distribution_sign_macos_app(runner: Runner, app_dir: Path, identity: Develop
 
 def local_sign_macos_app(runner: Runner, app_dir: Path) -> None:
     """Apply explicit hardened-runtime ad-hoc signatures for local physical testing."""
+    bridge = app_dir / "Contents" / "Resources" / "NativeDeviceBridge" / HOST_BRIDGE_LIB.name
+    runner.run("local-sign-native-device-bridge", ["/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", "--timestamp=none", str(bridge)])
     helper = app_dir / "Contents" / "MacOS" / "IOSSimProvisioner"
     runner.run("strip-IOSSimProvisioner-local", ["/usr/bin/strip", "-x", str(helper)])
     runner.run(
