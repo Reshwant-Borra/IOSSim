@@ -96,10 +96,9 @@ public enum ProvisioningBackendKind: String, Sendable {
         if raw == "devicectl" {
             return .devicectl
         }
-        // Consumer authorization backend selection is independent from the
-        // physical-device transport. Keep using the proven CoreDevice
-        // devicectl path until a native macOS idevice backend has parity.
-        return .devicectl
+        // The shipping consumer path is always the bundled native bridge.
+        // devicectl is an explicit development-comparison backend only.
+        return .idevice
     }
 }
 
@@ -135,25 +134,34 @@ public enum DeviceProvisioningBackendFactory {
 }
 
 public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
-    public init() {}
+    private let bridge: IOSSimDeviceBridge
+
+    public init(bridge: IOSSimDeviceBridge = IOSSimDeviceBridge()) {
+        self.bridge = bridge
+    }
 
     public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
-        // Until the pinned idevice FFI grows a macOS host target, use the
-        // system USB inventory solely to bind provisioning to the iPhone the
-        // user physically selected. This invokes no Xcode tool and performs
-        // no pairing, installation, or trust bypass.
-        let profiler = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-        guard FileManager.default.isExecutableFile(atPath: profiler.path),
-              let result = try? await context.runner.run(
-                executableURL: profiler,
-                arguments: ["SPUSBDataType", "-json", "-detailLevel", "mini"],
-                workingDirectory: context.resourcesURL,
-                environment: RuntimeProvisioning.deterministicEnvironment()
-              ),
-              result.exitCode == 0,
-              let data = result.stdout.data(using: .utf8), data.count <= 4_194_304,
-              let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
-        return Self.usbIPhones(in: root)
+        guard let descriptors = try? await bridge.listDevices() else { return [] }
+        var values: [DetectedDevice] = []
+        for descriptor in descriptors {
+            let inspection = try? await bridge.inspect(descriptor.identity)
+            let identity = inspection?.identity ?? descriptor.identity
+            values.append(DetectedDevice(
+                name: inspection?.name ?? "iPhone",
+                identifier: RuntimeProvisioning.shortIdentifier(identity.udid),
+                selectionIdentifier: identity.udid,
+                udidRedacted: RuntimeProvisioning.shortIdentifier(identity.udid),
+                osVersion: inspection?.osVersion,
+                model: inspection?.model,
+                developerModeStatus: inspection?.developerMode.rawValue ?? DeveloperModeReadiness.unknown.rawValue,
+                pairingState: inspection?.trust == .trusted ? "paired" : inspection?.trust.rawValue ?? "unknown",
+                tunnelState: "not-checked",
+                isLocked: inspection?.lockState == .locked,
+                provisioningEligibilityStatus: .requiresResigning,
+                provisioningEligibilityDetail: "Bound to the selected phone through the bundled native device bridge."
+            ))
+        }
+        return values
     }
 
     public func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
@@ -178,36 +186,6 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
         )
     }
 
-    static func usbIPhones(in value: Any) -> [DetectedDevice] {
-        var devices: [DetectedDevice] = []
-        func visit(_ value: Any) {
-            if let array = value as? [Any] { array.forEach(visit); return }
-            guard let dictionary = value as? [String: Any] else { return }
-            let name = (dictionary["_name"] as? String) ?? ""
-            let product = (dictionary["product_id"] as? String) ?? ""
-            if name.localizedCaseInsensitiveContains("iPhone"),
-               let serial = dictionary["serial_num"] as? String,
-               (8...128).contains(serial.count),
-               serial.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-" )).contains($0) }) {
-                devices.append(DetectedDevice(
-                    name: name,
-                    identifier: RuntimeProvisioning.shortIdentifier(serial),
-                    selectionIdentifier: serial,
-                    udidRedacted: RuntimeProvisioning.shortIdentifier(serial),
-                    model: product.isEmpty ? nil : product,
-                    pairingState: "unknown",
-                    tunnelState: "not-checked",
-                    isLocked: nil,
-                    provisioningEligibilityStatus: .requiresResigning,
-                    provisioningEligibilityDetail: "Selected through local USB inventory for Personal Team provisioning."
-                ))
-            }
-            dictionary.values.forEach(visit)
-        }
-        visit(value)
-        var seen: Set<String> = []
-        return devices.filter { seen.insert($0.selectionIdentifier).inserted }
-    }
 }
 
 public enum AppleDeviceTool {

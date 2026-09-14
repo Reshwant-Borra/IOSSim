@@ -46,16 +46,16 @@ final class ProvisioningBackendTests: XCTestCase {
             ProvisioningBackendKind.selected(
                 environment: ["IOSSIM_PROVISIONING_BACKEND": "ZERO_XCODE"]
             ),
-            .devicectl
+            .idevice
         )
     }
 
-    func testNativePersonalTeamProvisioningStillUsesDevicectlDeviceDiscoveryByDefault() {
+    func testNativePersonalTeamProvisioningUsesNativeDeviceBridgeByDefault() {
         XCTAssertEqual(
             ProvisioningBackendKind.selected(
                 environment: ["IOSSIM_PROVISIONING_BACKEND": "NATIVE_PERSONAL_TEAM"]
             ),
-            .devicectl
+            .idevice
         )
         XCTAssertEqual(
             ProvisioningBackendKind.selected(
