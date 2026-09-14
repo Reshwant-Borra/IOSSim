@@ -10,6 +10,7 @@ Implemented in phase commits on `work/no-xcode-productization-v1`:
 6. Unified readiness/recovery and setup journal (`1fcd885`)
 7. Consumer onboarding coordinator (`2f71e76`)
 8. Mac-assisted renewal (`178bdd3`)
+9. Native bridge packaging, path sanitization, and signing (`529b573`, `de449e1`, `d7d1795`)
 
 The rich runtime remains feature-frozen. Nonphysical tests and Rust checks are
 run before handoff. All real Apple authentication, device discovery, DDI
