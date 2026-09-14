@@ -46,7 +46,14 @@ private struct SanitizedSupportDocument: Codable {
     let provisioning: ConsumerProvisioningManifest?
     let provisioningEvents: [ProvisioningLogEvent]
     let nativePersonalTeam: ApplePersonalTeamDiagnosticSnapshot?
+    let deviceDiscovery: SupportDeviceDiscovery?
     let notes: [String]
+}
+
+private struct SupportDeviceDiscovery: Codable {
+    let rawDeviceCount: Int
+    let returnedDeviceCount: Int
+    let diagnostics: [DeviceDiscoveryDiagnostic]
 }
 
 public enum SupportBundleExporter {
@@ -56,6 +63,7 @@ public enum SupportBundleExporter {
         stateStore: ConsumerProvisioningStateStore = ConsumerProvisioningStateStore(),
         authorizationSessionStore: any AppleAuthorizationSessionStoring = KeychainAppleAuthorizationSessionStore(),
         runner: ProcessRunner = ProcessRunner(),
+        resourcesURL: URL? = nil,
         fileManager: FileManager = .default
     ) async throws -> SupportBundleExportResult {
         let workspace = fileManager.temporaryDirectory
@@ -84,8 +92,21 @@ public enum SupportBundleExporter {
         let authSessionValid = nativeDiagnostics?.sessionValid
             ?? authMetadata.map { $0.expiresAt.map { $0 > Date() } ?? true }
             ?? false
+        let deviceDiscovery: SupportDeviceDiscovery?
+        if let resourcesURL {
+            let snapshot = await AppleDeviceTool.discoverDeviceSnapshot(
+                context: RuntimeProvisioningContext(resourcesURL: resourcesURL, runner: runner)
+            )
+            deviceDiscovery = SupportDeviceDiscovery(
+                rawDeviceCount: snapshot.rawDeviceCount,
+                returnedDeviceCount: snapshot.devices.count,
+                diagnostics: snapshot.diagnostics
+            )
+        } else {
+            deviceDiscovery = nil
+        }
         let document = SanitizedSupportDocument(
-            schemaVersion: 3,
+            schemaVersion: 4,
             generatedAt: Date(),
             environment: SupportEnvironment(
                 iPhoneAppVersion: manifest?.appVersion,
@@ -127,6 +148,7 @@ public enum SupportBundleExporter {
             provisioning: manifest,
             provisioningEvents: events,
             nativePersonalTeam: nativeDiagnostics,
+            deviceDiscovery: deviceDiscovery,
             notes: [
                 "Local-only sanitized support export.",
                 "Apple credentials, signing private keys, provisioning payloads, and RPPairing material are excluded.",

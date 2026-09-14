@@ -28,6 +28,20 @@ final class SetupStoreTests: XCTestCase {
         XCTAssertNil(store.selectedDevice)
     }
 
+    func testCheckSetupRefreshPerformsFreshDoctorCall() async throws {
+        let engine = SequenceSetupEngine(status: Self.status(devices: []))
+        let store = SetupStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        let firstCallCount = await engine.doctorCallCount
+        XCTAssertEqual(firstCallCount, 1)
+
+        store.refresh()
+        try await waitUntilIdle(store)
+        let secondCallCount = await engine.doctorCallCount
+        XCTAssertEqual(secondCallCount, 2)
+    }
+
     func testOneDeviceAutoSelectsLiveDevice() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A")]))
         let store = SetupStore(engine: engine)
@@ -933,6 +947,7 @@ private actor SequenceSetupEngine: IOSSimSetupEngine {
     let failProvisionFor: String?
     let failureText: String?
     private(set) var provisionedDeviceIdentifiers: [String] = []
+    private(set) var doctorCallCount = 0
 
     init(status: DoctorStatus, failProvisionFor: String? = nil, failureText: String? = nil) {
         self.status = status
@@ -941,6 +956,7 @@ private actor SequenceSetupEngine: IOSSimSetupEngine {
     }
 
     func doctor() async throws -> DoctorStatus {
+        doctorCallCount += 1
         status
     }
 

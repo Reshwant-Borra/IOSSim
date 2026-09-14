@@ -28,6 +28,12 @@ struct InstallOutput: Encodable {
     let installed: [InstallComponentOutput]
 }
 
+struct DeviceDiagnosticOutput: Encodable {
+    let rawDeviceCount: Int
+    let returnedDeviceCount: Int
+    let diagnostics: [DeviceDiscoveryDiagnostic]
+}
+
 struct ConsumerFailureOutput: Encodable {
     let ok: Bool
     let schemaVersion: Int
@@ -68,6 +74,23 @@ struct ProvisionerTool {
             case "device-status":
                 let devices = await AppleDeviceTool.discoverDevices(context: context)
                 try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: devices))
+                return 0
+            case "device-diagnostics":
+                let snapshot = await AppleDeviceTool.discoverDeviceSnapshot(context: context)
+                try printJSON(ProvisionerOutput(
+                    ok: snapshot.primaryDiagnostic?.code != .bridgeUnavailable
+                        && snapshot.primaryDiagnostic?.code != .bridgeInitializationFailed
+                        && snapshot.primaryDiagnostic?.code != .helperLibraryMissing
+                        && snapshot.primaryDiagnostic?.code != .ffiDecodingFailure
+                        && snapshot.primaryDiagnostic?.code != .usbmuxUnavailable
+                        && snapshot.primaryDiagnostic?.code != .enumerationFailed,
+                    schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: DeviceDiagnosticOutput(
+                        rawDeviceCount: snapshot.rawDeviceCount,
+                        returnedDeviceCount: snapshot.devices.count,
+                        diagnostics: snapshot.diagnostics
+                    )
+                ))
                 return 0
             case "verify-artifacts":
                 let manifest = try context.loadManifest()
@@ -146,7 +169,8 @@ struct ProvisionerTool {
                 let exported = try await SupportBundleExporter.export(
                     to: URL(fileURLWithPath: output),
                     release: release,
-                    runner: context.runner
+                    runner: context.runner,
+                    resourcesURL: context.resourcesURL
                 )
                 try printJSON(ProvisionerOutput(
                     ok: true,
@@ -333,7 +357,18 @@ struct ProvisionerTool {
             ))
         }
         let consumerManifest = try? await ConsumerProvisioningStateStore().loadManifest()
-        var devices = await AppleDeviceTool.discoverDevices(context: context)
+        let discovery = await AppleDeviceTool.discoverDeviceSnapshot(context: context)
+        var devices = discovery.devices
+        for diagnostic in discovery.diagnostics where diagnostic.code != .deviceDiscovered && diagnostic.code != .zeroDevicesReturned {
+            checks.append(DoctorCheck(
+                state: devices.isEmpty ? .action : .warn,
+                component: "Device Bridge",
+                name: diagnostic.code.rawValue,
+                detail: diagnostic.detail,
+                action: devices.isEmpty ? "Open Diagnostics and include a support bundle when reporting this device-discovery failure." : nil,
+                requiredFor: "diagnostics"
+            ))
+        }
         if let manifestForEligibility {
             var enrichedDevices: [DetectedDevice] = []
             for device in devices {
@@ -365,12 +400,15 @@ struct ProvisionerTool {
             devices = enrichedDevices
         }
         if devices.isEmpty {
+            let discoveryDetail = discovery.primaryDiagnostic?.code.rawValue ?? DeviceDiscoveryDiagnosticCode.zeroDevicesReturned.rawValue
             checks.append(DoctorCheck(
                 state: .action,
                 component: "Device",
                 name: "connected iPhone",
-                detail: "not detected",
-                action: "Connect and unlock an iPhone, trust this Mac, then try again.",
+                detail: discoveryDetail,
+                action: discovery.primaryDiagnostic?.code == .zeroDevicesReturned
+                    ? "Connect and unlock an iPhone, then try again."
+                    : "IOSSim could not query the native device bridge. Open Diagnostics for the exact failure.",
                 requiredFor: "device"
             ))
         } else {

@@ -215,7 +215,7 @@ struct DeviceConnectView: View {
 
     private var title: String {
         if store.status?.device.devices.isEmpty == true {
-            return "No iPhone Connected"
+            return deviceDiscoveryFailure == nil ? "No iPhone Connected" : "Device Discovery Unavailable"
         }
         if store.deviceSelectionRequired {
             return "Choose an iPhone"
@@ -225,7 +225,9 @@ struct DeviceConnectView: View {
 
     private var message: String {
         if store.status?.device.devices.isEmpty == true {
-            return "Connect and unlock an iPhone to continue."
+            return deviceDiscoveryFailure == nil
+                ? "Connect and unlock an iPhone to continue."
+                : "IOSSim could not query its native device bridge. Open Diagnostics for details."
         }
         if let name = store.disconnectedDeviceName {
             return "Reconnect \(name) or choose another device."
@@ -234,6 +236,10 @@ struct DeviceConnectView: View {
             return "Select the iPhone IOSSim should set up."
         }
         return "Connect your iPhone to this Mac using a USB cable and unlock it."
+    }
+
+    private var deviceDiscoveryFailure: DoctorCheck? {
+        store.status?.checks.first { $0.component == "Device Bridge" && ($0.state == .action || $0.state == .fail) }
     }
 
     private func deviceLabel(_ device: DetectedDevice) -> String {

@@ -1,21 +1,19 @@
+use idevice::remote_pairing::{RemotePairingLockdownService, RpPairingFile};
 use idevice::{
     IdeviceService,
     provider::IdeviceProvider,
     services::{
-        afc::opcode::AfcFopenMode,
-        amfi::AmfiClient,
-        house_arrest::HouseArrestClient,
-        installation_proxy::InstallationProxyClient,
-        lockdown::LockdownClient,
+        afc::opcode::AfcFopenMode, amfi::AmfiClient, house_arrest::HouseArrestClient,
+        installation_proxy::InstallationProxyClient, lockdown::LockdownClient,
         mobile_image_mounter::ImageMounter,
     },
     usbmuxd::{Connection, UsbmuxdAddr},
     utils::installation,
 };
-use idevice::remote_pairing::{RemotePairingLockdownService, RpPairingFile};
 use serde::Serialize;
 use std::{
     ffi::{CString, c_char},
+    future::Future,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr, slice,
     sync::{
@@ -169,6 +167,20 @@ fn runtime() -> Result<tokio::runtime::Runtime, *mut BridgeResult> {
                 "native async runtime unavailable",
             )
         })
+}
+
+fn block_on_timeout<F>(
+    runtime: &tokio::runtime::Runtime,
+    duration: Duration,
+    future: F,
+) -> Result<F::Output, tokio::time::error::Elapsed>
+where
+    F: Future,
+{
+    // Tokio timer futures must be created while the runtime is entered. Creating
+    // `tokio::time::timeout(...)` as the argument to `Runtime::block_on` panics
+    // before block_on has a chance to establish the reactor context.
+    runtime.block_on(async move { tokio::time::timeout(duration, future).await })
 }
 
 fn timeout_ms(value: u64) -> Result<u64, *mut BridgeResult> {
@@ -338,10 +350,7 @@ pub extern "C" fn iossim_bridge_list_devices(timeout: u64) -> *mut BridgeResult 
             Ok(value) => value,
             Err(result) => return result,
         };
-        match runtime.block_on(tokio::time::timeout(
-            Duration::from_millis(timeout),
-            devices(),
-        )) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), devices()) {
             Ok(Ok(devices)) => {
                 let values: Vec<_> = devices
                     .into_iter()
@@ -384,10 +393,7 @@ pub unsafe extern "C" fn iossim_bridge_open_device(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let selected = match runtime.block_on(tokio::time::timeout(
-            Duration::from_millis(timeout),
-            devices(),
-        )) {
+        let selected = match block_on_timeout(&runtime, Duration::from_millis(timeout), devices()) {
             Ok(Ok(devices)) => devices.into_iter().find(|device| device.udid == stable_id),
             Ok(Err(error)) => return error_result(&error),
             Err(_) => return make_result(Status::TimedOut, vec![], "opening device timed out"),
@@ -510,7 +516,7 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
                 developer_mode,
             })
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(value)) => json_result(&value),
             Ok(Err(_error)) if handle.cancelled.load(Ordering::Acquire) => {
                 make_result(Status::Cancelled, vec![], "operation cancelled")
@@ -565,7 +571,7 @@ pub unsafe extern "C" fn iossim_bridge_create_remote_pairing(
                 .await?;
             Ok::<Vec<u8>, idevice::IdeviceError>(pairing.to_bytes())
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(bytes)) => make_result(Status::Ok, bytes, "ok"),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(
@@ -625,7 +631,7 @@ pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
             client.attempt_pair_verify().await?;
             client.validate_pairing(&mut pairing).await
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "ok"),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(
@@ -664,7 +670,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_support_status(
             let mut mounter = ImageMounter::connect(&provider).await?;
             Ok(mounter.lookup_image("Personalized").await.is_ok())
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(mounted)) => json_result(&serde_json::json!({ "mounted": mounted })),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(
@@ -748,7 +754,7 @@ pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
                 )
                 .await
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "developer support mounted"),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(
@@ -806,7 +812,7 @@ pub unsafe extern "C" fn iossim_bridge_app_inventory(
                 })
                 .collect::<Vec<_>>())
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(records)) => json_result(&records),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(Status::TimedOut, vec![], "app inventory timed out"),
@@ -852,7 +858,7 @@ pub unsafe extern "C" fn iossim_bridge_install_app(
                 installation::install_package(&provider, local_path, None).await
             }
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "application operation completed"),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(Status::TimedOut, vec![], "application install timed out"),
@@ -903,7 +909,7 @@ pub unsafe extern "C" fn iossim_bridge_uninstall_app(
             let mut proxy = InstallationProxyClient::connect(&provider).await?;
             proxy.uninstall(bundle_id, None).await
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "application removed"),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(Status::TimedOut, vec![], "application uninstall timed out"),
@@ -987,7 +993,7 @@ pub unsafe extern "C" fn iossim_bridge_container_write(
             let close = file.close().await;
             write.and(close)
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "container write completed"),
             Ok(Err(error)) => error_result(&error),
             Err(_) => make_result(Status::TimedOut, vec![], "container write timed out"),
@@ -1053,7 +1059,7 @@ pub unsafe extern "C" fn iossim_bridge_container_read(
             file.close().await?;
             Ok(data)
         };
-        match runtime.block_on(tokio::time::timeout(Duration::from_millis(timeout), task)) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(data)) if data.len() <= MAX_CONTAINER_BYTES => {
                 make_result(Status::Ok, data, "container read completed")
             }
@@ -1137,6 +1143,44 @@ mod tests {
             assert_eq!((*result).status, Status::InvalidArgument as i32);
             iossim_bridge_result_free(result);
         }
+    }
+
+    #[test]
+    fn timeout_future_is_created_inside_runtime_context() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = block_on_timeout(&runtime, Duration::from_millis(50), async { 42 });
+        assert_eq!(result.expect("timer should run"), 42);
+    }
+
+    #[test]
+    fn ffi_result_layout_and_payload_ownership_are_stable() {
+        assert_eq!(std::mem::size_of::<BridgeResult>(), 32);
+        assert_eq!(std::mem::align_of::<BridgeResult>(), 8);
+        let result = json_result(&vec![DeviceSummary {
+            stable_id: "00008150-00022D581E12401C".to_string(),
+            usbmux_id: 42,
+            connection: "usb",
+        }]);
+        assert!(!result.is_null());
+        unsafe {
+            assert_eq!((*result).status, Status::Ok as i32);
+            let payload = slice::from_raw_parts((*result).payload, (*result).payload_len);
+            let value: serde_json::Value =
+                serde_json::from_slice(payload).expect("valid JSON payload");
+            assert_eq!(value[0]["usbmuxId"], 42);
+            assert_eq!(value[0]["connection"], "usb");
+            iossim_bridge_result_free(result);
+        }
+    }
+
+    #[test]
+    fn live_list_entrypoint_returns_a_result_without_reactor_panic() {
+        let result = iossim_bridge_list_devices(250);
+        assert!(!result.is_null());
+        unsafe { iossim_bridge_result_free(result) };
     }
 
     #[test]

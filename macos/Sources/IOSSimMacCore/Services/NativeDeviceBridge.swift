@@ -116,6 +116,7 @@ public struct NativeDeviceInspection: Codable, Equatable, Sendable {
 
 public enum NativeDeviceBridgeError: Error, Equatable, Sendable {
     case libraryUnavailable
+    case libraryLoadFailure(String)
     case incompatibleABI
     case invalidIdentity
     case deviceNotFound
@@ -125,6 +126,7 @@ public enum NativeDeviceBridgeError: Error, Equatable, Sendable {
     case developerModeRequired
     case cancelled
     case timedOut
+    case decodingFailure(String)
     case protocolFailure(String)
     case internalFailure(String)
 }
@@ -274,9 +276,14 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
     ) {
         let candidates = Self.libraryCandidates(environment: environment, bundle: bundle)
         var loaded: UnsafeMutableRawPointer?
+        var loadDiagnostic: String?
         for path in candidates where FileManager.default.fileExists(atPath: path) {
+            dlerror()
             loaded = dlopen(path, RTLD_NOW | RTLD_LOCAL)
             if loaded != nil { break }
+            if let error = dlerror() {
+                loadDiagnostic = Self.safeLoadDiagnostic(String(cString: error))
+            }
         }
         guard let loaded else {
             handle = nil
@@ -294,7 +301,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             containerReadFunction = nil
             closeFunction = nil
             freeFunction = nil
-            loadError = .libraryUnavailable
+            loadError = loadDiagnostic.map(NativeDeviceBridgeError.libraryLoadFailure) ?? .libraryUnavailable
             return
         }
         let abi: ABIFn? = Self.symbol("iossim_bridge_abi_version", in: loaded)
@@ -352,11 +359,12 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         if let loadError { throw loadError }
         guard let listFunction else { throw NativeDeviceBridgeError.incompatibleABI }
         let data = try consume(listFunction(Self.milliseconds(timeout)))
-        return try JSONDecoder().decode([WireDevice].self, from: data).map { value in
-            NativeDeviceDescriptor(
-                identity: try IOSSimDeviceIdentity(udid: value.stableId, usbmuxIdentifier: value.usbmuxId),
-                connection: value.connection
-            )
+        do {
+            return try Self.decodeDeviceListPayload(data)
+        } catch let error as NativeDeviceBridgeError {
+            throw error
+        } catch {
+            throw NativeDeviceBridgeError.decodingFailure("device list payload did not match bridge ABI")
         }
     }
 
@@ -375,7 +383,12 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         guard let deviceHandle else { throw NativeDeviceBridgeError.internalFailure("native bridge did not return a handle") }
         defer { closeFunction(deviceHandle) }
         let data = try consume(inspectFunction(deviceHandle, timeoutMS))
-        let value = try JSONDecoder().decode(WireInspection.self, from: data)
+        let value: WireInspection
+        do {
+            value = try JSONDecoder().decode(WireInspection.self, from: data)
+        } catch {
+            throw NativeDeviceBridgeError.decodingFailure("device inspection payload did not match bridge ABI")
+        }
         let returnedIdentity = try IOSSimDeviceIdentity(
             udid: value.stableId,
             usbmuxIdentifier: value.usbmuxId,
@@ -584,7 +597,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
 
     public static func libraryCandidates(
         environment: [String: String],
-        bundle: Bundle
+        bundle: Bundle,
+        executableURL: URL? = Bundle.main.executableURL
     ) -> [String] {
         var candidates: [String] = []
         if let explicit = environment["IOSSIM_DEVICE_BRIDGE_PATH"], explicit.hasPrefix("/") {
@@ -594,7 +608,40 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         if let resources = bundle.resourceURL {
             candidates.append(resources.appendingPathComponent("NativeDeviceBridge/libiossim_device_bridge.dylib").path)
         }
-        return candidates
+        if let executableURL {
+            let macOSDirectory = executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
+            let contentsDirectory = macOSDirectory.deletingLastPathComponent()
+            if macOSDirectory.lastPathComponent == "MacOS", contentsDirectory.lastPathComponent == "Contents" {
+                candidates.append(contentsDirectory
+                    .appendingPathComponent("Resources/NativeDeviceBridge/libiossim_device_bridge.dylib")
+                    .path)
+            }
+        }
+        var seen: Set<String> = []
+        return candidates.filter { seen.insert($0).inserted }
+    }
+
+    static func decodeDeviceListPayload(_ data: Data) throws -> [NativeDeviceDescriptor] {
+        try JSONDecoder().decode([WireDevice].self, from: data).map { value in
+            NativeDeviceDescriptor(
+                identity: try IOSSimDeviceIdentity(udid: value.stableId, usbmuxIdentifier: value.usbmuxId),
+                connection: value.connection
+            )
+        }
+    }
+
+    static func safeLoadDiagnostic(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        if lowered.contains("different team ids") || lowered.contains("library validation") || lowered.contains("code signature") {
+            return "native bridge rejected by hardened runtime library validation"
+        }
+        if lowered.contains("wrong architecture") || lowered.contains("no suitable image") || lowered.contains("incompatible architecture") {
+            return "native bridge architecture is incompatible with this process"
+        }
+        if lowered.contains("image not found") || lowered.contains("no such file") {
+            return "a native bridge dependency is missing"
+        }
+        return "native bridge could not be loaded"
     }
 
     private static func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer) -> T? {

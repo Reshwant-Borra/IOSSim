@@ -84,6 +84,76 @@ final class NativeDeviceBridgeTests: XCTestCase {
         XCTAssertFalse(paths.map { URL(fileURLWithPath: $0).lastPathComponent }.joined().contains("devicectl"))
     }
 
+    func testBundledHelperResolvesBridgeRelativeToOuterApp() {
+        let executable = URL(fileURLWithPath: "/Applications/IOSSim.app/Contents/MacOS/IOSSimProvisioner")
+        let paths = DynamicNativeDeviceTransport.libraryCandidates(
+            environment: [:],
+            bundle: .main,
+            executableURL: executable
+        )
+        XCTAssertTrue(paths.contains(
+            "/Applications/IOSSim.app/Contents/Resources/NativeDeviceBridge/libiossim_device_bridge.dylib"
+        ))
+    }
+
+    func testRustDeviceListPayloadDecodesAcrossFFIWireFormat() throws {
+        let payload = Data(#"[{"stableId":"00008150-00022D581E12401C","usbmuxId":42,"connection":"usb"}]"#.utf8)
+        let devices = try DynamicNativeDeviceTransport.decodeDeviceListPayload(payload)
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices[0].identity.udid, "00008150-00022D581E12401C")
+        XCTAssertEqual(devices[0].identity.usbmuxIdentifier, 42)
+        XCTAssertEqual(devices[0].connection, .usb)
+    }
+
+    func testDynamicLoaderDiagnosticDoesNotExposePaths() {
+        let raw = "dlopen(/Users/example/IOSSim.app/bridge.dylib): code signature not valid; different Team IDs"
+        let diagnostic = DynamicNativeDeviceTransport.safeLoadDiagnostic(raw)
+        XCTAssertEqual(diagnostic, "native bridge rejected by hardened runtime library validation")
+        XCTAssertFalse(diagnostic.contains("/Users/"))
+    }
+
+    func testFutureIPhoneModelIsNotFiltered() async throws {
+        let device = try descriptor("PHONE-0001", connection: .usb, mux: 1)
+        let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(devices: [device]))
+        let snapshot = await IdeviceProvisioningBackend(bridge: bridge).discoverDeviceSnapshot(
+            context: .init(resourcesURL: FileManager.default.temporaryDirectory)
+        )
+        XCTAssertEqual(snapshot.rawDeviceCount, 1)
+        XCTAssertEqual(snapshot.devices.count, 1)
+        XCTAssertEqual(snapshot.devices[0].model, "iPhone99,1")
+        XCTAssertEqual(snapshot.devices[0].osVersion, "26.0")
+    }
+
+    func testInspectionFailureDoesNotBecomeNoDevice() async throws {
+        let device = try descriptor("PHONE-0001", connection: .usb, mux: 1)
+        let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(
+            devices: [device],
+            failure: .protocolFailure("lockdown service unavailable")
+        ))
+        let snapshot = await IdeviceProvisioningBackend(bridge: bridge).discoverDeviceSnapshot(
+            context: .init(resourcesURL: FileManager.default.temporaryDirectory)
+        )
+        XCTAssertEqual(snapshot.devices.count, 1)
+        XCTAssertEqual(snapshot.devices[0].developerModeStatus, DeveloperModeReadiness.unknown.rawValue)
+        XCTAssertTrue(snapshot.diagnostics.contains { $0.code == .lockdownFailed })
+    }
+
+    func testBridgeFailureIsDistinguishableFromZeroDevices() async throws {
+        let failed = IOSSimDeviceBridge(transport: FakeNativeTransport(
+            devices: [],
+            listFailure: .libraryUnavailable
+        ))
+        let failedSnapshot = await IdeviceProvisioningBackend(bridge: failed).discoverDeviceSnapshot(
+            context: .init(resourcesURL: FileManager.default.temporaryDirectory)
+        )
+        let empty = IOSSimDeviceBridge(transport: FakeNativeTransport(devices: []))
+        let emptySnapshot = await IdeviceProvisioningBackend(bridge: empty).discoverDeviceSnapshot(
+            context: .init(resourcesURL: FileManager.default.temporaryDirectory)
+        )
+        XCTAssertEqual(failedSnapshot.primaryDiagnostic?.code, .helperLibraryMissing)
+        XCTAssertEqual(emptySnapshot.primaryDiagnostic?.code, .zeroDevicesReturned)
+    }
+
     private func descriptor(_ id: String, connection: DeviceConnectionKind, mux: UInt32) throws -> NativeDeviceDescriptor {
         NativeDeviceDescriptor(identity: try IOSSimDeviceIdentity(udid: id, usbmuxIdentifier: mux), connection: connection)
     }

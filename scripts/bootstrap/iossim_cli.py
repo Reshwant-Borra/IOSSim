@@ -28,6 +28,7 @@ RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "release"
 LOCAL_RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "local-release"
 MAC_APP_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSim.entitlements"
 MAC_HELPER_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisioner.entitlements"
+MAC_HELPER_LOCAL_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisionerLocal.entitlements"
 MAC_ICON_SOURCE = MAC_DIR / "Resources" / "IOSSimIcon.png"
 IDEVICE_LICENSE_SOURCE = IOS_DIR / "Vendor" / "idevice" / "LICENSE.txt"
 BIGINT_LICENSE_SOURCE = MAC_DIR / "ThirdPartyNotices" / "BigInt-LICENSE.txt"
@@ -1436,6 +1437,17 @@ def validate_release_inputs() -> None:
             raise RuntimeError(f"invalid production entitlement file {path.name}: {exc}") from exc
         if entitlements != {}:
             raise RuntimeError(f"production entitlement file {path.name} must remain an empty dictionary")
+    try:
+        with MAC_HELPER_LOCAL_ENTITLEMENTS.open("rb") as entitlement_file:
+            local_helper_entitlements = plistlib.load(entitlement_file)
+    except Exception as exc:
+        raise RuntimeError(
+            f"invalid local helper entitlement file {MAC_HELPER_LOCAL_ENTITLEMENTS.name}: {exc}"
+        ) from exc
+    if local_helper_entitlements != {"com.apple.security.cs.disable-library-validation": True}:
+        raise RuntimeError(
+            "local helper entitlements must contain only the library-validation exception required for the ad-hoc bridge"
+        )
     if not MAC_ICON_SOURCE.is_file():
         raise RuntimeError("production app icon source is missing")
 
@@ -1534,7 +1546,7 @@ def local_sign_macos_app(runner: Runner, app_dir: Path) -> None:
             "/usr/bin/codesign", "--force", "--sign", "-",
             "--identifier", f"{RELEASE_CONFIG.bundle_identifier}.provisioner",
             "--options", "runtime", "--timestamp=none",
-            "--entitlements", str(MAC_HELPER_ENTITLEMENTS),
+            "--entitlements", str(MAC_HELPER_LOCAL_ENTITLEMENTS),
             str(helper),
         ],
     )
@@ -1668,11 +1680,25 @@ def audit_local_signatures(app_dir: Path) -> bool:
         runtime_ok = "runtime" in details
         authority_absent = "Authority=" not in details
         entitlements = codesign_entitlements(path)
-        forbidden = sorted(item for item in disallowed_entitlements if item in entitlements)
-        unexpected_entitlements = "<key>" in entitlements
-        item_ok = valid and ad_hoc_ok and runtime_ok and authority_absent and not forbidden and not unexpected_entitlements
+        is_local_helper = relative == "Contents/MacOS/IOSSimProvisioner"
+        local_library_exception = "com.apple.security.cs.disable-library-validation"
+        helper_exception_ok = (
+            is_local_helper
+            and local_library_exception in entitlements
+            and entitlements.count("<key>") == 1
+        )
+        forbidden = sorted(
+            item for item in disallowed_entitlements
+            if item in entitlements and not (is_local_helper and item == local_library_exception)
+        )
+        unexpected_entitlements = "<key>" in entitlements and not helper_exception_ok
+        item_ok = (
+            valid and ad_hoc_ok and runtime_ok and authority_absent and not forbidden
+            and not unexpected_entitlements and (not is_local_helper or helper_exception_ok)
+        )
         if item_ok:
-            ok &= audit_pass(f"Local signature {relative}", "ad hoc / hardened runtime / no entitlements")
+            detail = "ad hoc / hardened runtime / helper-only library validation exception" if is_local_helper else "ad hoc / hardened runtime / no entitlements"
+            ok &= audit_pass(f"Local signature {relative}", detail)
         else:
             reasons = []
             if not valid: reasons.append("invalid signature")
@@ -1681,6 +1707,7 @@ def audit_local_signatures(app_dir: Path) -> bool:
             if not authority_absent: reasons.append("unexpected signing authority")
             if forbidden: reasons.append(f"forbidden entitlements: {', '.join(forbidden)}")
             if unexpected_entitlements: reasons.append("unexpected production entitlements")
+            if is_local_helper and not helper_exception_ok: reasons.append("missing exact helper-only library validation exception")
             ok &= audit_fail(f"Local signature {relative}", "; ".join(reasons))
     return bool(ok)
 

@@ -102,6 +102,53 @@ public enum ProvisioningBackendKind: String, Sendable {
     }
 }
 
+public enum DeviceDiscoveryDiagnosticCode: String, Codable, Equatable, Sendable {
+    case bridgeUnavailable = "BRIDGE_UNAVAILABLE"
+    case bridgeInitializationFailed = "BRIDGE_INITIALIZATION_FAILED"
+    case usbmuxUnavailable = "USBMUX_UNAVAILABLE"
+    case enumerationFailed = "ENUMERATION_FAILED"
+    case zeroDevicesReturned = "ZERO_DEVICES_RETURNED"
+    case deviceDiscovered = "DEVICE_DISCOVERED"
+    case deviceDiscoveredButFiltered = "DEVICE_DISCOVERED_BUT_FILTERED"
+    case lockdownFailed = "LOCKDOWN_FAILED"
+    case trustRequired = "TRUST_REQUIRED"
+    case deviceLocked = "DEVICE_LOCKED"
+    case developerModeUnavailable = "DEVELOPER_MODE_UNAVAILABLE"
+    case unsupportedIOSVersion = "UNSUPPORTED_IOS_VERSION"
+    case helperLibraryMissing = "HELPER_LIBRARY_MISSING"
+    case ffiDecodingFailure = "FFI_DECODING_FAILURE"
+}
+
+public struct DeviceDiscoveryDiagnostic: Codable, Equatable, Sendable {
+    public let code: DeviceDiscoveryDiagnosticCode
+    public let detail: String
+
+    public init(code: DeviceDiscoveryDiagnosticCode, detail: String) {
+        self.code = code
+        self.detail = Redactor.redact(detail)
+    }
+}
+
+public struct DeviceDiscoverySnapshot: Codable, Equatable, Sendable {
+    public let devices: [DetectedDevice]
+    public let rawDeviceCount: Int
+    public let diagnostics: [DeviceDiscoveryDiagnostic]
+
+    public init(
+        devices: [DetectedDevice],
+        rawDeviceCount: Int,
+        diagnostics: [DeviceDiscoveryDiagnostic]
+    ) {
+        self.devices = devices
+        self.rawDeviceCount = rawDeviceCount
+        self.diagnostics = diagnostics
+    }
+
+    public var primaryDiagnostic: DeviceDiscoveryDiagnostic? {
+        diagnostics.first { $0.code != .deviceDiscovered }
+    }
+}
+
 public protocol DeviceProvisioningBackend: Sendable {
     func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice]
     func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String?
@@ -146,10 +193,37 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     }
 
     public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
-        guard let descriptors = try? await bridge.listDevices() else { return [] }
+        await discoverDeviceSnapshot(context: context).devices
+    }
+
+    public func discoverDeviceSnapshot(context: RuntimeProvisioningContext) async -> DeviceDiscoverySnapshot {
+        let descriptors: [NativeDeviceDescriptor]
+        do {
+            descriptors = try await bridge.listDevices()
+        } catch {
+            return DeviceDiscoverySnapshot(
+                devices: [],
+                rawDeviceCount: 0,
+                diagnostics: [Self.diagnostic(for: error, operation: .enumeration)]
+            )
+        }
+        guard !descriptors.isEmpty else {
+            return DeviceDiscoverySnapshot(
+                devices: [],
+                rawDeviceCount: 0,
+                diagnostics: [.init(code: .zeroDevicesReturned, detail: "usbmux returned no connected devices")]
+            )
+        }
         var values: [DetectedDevice] = []
+        var diagnostics: [DeviceDiscoveryDiagnostic] = []
         for descriptor in descriptors {
-            let inspection = try? await bridge.inspect(descriptor.identity)
+            let inspection: NativeDeviceInspection?
+            do {
+                inspection = try await bridge.inspect(descriptor.identity)
+            } catch {
+                inspection = nil
+                diagnostics.append(Self.diagnostic(for: error, operation: .inspection))
+            }
             let identity = inspection?.identity ?? descriptor.identity
             values.append(DetectedDevice(
                 name: inspection?.name ?? "iPhone",
@@ -165,8 +239,68 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
                 provisioningEligibilityStatus: .requiresResigning,
                 provisioningEligibilityDetail: "Bound to the selected phone through the bundled native device bridge."
             ))
+            if inspection?.trust == .missing {
+                diagnostics.append(.init(code: .trustRequired, detail: "Lockdown pairing record is unavailable"))
+            }
+            if inspection?.lockState == .locked {
+                diagnostics.append(.init(code: .deviceLocked, detail: "Lockdown reports the connected device is locked"))
+            }
+            if let mode = inspection?.developerMode, [.unknown, .serviceUnavailable].contains(mode) {
+                diagnostics.append(.init(code: .developerModeUnavailable, detail: "Developer Mode status could not be read"))
+            }
         }
-        return values
+        if values.count < descriptors.count {
+            diagnostics.append(.init(
+                code: .deviceDiscoveredButFiltered,
+                detail: "(descriptors.count - values.count) enumerated device(s) were not returned"
+            ))
+        }
+        diagnostics.insert(.init(
+            code: .deviceDiscovered,
+            detail: "usbmux returned (descriptors.count) device(s); IOSSim returned (values.count) device(s)"
+        ), at: 0)
+        return DeviceDiscoverySnapshot(
+            devices: values,
+            rawDeviceCount: descriptors.count,
+            diagnostics: diagnostics
+        )
+    }
+
+    private enum DiscoveryOperation { case enumeration, inspection }
+
+    private static func diagnostic(for error: Error, operation: DiscoveryOperation) -> DeviceDiscoveryDiagnostic {
+        guard let bridgeError = error as? NativeDeviceBridgeError else {
+            return .init(
+                code: operation == .enumeration ? .enumerationFailed : .lockdownFailed,
+                detail: String(describing: error)
+            )
+        }
+        switch bridgeError {
+        case .libraryUnavailable:
+            return .init(code: .helperLibraryMissing, detail: "No bundled native device bridge library was found")
+        case .libraryLoadFailure(let detail):
+            return .init(code: .bridgeUnavailable, detail: detail)
+        case .incompatibleABI:
+            return .init(code: .bridgeInitializationFailed, detail: "Bundled native device bridge ABI is incompatible")
+        case .decodingFailure(let detail):
+            return .init(code: .ffiDecodingFailure, detail: detail)
+        case .deviceLocked:
+            return .init(code: .deviceLocked, detail: "The connected device is locked")
+        case .trustRequired:
+            return .init(code: .trustRequired, detail: "Lockdown trust is required")
+        case .protocolFailure(let detail):
+            let lowered = detail.lowercased()
+            if operation == .enumeration,
+               lowered.contains("usbmux") || lowered.contains("connection refused") || lowered.contains("no such file") {
+                return .init(code: .usbmuxUnavailable, detail: detail)
+            }
+            return .init(code: operation == .enumeration ? .enumerationFailed : .lockdownFailed, detail: detail)
+        default:
+            return .init(
+                code: operation == .enumeration ? .enumerationFailed : .lockdownFailed,
+                detail: String(describing: bridgeError)
+            )
+        }
     }
 
     public func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {
@@ -205,7 +339,24 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
 
 public enum AppleDeviceTool {
     public static func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
-        await DeviceProvisioningBackendFactory.makeSelectedBackend().discoverDevices(context: context)
+        await discoverDeviceSnapshot(context: context).devices
+    }
+
+    public static func discoverDeviceSnapshot(context: RuntimeProvisioningContext) async -> DeviceDiscoverySnapshot {
+        switch ProvisioningBackendKind.selected() {
+        case .idevice:
+            return await IdeviceProvisioningBackend().discoverDeviceSnapshot(context: context)
+        case .devicectl:
+            let devices = await DevicectlProvisioningBackend().discoverDevices(context: context)
+            return DeviceDiscoverySnapshot(
+                devices: devices,
+                rawDeviceCount: devices.count,
+                diagnostics: [.init(
+                    code: devices.isEmpty ? .zeroDevicesReturned : .deviceDiscovered,
+                    detail: devices.isEmpty ? "device backend returned no connected devices" : "device backend returned \(devices.count) device(s)"
+                )]
+            )
+        }
     }
 
     public static func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String? {

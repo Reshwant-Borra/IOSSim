@@ -90,9 +90,11 @@ struct DashboardView: View {
                             .foregroundStyle(.orange)
                     }
                 } else if store.status?.device.devices.isEmpty == true {
-                    Text("No iPhone Connected")
+                    Text(deviceDiscoveryFailure == nil ? "No iPhone Connected" : "Device Discovery Unavailable")
                         .font(.title3.weight(.semibold))
-                    Text("Connect and unlock an iPhone to continue.")
+                    Text(deviceDiscoveryFailure == nil
+                        ? "Connect and unlock an iPhone to continue."
+                        : "IOSSim could not query its native device bridge. Open Diagnostics for details.")
                         .foregroundStyle(.secondary)
                 } else if let name = store.disconnectedDeviceName {
                     Text("iPhone Disconnected")
@@ -113,6 +115,10 @@ struct DashboardView: View {
                 }
             }
         }
+    }
+
+    private var deviceDiscoveryFailure: DoctorCheck? {
+        store.status?.checks.first { $0.component == "Device Bridge" && ($0.state == .action || $0.state == .fail) }
     }
 
     private func deviceLabel(_ device: DetectedDevice) -> String {
