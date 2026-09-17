@@ -1,0 +1,399 @@
+{
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "artifact": {
+    "fileName": "Veya-0.1.0-build2-dd259bd-local-test.dmg",
+    "mountedAppTreeSHA256": "192a24498716d424343a59f123ade76b5e74467ce518be72251c988ee7a910e1",
+    "sha256": "a5cfa59e7355b9a89482280b1c9546ebf5a892c8c19071c0b8895333c19ab2e7",
+    "sizeBytes": 16267883
+  },
+  "artifactIdentity": {
+    "actualArchitectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "appTreeSHA256": "192a24498716d424343a59f123ade76b5e74467ce518be72251c988ee7a910e1",
+    "artifact": {
+      "fileName": "Veya-0.1.0-build2-dd259bd-local-test.dmg",
+      "mountedAppTreeSHA256": "192a24498716d424343a59f123ade76b5e74467ce518be72251c988ee7a910e1",
+      "sha256": "a5cfa59e7355b9a89482280b1c9546ebf5a892c8c19071c0b8895333c19ab2e7",
+      "sizeBytes": 16267883
+    },
+    "build": "2",
+    "buildProvenance": {
+      "artifactManifestSchema": 2,
+      "bridgeVersion": "iossim-device-bridge/0.1.0+idevice-1838db10",
+      "buildTimestamp": "2026-09-17T01:38:54.333669Z",
+      "buildVariant": "PRODUCTION",
+      "consumerBuildAttempted": false,
+      "ddiBackend": "NATIVE_PERSONALIZED_DEVELOPER_SUPPORT",
+      "developerServicesBackend": "NATIVE_COREDEVICE_RSD_REMOTEXPC",
+      "developerServicesReceiptSchema": 2,
+      "developerSupportProviderClassification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030",
+      "discoveryBackend": "NATIVE_IDEVICE_USBMUX",
+      "guiSourceCommit": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+      "guiSourceDirty": false,
+      "guiSourceHead": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+      "helperSchemaVersion": 2,
+      "helperSourceCommit": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+      "helperSourceDirty": false,
+      "helperSourceHead": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+      "houseArrestBackend": "NATIVE_HOUSE_ARREST_AFC",
+      "ideviceRevision": "1838db107d38701b4044361163aac049006c2627",
+      "installationBackend": "NATIVE_AFC_INSTALLATION_PROXY",
+      "launchBackend": "NATIVE_APPSERVICE_RSD",
+      "legacyFallbackUsed": false,
+      "nativeBridgeABI": 2,
+      "pairingBackend": "AUTOMATIC_REMOTE_PAIRING_HOUSE_ARREST",
+      "payloadBuildTimestamp": "2026-09-17T01:38:54.333669Z",
+      "payloadBuildVariant": "DEVICE_PAYLOAD_RELEASE",
+      "payloadManifestVersion": "2",
+      "payloadSource": "BUNDLED_PREBUILT_MANIFEST",
+      "payloadSourceCommit": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+      "payloadSourceDirty": false,
+      "payloadSourceHead": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+      "payloadSourceTreeSHA256": "2111021ced79a85f3196efe7e0ffbe0701162f6b4736310f8c774a08b2c6dec9",
+      "provisioningManifestSchema": 4,
+      "setupEngine": "BUNDLED_PROVISIONING_ENGINE",
+      "setupStateSchema": 5,
+      "sourceDirty": false
+    },
+    "bundleIdentifier": "com.iossim.mac-provisioner",
+    "components": [
+      {
+        "architectures": [
+          "arm64",
+          "x86_64"
+        ],
+        "relativePath": "Contents/MacOS/IOSSim",
+        "role": "macApp",
+        "sha256": "2100cecac61465fd9ed3612a975e54e8be123e7fc03c4a9c052f46547eb75d45",
+        "signing": {
+          "cdhash": "40567e18f414772901c7d5d6b2406755c957ad5c",
+          "classification": "AD_HOC",
+          "teamID": null
+        },
+        "sizeBytes": 9962880
+      },
+      {
+        "architectures": [
+          "arm64",
+          "x86_64"
+        ],
+        "relativePath": "Contents/MacOS/IOSSimProvisioner",
+        "role": "provisioner",
+        "sha256": "b438d4a00c45766dc34c843e363d1a5ffd501c4f7664fde285e49e123773fcf5",
+        "signing": {
+          "cdhash": "dddf3d2647723b3cc0f4fdcffe61510ee5d4313b",
+          "classification": "AD_HOC",
+          "teamID": null
+        },
+        "sizeBytes": 9928928
+      },
+      {
+        "architectures": [
+          "arm64",
+          "x86_64"
+        ],
+        "relativePath": "Contents/Resources/NativeDeviceBridge/libiossim_device_bridge.dylib",
+        "role": "nativeDeviceBridge",
+        "sha256": "d3486e0ce2b806bf099c1740c13b1b227b940be775c839f14472cc087b25df9b",
+        "signing": {
+          "cdhash": "fe28b879e734049747730a4caf9833104e6ced46",
+          "classification": "AD_HOC",
+          "teamID": null
+        },
+        "sizeBytes": 7056016
+      }
+    ],
+    "dependencies": {
+      "lockDigests": {
+        "cargoLockSHA256": "75a1d322e6018f56032dbad6ffedc2bf82ccdddb968cd1b6a915a7506650b542",
+        "swiftPackageResolvedSHA256": "7be51cd9cbfb9afaca08af65801ba8861a69b377e045610353aecd252e8e5cf9"
+      },
+      "notices": [
+        {
+          "relativePath": "Contents/Resources/ThirdPartyNotices/BigInt-LICENSE.txt",
+          "sha256": "662e7904b2338ddd894f307907df28b4694ee4969ff0a58611eff328686ab3f3"
+        },
+        {
+          "relativePath": "Contents/Resources/ThirdPartyNotices/idevice-LICENSE.txt",
+          "sha256": "233ada9de9b90db2835d48da9f03cabfa180d47671d8b58d3ca003dbb965302a"
+        }
+      ],
+      "sbom": {
+        "packageCount": 208,
+        "relativePath": "Contents/Resources/SBOM.spdx.json",
+        "sha256": "4a4b80e427f972e0926b02d0faa00c63cc4c643f901e2bc2e098b49a3f01d969",
+        "spdxVersion": "SPDX-2.3"
+      }
+    },
+    "developerSupportProvider": {
+      "classification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030"
+    },
+    "distribution": {
+      "developerID": false,
+      "distributionClass": "LOCAL_TEST_ONLY",
+      "gatekeeperQualified": false,
+      "labels": [
+        "LOCAL TEST BUILD",
+        "NOT NOTARIZED",
+        "NOT FOR PUBLIC DISTRIBUTION"
+      ],
+      "notarized": false,
+      "productionUI": true,
+      "publicDistribution": false,
+      "schemaVersion": 1
+    },
+    "engineIntegrity": {
+      "artifactManifestSchemaVersion": 2,
+      "helperRelativePath": "Contents/MacOS/IOSSimProvisioner",
+      "helperSHA256": "b438d4a00c45766dc34c843e363d1a5ffd501c4f7664fde285e49e123773fcf5",
+      "helperSchemaVersion": 2,
+      "nativeBridgeABI": 2,
+      "nativeBridgeRelativePath": "NativeDeviceBridge/libiossim_device_bridge.dylib",
+      "nativeBridgeSHA256": "d3486e0ce2b806bf099c1740c13b1b227b940be775c839f14472cc087b25df9b",
+      "payloadManifestRelativePath": "DeviceArtifacts/manifest.json",
+      "payloadManifestSHA256": "8c025de3270b1a5e4eb063fc95f9e8e94d1f628e292cfa59da77e4242c284404",
+      "schemaVersion": 1,
+      "setupStateSchemaVersion": 5
+    },
+    "minimumMacOS": "13.0",
+    "mountedVolumeContents": [
+      "Applications",
+      "Veya.app"
+    ],
+    "payloadManifest": {
+      "capabilities": {
+        "automaticPairingInbox": 2,
+        "localDevVPNSetupGate": 2,
+        "pairingReceiptSchema": 2,
+        "richRuntimeProofInbox": 1,
+        "runtimeMappingSchema": 1
+      },
+      "release": {
+        "buildNumber": "2",
+        "buildTimestamp": "2026-09-17T01:38:54.333669Z",
+        "helperSchemaVersion": 2,
+        "localDevVPN": {
+          "appStoreIdentifier": "6755608044",
+          "bundleIdentifier": "com.jkcoxson.LocalDevVPN",
+          "minimumVersion": "1.0.0",
+          "observedAppStoreVersion": "1.3.0",
+          "physicallyTestedVersions": [],
+          "setupProtocolSchema": 2
+        },
+        "macVersion": "0.1.0",
+        "payloadBuildTimestamp": "2026-09-17T01:38:54.333669Z",
+        "payloadBuildVariant": "DEVICE_PAYLOAD_RELEASE",
+        "payloadSourceCommit": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+        "payloadSourceDirty": false,
+        "payloadSourceHead": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+        "payloadSourceTreeSHA256": "2111021ced79a85f3196efe7e0ffbe0701162f6b4736310f8c774a08b2c6dec9",
+        "sourceCommit": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+        "sourceDirty": false,
+        "variant": "PRODUCTION"
+      },
+      "schemaVersion": 2,
+      "sha256": "8c025de3270b1a5e4eb063fc95f9e8e94d1f628e292cfa59da77e4242c284404"
+    },
+    "payloads": [
+      {
+        "architectures": [
+          "arm64"
+        ],
+        "build": "1",
+        "bundleIdentifier": "com.iossim.on-device-dvt-poc",
+        "declaredBundleIdentifier": "com.iossim.on-device-dvt-poc",
+        "declaredSHA256": "a95d87e24d7083d1fc93e918de3e9ed0bc085b6830644d2dfd05bbedb8c10d38",
+        "declaredVersion": "0.1",
+        "relativePath": "Contents/Resources/DeviceArtifacts/IOSSim DVT POC.app",
+        "role": "iosMain",
+        "sha256": "a95d87e24d7083d1fc93e918de3e9ed0bc085b6830644d2dfd05bbedb8c10d38",
+        "signingMode": "personalTeamResign",
+        "sizeBytes": null,
+        "version": "0.1"
+      },
+      {
+        "architectures": [
+          "arm64"
+        ],
+        "build": "1",
+        "bundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+        "declaredBundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+        "declaredSHA256": "c605a3311bdbbd2a477a5217066023dbe41c5833586ef25b77276a2939715a11",
+        "declaredVersion": "1.0",
+        "relativePath": "Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app",
+        "role": "locationControlRunner",
+        "sha256": "c605a3311bdbbd2a477a5217066023dbe41c5833586ef25b77276a2939715a11",
+        "signingMode": "personalTeamResign",
+        "sizeBytes": null,
+        "version": "1.0"
+      }
+    ],
+    "productName": "Veya",
+    "schemaVersion": 2,
+    "schemas": {
+      "artifactManifest": 2,
+      "developerSupportProviderClassification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030",
+      "helperProtocol": 2,
+      "nativeBridgeABI": 2,
+      "nativeBridgeABIExpected": 2,
+      "provisioningManifest": 4,
+      "setupState": 5
+    },
+    "signing": {
+      "cdhash": "40567e18f414772901c7d5d6b2406755c957ad5c",
+      "classification": "AD_HOC",
+      "teamID": null
+    },
+    "version": "0.1.0"
+  },
+  "buildNumber": "2",
+  "buildTimestamp": "2026-09-17T01:39:04.839208Z",
+  "bundleIdentifier": "com.iossim.mac-provisioner",
+  "channel": "local-test",
+  "components": [
+    {
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "relativePath": "Contents/MacOS/IOSSim",
+      "role": "macApp",
+      "sha256": "2100cecac61465fd9ed3612a975e54e8be123e7fc03c4a9c052f46547eb75d45",
+      "signing": {
+        "cdhash": "40567e18f414772901c7d5d6b2406755c957ad5c",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 9962880
+    },
+    {
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "relativePath": "Contents/MacOS/IOSSimProvisioner",
+      "role": "provisioner",
+      "sha256": "b438d4a00c45766dc34c843e363d1a5ffd501c4f7664fde285e49e123773fcf5",
+      "signing": {
+        "cdhash": "dddf3d2647723b3cc0f4fdcffe61510ee5d4313b",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 9928928
+    },
+    {
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "relativePath": "Contents/Resources/NativeDeviceBridge/libiossim_device_bridge.dylib",
+      "role": "nativeDeviceBridge",
+      "sha256": "d3486e0ce2b806bf099c1740c13b1b227b940be775c839f14472cc087b25df9b",
+      "signing": {
+        "cdhash": "fe28b879e734049747730a4caf9833104e6ced46",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 7056016
+    }
+  ],
+  "dependencies": {
+    "lockDigests": {
+      "cargoLockSHA256": "75a1d322e6018f56032dbad6ffedc2bf82ccdddb968cd1b6a915a7506650b542",
+      "swiftPackageResolvedSHA256": "7be51cd9cbfb9afaca08af65801ba8861a69b377e045610353aecd252e8e5cf9"
+    },
+    "notices": [
+      {
+        "relativePath": "Contents/Resources/ThirdPartyNotices/BigInt-LICENSE.txt",
+        "sha256": "662e7904b2338ddd894f307907df28b4694ee4969ff0a58611eff328686ab3f3"
+      },
+      {
+        "relativePath": "Contents/Resources/ThirdPartyNotices/idevice-LICENSE.txt",
+        "sha256": "233ada9de9b90db2835d48da9f03cabfa180d47671d8b58d3ca003dbb965302a"
+      }
+    ],
+    "sbom": {
+      "packageCount": 208,
+      "relativePath": "Contents/Resources/SBOM.spdx.json",
+      "sha256": "4a4b80e427f972e0926b02d0faa00c63cc4c643f901e2bc2e098b49a3f01d969",
+      "spdxVersion": "SPDX-2.3"
+    }
+  },
+  "developerID": false,
+  "developerSupportProvider": {
+    "classification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030"
+  },
+  "distributionClass": "LOCAL_TEST_ONLY",
+  "gatekeeperQualified": false,
+  "labels": [
+    "LOCAL TEST BUILD",
+    "NOT NOTARIZED",
+    "NOT FOR PUBLIC DISTRIBUTION"
+  ],
+  "notarized": false,
+  "payloads": [
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "build": "1",
+      "bundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "declaredBundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "declaredSHA256": "a95d87e24d7083d1fc93e918de3e9ed0bc085b6830644d2dfd05bbedb8c10d38",
+      "declaredVersion": "0.1",
+      "relativePath": "Contents/Resources/DeviceArtifacts/IOSSim DVT POC.app",
+      "role": "iosMain",
+      "sha256": "a95d87e24d7083d1fc93e918de3e9ed0bc085b6830644d2dfd05bbedb8c10d38",
+      "signingMode": "personalTeamResign",
+      "sizeBytes": null,
+      "version": "0.1"
+    },
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "build": "1",
+      "bundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "declaredBundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "declaredSHA256": "c605a3311bdbbd2a477a5217066023dbe41c5833586ef25b77276a2939715a11",
+      "declaredVersion": "1.0",
+      "relativePath": "Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app",
+      "role": "locationControlRunner",
+      "sha256": "c605a3311bdbbd2a477a5217066023dbe41c5833586ef25b77276a2939715a11",
+      "signingMode": "personalTeamResign",
+      "sizeBytes": null,
+      "version": "1.0"
+    }
+  ],
+  "product": "Veya",
+  "productionUI": true,
+  "publicDistribution": false,
+  "schemaVersion": 2,
+  "schemas": {
+    "artifactManifest": 2,
+    "developerSupportProviderClassification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030",
+    "helperProtocol": 2,
+    "nativeBridgeABI": 2,
+    "nativeBridgeABIExpected": 2,
+    "provisioningManifest": 4,
+    "setupState": 5
+  },
+  "shortVersion": "0.1.0",
+  "signing": {
+    "cdhash": "40567e18f414772901c7d5d6b2406755c957ad5c",
+    "classification": "AD_HOC",
+    "teamID": null
+  },
+  "sourceCommit": "dd259bd09c32ba1a95d031915d2c393ab2c87149",
+  "sourceDirty": false,
+  "stapled": {
+    "app": false,
+    "dmg": false
+  },
+  "variant": "PRODUCTION"
+}
