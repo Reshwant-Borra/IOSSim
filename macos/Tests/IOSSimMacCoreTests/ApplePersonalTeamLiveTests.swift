@@ -1485,7 +1485,7 @@ private extension Data {
     }
 }
 
-private struct FixtureMachineIdentity: AppleMachineIdentityProviding {
+struct FixtureMachineIdentity: AppleMachineIdentityProviding {
     static let headers = [
         "X-Apple-I-MD": "synthetic-md",
         "X-Apple-I-MD-M": "synthetic-mdm",
@@ -1622,11 +1622,11 @@ private func teamResponse() -> [String: Any] {
     ]
 }
 
-private func plistData(_ value: Any) throws -> Data {
+func plistData(_ value: Any) throws -> Data {
     try PropertyListSerialization.data(fromPropertyList: value, format: .xml, options: 0)
 }
 
-private extension ExperimentalAppleTeam {
+extension ExperimentalAppleTeam {
     static let fixturePersonal = ExperimentalAppleTeam(
         id: "ABCDEFGHIJ",
         name: "Fixture Personal Team",
@@ -1704,8 +1704,16 @@ private func fixtureIdentityMetadata(
     )
 }
 
-private func certificateObject(_ data: Data, serial: String) -> [String: Any] {
-    ["certContent": data, "serialNumber": serial]
+private func certificateObject(
+    _ data: Data,
+    serial: String,
+    machineId: String? = nil,
+    machineName: String? = nil
+) -> [String: Any] {
+    var object: [String: Any] = ["certContent": data, "serialNumber": serial]
+    if let machineId { object["machineId"] = machineId }
+    if let machineName { object["machineName"] = machineName }
+    return object
 }
 
 private func certificateInventory(_ certificates: [[String: Any]], available: Int) -> [String: Any] {
@@ -1737,7 +1745,8 @@ private func makeIdentityBackend(
         sessionStore: MemoryAuthorizationSessionStore(session: fixtureSession()),
         diagnostics: diagnostics,
         srpRandomBytesForTesting: Data(repeating: 1, count: 32),
-        identityKeychain: keychain
+        identityKeychain: keychain,
+        certificateCapacityRetryDelay: 0
     )
 }
 
@@ -1762,8 +1771,12 @@ private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychai
         keysToCreate: [SecKey] = [],
         missingKeyStatus: OSStatus = errSecItemNotFound,
         authorizationFailure: ExperimentalBackendError? = nil,
-        usabilityFailure: ExperimentalBackendError? = nil
+        usabilityFailure: ExperimentalBackendError? = nil,
+        installation: String = "INSTALL-THIS-MAC",
+        recoveryIntent: CertificateRecoveryIntent? = nil
     ) {
+        self.installation = installation
+        self.recoveryIntent = recoveryIntent
         self.metadata = metadata
         self.keys = keys
         self.keysToCreate = keysToCreate
@@ -1792,6 +1805,26 @@ private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychai
         guard candidateMetadata?.teamIdentifier == teamIdentifier else { return }
         metadata = candidateMetadata
         candidateMetadata = nil
+    }
+
+    var installation: String
+    var recoveryIntent: CertificateRecoveryIntent?
+    private(set) var clearedRecoveryIntentCount = 0
+
+    func installationIdentifier() throws -> String { installation }
+
+    func loadRecoveryIntent(teamIdentifier: String) throws -> CertificateRecoveryIntent? {
+        recoveryIntent?.teamIdentifier == teamIdentifier ? recoveryIntent : nil
+    }
+
+    func saveRecoveryIntent(_ intent: CertificateRecoveryIntent) throws {
+        recoveryIntent = intent
+    }
+
+    func clearRecoveryIntent(teamIdentifier: String) throws {
+        guard recoveryIntent?.teamIdentifier == teamIdentifier else { return }
+        recoveryIntent = nil
+        clearedRecoveryIntentCount += 1
     }
 
     func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup {
@@ -1830,7 +1863,7 @@ private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychai
     }
 }
 
-private struct SyntheticDevelopmentIdentity {
+struct SyntheticDevelopmentIdentity {
     let privateKey: SecKey
     let certificateData: Data
 

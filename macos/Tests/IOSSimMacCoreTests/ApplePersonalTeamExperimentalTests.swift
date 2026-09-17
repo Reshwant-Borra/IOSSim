@@ -157,7 +157,12 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         XCTAssertTrue(receipt.inventory.isExpected)
     }
 
-    func testCertificateLimitAndMissingPrivateKeyAreNotRecoveredByRevokingOthers() async throws {
+    /// Narrowed for physical defect 002. Veya now *does* revoke, but only a
+    /// certificate it can deterministically prove is its own and already
+    /// unusable. This case supplies no such proof, so the original invariant
+    /// still holds exactly: nothing is revoked, and the failure propagates.
+    /// The proven-ownership counterpart lives in `CertificateCapacityRecoveryTests`.
+    func testCertificateLimitAndMissingPrivateKeyAreNotRecoveredByRevokingUnownedCertificates() async throws {
         for failure in [ExperimentalBackendError.certificateLimit, .missingPrivateKey] {
             let backend = ExperimentalBackendMock(auth: .success, operationFailure: failure)
             let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)

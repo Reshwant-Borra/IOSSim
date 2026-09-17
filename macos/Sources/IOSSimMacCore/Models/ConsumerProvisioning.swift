@@ -162,6 +162,10 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case signingACLRepairFailed = "SIGNING_ACL_REPAIR_FAILED"
     case signingProbeFailed = "SIGNING_PROBE_FAILED"
     case signingIdentityAccessDenied = "SIGNING_IDENTITY_ACCESS_DENIED"
+    // Personal Team certificate capacity (physical defect 002).
+    case certificateCapacityExhausted = "CERTIFICATE_CAPACITY_EXHAUSTED"
+    case certificateRevocationFailed = "CERTIFICATE_REVOCATION_FAILED"
+    case certificateCapacityNotReleased = "CERTIFICATE_CAPACITY_NOT_RELEASED"
     case signOperationFailed = "SIGN_OPERATION_FAILED"
     case nestedSigningFailed = "NESTED_SIGNING_FAILED"
     case signatureVerificationFailed = "SIGNATURE_VERIFICATION_FAILED"

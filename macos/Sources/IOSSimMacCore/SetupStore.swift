@@ -514,10 +514,12 @@ public final class SetupStore: ObservableObject {
         let availableTeams = await authorizationCoordinator.teams
         try requireCurrentOperation(generation)
         if let preferred = try? ExperimentalConsumerProvisioningCoordinator.preferredTeam(from: availableTeams),
-           (try? await nativeArtifactStore.loadActive(
+           let cached = try? await nativeArtifactStore.loadActive(
                teamIdentifier: preferred.id,
                selectedDeviceIdentifier: physicalUDID
-           )) != nil {
+           ),
+           cached != nil,
+           await cachedArtifactsMatchActiveIdentity(cached, team: preferred) {
             // Cached profiles are only reusable if the IOSSim-owned private
             // key is still authorized for the packaged app/helper/codesign
             // process boundary. Older builds wrote a brittle ACL, so repair it
@@ -1049,11 +1051,40 @@ public final class SetupStore: ObservableObject {
         }
     }
 
+    /// A cached profile set embeds the certificate it was issued against. After
+    /// a certificate reclaim that certificate is revoked, so reusing the cache
+    /// would hand installation a profile Apple no longer honours. Anything but
+    /// an exact fingerprint match forces a full re-prepare.
+    private func cachedArtifactsMatchActiveIdentity(
+        _ cached: NativeProvisioningArtifacts?,
+        team: ExperimentalAppleTeam
+    ) async -> Bool {
+        guard let cached else { return false }
+        guard let active = await authorizationCoordinator.activeSigningCertificateFingerprint(team: team) else {
+            // No active identity fingerprint means nothing to validate the cache
+            // against. Re-prepare rather than trust it.
+            return false
+        }
+        return active.caseInsensitiveCompare(cached.certificateFingerprint) == .orderedSame
+    }
+
     private static func experimentalProvisioningError(_ failure: ExperimentalBackendError) -> SetupError {
         let recovery: String
         switch failure {
         case .certificateLimit:
-            recovery = "Remove an unused Apple Development certificate from your Personal Team, then try again."
+            // Deliberately does not instruct a consumer to operate the Apple
+            // Developer Portal. Reaching this text means Veya already looked and
+            // found no certificate it could prove was safe to replace.
+            recovery = """
+                Veya couldn't free a development slot safely. Your Personal Team allows two \
+                Apple Development certificates and both are in use by something Veya didn't \
+                create, so it left them alone. Export a support report from Veya's Help menu \
+                and send it to support.
+                """
+        case .certificateRevocationFailed:
+            recovery = "Veya couldn't retire its own expired signing certificate with Apple. Try again, and export a support report if it keeps failing."
+        case .certificateCapacityNotReleased:
+            recovery = "Apple hasn't finished releasing the certificate slot Veya retired. Wait a moment, then try again."
         case .missingPrivateKey:
             recovery = "Restore the IOSSim signing key on this Mac or reset only IOSSim's managed signing identity."
         case .deviceLimit:

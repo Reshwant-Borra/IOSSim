@@ -876,6 +876,113 @@ struct IOSSimIdentityMetadata: Codable, Equatable {
     let keyApplicationTag: Data
     let createdAt: Date
     let generatedByIOSSim: Bool
+    /// Schema 2 fields. Every one is optional so a Build-1 or Build-2 record
+    /// decodes unchanged -- the consumer's existing identity must survive an
+    /// upgrade without being reissued.
+    let schemaVersion: Int?
+    /// Stable per-installation identifier, also sent to Apple as `machineId`
+    /// and embedded in `machineName`. Lets a later run recognise a certificate
+    /// as this installation's even if the local key is gone, and lets it
+    /// recognise another Mac's certificate as *not* reclaimable.
+    let installationIdentifier: String?
+    /// Apple's own certificate request identifier, when the response carried one.
+    let certificateRequestIdentifier: String?
+    /// SHA-256 of the SubjectPublicKeyInfo the certificate was issued against.
+    let publicKeyFingerprint: String?
+    /// Veya-owned certificates this installation has superseded. Retained so a
+    /// reclaim never targets the same serial twice and so support evidence
+    /// shows what was retired.
+    let retiredCertificates: [RetiredCertificateRecord]?
+
+    static let currentSchemaVersion = 2
+
+    init(
+        teamIdentifier: String,
+        certificateFingerprint: String?,
+        certificateSerial: String?,
+        certificateExpiration: Date?,
+        keyApplicationTag: Data,
+        createdAt: Date,
+        generatedByIOSSim: Bool,
+        schemaVersion: Int? = IOSSimIdentityMetadata.currentSchemaVersion,
+        installationIdentifier: String? = nil,
+        certificateRequestIdentifier: String? = nil,
+        publicKeyFingerprint: String? = nil,
+        retiredCertificates: [RetiredCertificateRecord]? = nil
+    ) {
+        self.teamIdentifier = teamIdentifier
+        self.certificateFingerprint = certificateFingerprint
+        self.certificateSerial = certificateSerial
+        self.certificateExpiration = certificateExpiration
+        self.keyApplicationTag = keyApplicationTag
+        self.createdAt = createdAt
+        self.generatedByIOSSim = generatedByIOSSim
+        self.schemaVersion = schemaVersion
+        self.installationIdentifier = installationIdentifier
+        self.certificateRequestIdentifier = certificateRequestIdentifier
+        self.publicKeyFingerprint = publicKeyFingerprint
+        self.retiredCertificates = retiredCertificates
+    }
+}
+
+/// A Veya-owned certificate this installation has retired.
+struct RetiredCertificateRecord: Codable, Equatable {
+    let serial: String?
+    let fingerprint: String?
+    let retiredAt: Date
+    let reason: String
+}
+
+/// Persisted *before* an irreversible revocation so a crash or restart between
+/// the revoke call and its confirmation can be reconciled against Apple's real
+/// state instead of guessed at. Without this, a restart could revoke a second
+/// certificate believing the first attempt never landed.
+struct CertificateRecoveryIntent: Codable, Equatable {
+    let teamIdentifier: String
+    let targetSerial: String
+    let targetFingerprint: String?
+    let installationIdentifier: String
+    let startedAt: Date
+    var attempts: Int
+
+    /// Hard ceiling on revocation attempts for one target across all restarts.
+    /// Reaching it surfaces a recoverable error rather than revoking again.
+    static let maximumAttempts = 2
+}
+
+/// How strongly Veya can prove a listed Apple Development certificate is its
+/// own, and therefore whether revoking it is permitted. Ordered strongest
+/// evidence first. Only `ownedLocalRecord` and `ownedRemoteMarker` may ever be
+/// revoked; everything else fails closed.
+enum CertificateOwnership: String, Equatable, Sendable {
+    /// P1 -- this installation's persisted metadata names this exact serial or
+    /// fingerprint, and that record was written by Veya against a canonical key tag.
+    case ownedLocalRecord = "OWNED_LOCAL_RECORD"
+    /// P2 -- Apple reports the certificate's `machineId` as this installation's
+    /// own stable identifier.
+    case ownedRemoteMarker = "OWNED_REMOTE_MARKER"
+    /// P3 -- a private key held on this Mac matches it and can actually sign.
+    /// Never revoked: this is a working identity.
+    case activeUsable = "ACTIVE_USABLE"
+    /// P4 -- carries Veya's structured machine name but a *different*
+    /// installation identifier. Probably another Mac on the same Apple Account,
+    /// and possibly live. Never revoked.
+    case veyaOtherInstall = "VEYA_OTHER_INSTALL"
+    /// P5 -- Xcode, another tool, or unattributable. Never revoked.
+    case unknown = "UNKNOWN"
+
+    /// Team ID alone, certificate name alone, "Apple Development", creation date
+    /// alone and "newest certificate" are deliberately absent from this ladder.
+    var isReclaimable: Bool { self == .ownedLocalRecord || self == .ownedRemoteMarker }
+}
+
+/// One listed certificate together with the ownership verdict reached for it.
+struct ClassifiedDevelopmentCertificate {
+    let raw: [String: Any]
+    let serial: String?
+    let fingerprint: String?
+    let expiration: Date?
+    let ownership: CertificateOwnership
 }
 
 struct ManagedPrivateKeyLookup {
@@ -889,6 +996,12 @@ protocol IOSSimManagedIdentityKeychain: Sendable {
     func save(_ metadata: IOSSimIdentityMetadata) throws
     func saveCandidate(_ metadata: IOSSimIdentityMetadata) throws
     func promoteCandidate(teamIdentifier: String) throws
+    /// Stable identifier for this Veya installation, created once on first use.
+    /// Not derived from hardware or the user, and never secret.
+    func installationIdentifier() throws -> String
+    func loadRecoveryIntent(teamIdentifier: String) throws -> CertificateRecoveryIntent?
+    func saveRecoveryIntent(_ intent: CertificateRecoveryIntent) throws
+    func clearRecoveryIntent(teamIdentifier: String) throws
     func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup
     func persistentReference(applicationTag: Data) throws -> Data
     func createPrivateKey(applicationTag: Data) throws -> SecKey
@@ -1030,6 +1143,94 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
 
     private func candidateAccount(_ teamIdentifier: String) -> String {
         "\(teamIdentifier).candidate"
+    }
+
+    private func recoveryAccount(_ teamIdentifier: String) -> String {
+        "\(teamIdentifier).recovery"
+    }
+
+    private static let installationAccount = "installation-identifier"
+
+    /// Created once and then stable for the life of the installation. Stored
+    /// beside the identity metadata, so it survives a signing-key rotation and
+    /// is readable even when the Veya Keychain holds no usable key.
+    func installationIdentifier() throws -> String {
+        if let existing = try loadRawString(account: Self.installationAccount) { return existing }
+        let generated = UUID().uuidString.uppercased()
+        try saveRaw(Data(generated.utf8), account: Self.installationAccount)
+        return generated
+    }
+
+    private func loadRawString(account: String) throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data,
+              let value = String(data: data, encoding: .utf8), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private func saveRaw(_ data: Data, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false
+        ]
+        let replacement: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        var status = SecItemUpdate(query as CFDictionary, replacement as CFDictionary)
+        if status == errSecItemNotFound {
+            var attributes = query
+            replacement.forEach { attributes[$0.key] = $0.value }
+            status = SecItemAdd(attributes as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw ExperimentalBackendError.certificateRequestFailed }
+    }
+
+    func loadRecoveryIntent(teamIdentifier: String) throws -> CertificateRecoveryIntent? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: recoveryAccount(teamIdentifier),
+            kSecAttrSynchronizable as String: false,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return try? PropertyListDecoder().decode(CertificateRecoveryIntent.self, from: data)
+    }
+
+    func saveRecoveryIntent(_ intent: CertificateRecoveryIntent) throws {
+        let data = try PropertyListEncoder().encode(intent)
+        try saveRaw(data, account: recoveryAccount(intent.teamIdentifier))
+    }
+
+    func clearRecoveryIntent(teamIdentifier: String) throws {
+        let status = SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: recoveryAccount(teamIdentifier),
+            kSecAttrSynchronizable as String: false
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
     }
 
     func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup {
@@ -1271,6 +1472,11 @@ extension LiveApplePersonalTeamBackend {
         try identityKeychain.authorizePrivateKeyForSigning(applicationTag: owned.keyApplicationTag)
     }
 
+    public func activeSigningCertificateFingerprint(team: ExperimentalAppleTeam) async -> String? {
+        guard let metadata = (try? identityKeychain.load(teamIdentifier: team.id)) ?? nil else { return nil }
+        return metadata.certificateFingerprint
+    }
+
     public func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity {
         identityGeneration &+= 1
         let generation = identityGeneration
@@ -1309,7 +1515,15 @@ extension LiveApplePersonalTeamBackend {
                     try identityKeychain.authorizePrivateKeyForSigning(applicationTag: owned.keyApplicationTag)
                 } catch {
                     recordIdentity(.managedIdentityStale, generation: generation, tag: owned.keyApplicationTag)
-                    guard availableQuantity != 0 else { throw ExperimentalBackendError.missingPrivateKey }
+                    try await ensureCertificateCapacity(
+                        team: team,
+                        generation: generation,
+                        availableQuantity: availableQuantity,
+                        certificates: certificates,
+                        activeMetadata: activeOwned,
+                        candidateMetadata: candidateOwned,
+                        exhaustedError: .missingPrivateKey
+                    )
                     recordIdentity(.managedIdentityRecoveryStarted, generation: generation, tag: owned.keyApplicationTag)
                     return try await createManagedIdentity(team: team, generation: generation, recovering: true)
                 }
@@ -1333,7 +1547,15 @@ extension LiveApplePersonalTeamBackend {
                             tag: owned.keyApplicationTag
                         )
                         recordIdentity(.managedIdentityStale, generation: generation, tag: owned.keyApplicationTag)
-                        guard availableQuantity != 0 else { throw ExperimentalBackendError.missingPrivateKey }
+                        try await ensureCertificateCapacity(
+                            team: team,
+                            generation: generation,
+                            availableQuantity: availableQuantity,
+                            certificates: certificates,
+                            activeMetadata: activeOwned,
+                            candidateMetadata: candidateOwned,
+                            exhaustedError: .missingPrivateKey
+                        )
                         recordIdentity(
                             .managedIdentityRecoveryStarted,
                             generation: generation,
@@ -1409,7 +1631,15 @@ extension LiveApplePersonalTeamBackend {
                     )
                 }
                 recordIdentity(.managedIdentityStale, generation: generation, tag: owned.keyApplicationTag)
-                guard availableQuantity != 0 else { throw ExperimentalBackendError.certificateLimit }
+                try await ensureCertificateCapacity(
+                    team: team,
+                    generation: generation,
+                    availableQuantity: availableQuantity,
+                    certificates: certificates,
+                    activeMetadata: activeOwned,
+                    candidateMetadata: candidateOwned,
+                    exhaustedError: .certificateLimit
+                )
                 recordIdentity(.managedIdentityRecoveryStarted, generation: generation, tag: owned.keyApplicationTag)
                 try identityKeychain.saveCandidate(owned)
                 return try await requestDevelopmentIdentity(
@@ -1433,7 +1663,15 @@ extension LiveApplePersonalTeamBackend {
             guard lookup.status == errSecItemNotFound else {
                 throw ExperimentalBackendError.missingPrivateKey
             }
-            guard availableQuantity != 0 else { throw ExperimentalBackendError.certificateLimit }
+            try await ensureCertificateCapacity(
+                team: team,
+                generation: generation,
+                availableQuantity: availableQuantity,
+                certificates: certificates,
+                activeMetadata: activeOwned,
+                candidateMetadata: candidateOwned,
+                exhaustedError: .certificateLimit
+            )
             recordIdentity(.managedIdentityRecoveryStarted, generation: generation, tag: owned.keyApplicationTag)
             return try await createManagedIdentity(team: team, generation: generation, recovering: true)
         }
@@ -1443,8 +1681,262 @@ extension LiveApplePersonalTeamBackend {
             generation: generation,
             counts: ["developmentCertificateCount": certificates.count]
         )
-        guard availableQuantity != 0 else { throw ExperimentalBackendError.certificateLimit }
+        try await ensureCertificateCapacity(
+            team: team,
+            generation: generation,
+            availableQuantity: availableQuantity,
+            certificates: certificates,
+            activeMetadata: activeOwned,
+            candidateMetadata: candidateOwned,
+            exhaustedError: .certificateLimit
+        )
         return try await createManagedIdentity(team: team, generation: generation, recovering: false)
+    }
+
+    static let defaultCapacityRetryDelay: TimeInterval = 2
+    /// Bounded re-reads of Apple's certificate capacity after a revocation.
+    static let capacityConfirmationAttempts = 3
+
+    /// Guarantees a free Apple Development certificate slot, reclaiming exactly
+    /// one certificate this installation can prove it owns when -- and only when
+    /// -- capacity is what blocks progress.
+    ///
+    /// Returns normally when a slot is available. Throws, without mutating
+    /// anything, when no certificate can be proven safe to revoke.
+    private func ensureCertificateCapacity(
+        team: ExperimentalAppleTeam,
+        generation: UInt64,
+        availableQuantity: Int?,
+        certificates: [[String: Any]],
+        activeMetadata: IOSSimIdentityMetadata?,
+        candidateMetadata: IOSSimIdentityMetadata?,
+        exhaustedError: ExperimentalBackendError
+    ) async throws {
+        // Invariant 4: only act when capacity is actually blocking. An unknown
+        // quantity is treated as available, matching the prior behaviour.
+        guard availableQuantity == 0 else { return }
+        recordIdentity(
+            .certificateCapacityExhausted,
+            generation: generation,
+            counts: ["developmentCertificateCount": certificates.count]
+        )
+
+        let installation = try identityKeychain.installationIdentifier()
+
+        // A prior run may already have revoked. Reconcile against Apple's real
+        // state before considering another irreversible action.
+        if let intent = try identityKeychain.loadRecoveryIntent(teamIdentifier: team.id) {
+            let stillListed = certificates.contains { certificateSerialNumber($0) == intent.targetSerial }
+            if !stillListed {
+                // The earlier revocation landed; capacity simply has not caught
+                // up yet. Never revoke a second certificate for this.
+                recordIdentity(
+                    .certificateReclaimReconciled,
+                    generation: generation,
+                    counts: ["revocationAttempts": intent.attempts]
+                )
+                try await confirmCapacityReleased(team: team, generation: generation)
+                try identityKeychain.clearRecoveryIntent(teamIdentifier: team.id)
+                return
+            }
+            guard intent.attempts < CertificateRecoveryIntent.maximumAttempts else {
+                recordIdentity(
+                    .certificateReclaimUnavailable,
+                    generation: generation,
+                    counts: ["revocationAttempts": intent.attempts],
+                    flags: ["attemptCeilingReached": true]
+                )
+                throw ExperimentalBackendError.certificateRevocationFailed
+            }
+        }
+
+        // Invariant 2 input: a certificate backed by a key that can actually
+        // sign is classified activeUsable and can never be selected.
+        let usableFingerprints = usableCertificateFingerprints(
+            in: certificates,
+            metadata: [activeMetadata, candidateMetadata].compactMap { $0 }
+        )
+        let classified = certificates.map { certificate in
+            ClassifiedDevelopmentCertificate(
+                raw: certificate,
+                serial: certificateSerialNumber(certificate),
+                fingerprint: certificateData(certificate).map(certificateFingerprint),
+                expiration: certificateData(certificate)
+                    .flatMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+                    .flatMap(certificateExpiration),
+                ownership: classifyDevelopmentCertificate(
+                    certificate,
+                    activeMetadata: activeMetadata,
+                    candidateMetadata: candidateMetadata,
+                    installationIdentifier: installation,
+                    usableFingerprints: usableFingerprints
+                )
+            )
+        }
+        recordIdentity(
+            .certificateOwnershipClassified,
+            generation: generation,
+            counts: [
+                "reclaimableCount": classified.filter { $0.ownership.isReclaimable }.count,
+                "activeUsableCount": classified.filter { $0.ownership == .activeUsable }.count,
+                "otherInstallationCount": classified.filter { $0.ownership == .veyaOtherInstall }.count,
+                "unknownCount": classified.filter { $0.ownership == .unknown }.count
+            ]
+        )
+
+        // Invariants 1 and 5: only P1/P2, and a serial is required because the
+        // revoke call is keyed on it. Anything else fails closed.
+        let reclaimable = classified
+            .filter { $0.ownership.isReclaimable && $0.serial != nil }
+            .sorted { lhs, rhs in
+                let left = lhs.expiration ?? .distantPast
+                let right = rhs.expiration ?? .distantPast
+                if left != right { return left < right }
+                return (lhs.serial ?? "") < (rhs.serial ?? "")
+            }
+        guard let victim = reclaimable.first, let serial = victim.serial else {
+            recordIdentity(.certificateReclaimUnavailable, generation: generation)
+            throw exhaustedError
+        }
+
+        recordIdentity(
+            .certificateOwnershipProven,
+            generation: generation,
+            fingerprint: victim.fingerprint,
+            flags: ["ownershipLevel\(victim.ownership.rawValue)": true]
+        )
+
+        var intent = try identityKeychain.loadRecoveryIntent(teamIdentifier: team.id)
+            ?? CertificateRecoveryIntent(
+                teamIdentifier: team.id,
+                targetSerial: serial,
+                targetFingerprint: victim.fingerprint,
+                installationIdentifier: installation,
+                startedAt: Date(),
+                attempts: 0
+            )
+        // Invariant 3: one certificate per recovery, and never a different one
+        // than a prior attempt already targeted.
+        guard intent.targetSerial == serial else {
+            recordIdentity(.certificateReclaimUnavailable, generation: generation, flags: ["targetChanged": true])
+            throw ExperimentalBackendError.certificateRevocationFailed
+        }
+        intent.attempts += 1
+        // Persisted *before* the irreversible call, so a crash in the next few
+        // milliseconds is still reconcilable.
+        try identityKeychain.saveRecoveryIntent(intent)
+
+        recordIdentity(
+            .certificateReclaimStarted,
+            generation: generation,
+            fingerprint: victim.fingerprint,
+            counts: ["revocationAttempts": intent.attempts]
+        )
+
+        do {
+            _ = try await developerRequest(
+                operation: "ios/revokeDevelopmentCert",
+                parameters: ["teamId": team.id, "serialNumber": serial]
+            )
+        } catch let failure as AppleServiceFailure {
+            // A certificate Apple no longer knows about is a success for our
+            // purposes: the slot is free. Anything else is a real failure.
+            guard failure.error == .developerServicesFailed else {
+                recordIdentity(.certificateRevocationFailed, generation: generation)
+                throw ExperimentalBackendError.certificateRevocationFailed
+            }
+            recordIdentity(.certificateRevocationFailed, generation: generation)
+            throw ExperimentalBackendError.certificateRevocationFailed
+        }
+
+        recordIdentity(.certificateRevoked, generation: generation, fingerprint: victim.fingerprint)
+        try recordRetiredCertificate(victim, team: team, reason: "CAPACITY_RECLAIM")
+        try await confirmCapacityReleased(team: team, generation: generation)
+        try identityKeychain.clearRecoveryIntent(teamIdentifier: team.id)
+    }
+
+    /// Bounded re-read of Apple's capacity after a revocation. Never spins, and
+    /// never revokes a second certificate because the first has not propagated.
+    private func confirmCapacityReleased(team: ExperimentalAppleTeam, generation: UInt64) async throws {
+        for attempt in 1...Self.capacityConfirmationAttempts {
+            let refreshed = try await developerRequest(
+                operation: "ios/listAllDevelopmentCerts",
+                parameters: ["teamId": team.id]
+            )
+            let quantity = integer(refreshed["availableQuantity"])
+            if quantity != 0 {
+                recordIdentity(
+                    .certificateCapacityRestored,
+                    generation: generation,
+                    counts: ["capacityConfirmationAttempts": attempt]
+                )
+                return
+            }
+            recordIdentity(
+                .certificateCapacityPropagating,
+                generation: generation,
+                counts: ["capacityConfirmationAttempts": attempt]
+            )
+            if attempt < Self.capacityConfirmationAttempts, certificateCapacityRetryDelay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(certificateCapacityRetryDelay * 1_000_000_000))
+            }
+        }
+        // The revocation is recorded and the intent is deliberately retained, so
+        // Try Again reconciles instead of revoking again.
+        recordIdentity(.certificateCapacityNotReleased, generation: generation)
+        throw ExperimentalBackendError.certificateCapacityNotReleased
+    }
+
+    /// Fingerprints of listed certificates that a locally held key can actually
+    /// sign with right now. Feeds invariant 2.
+    private func usableCertificateFingerprints(
+        in certificates: [[String: Any]],
+        metadata: [IOSSimIdentityMetadata]
+    ) -> Set<String> {
+        var usable: Set<String> = []
+        for record in metadata {
+            guard let key = identityKeychain.lookupPrivateKey(applicationTag: record.keyApplicationTag).key else {
+                continue
+            }
+            for certificate in certificates {
+                guard let data = certificateData(certificate),
+                      let materialized = SecCertificateCreateWithData(nil, data as CFData),
+                      certificatePublicKeyMatchesPrivateKey(materialized, privateKey: key) else { continue }
+                guard (try? identityKeychain.verifySigningKeyUsable(certificate: materialized)) != nil else { continue }
+                usable.insert(certificateFingerprint(data))
+            }
+        }
+        return usable
+    }
+
+    private func recordRetiredCertificate(
+        _ certificate: ClassifiedDevelopmentCertificate,
+        team: ExperimentalAppleTeam,
+        reason: String
+    ) throws {
+        let record = RetiredCertificateRecord(
+            serial: certificate.serial,
+            fingerprint: certificate.fingerprint,
+            retiredAt: Date(),
+            reason: reason
+        )
+        guard let existing = try identityKeychain.load(teamIdentifier: team.id) else { return }
+        var retired = existing.retiredCertificates ?? []
+        guard !retired.contains(where: { $0.serial == record.serial && $0.serial != nil }) else { return }
+        retired.append(record)
+        try identityKeychain.save(IOSSimIdentityMetadata(
+            teamIdentifier: existing.teamIdentifier,
+            certificateFingerprint: existing.certificateFingerprint,
+            certificateSerial: existing.certificateSerial,
+            certificateExpiration: existing.certificateExpiration,
+            keyApplicationTag: existing.keyApplicationTag,
+            createdAt: existing.createdAt,
+            generatedByIOSSim: existing.generatedByIOSSim,
+            installationIdentifier: existing.installationIdentifier,
+            certificateRequestIdentifier: existing.certificateRequestIdentifier,
+            publicKeyFingerprint: existing.publicKeyFingerprint,
+            retiredCertificates: retired
+        ))
     }
 
     private func createManagedIdentity(
@@ -1486,6 +1978,7 @@ extension LiveApplePersonalTeamBackend {
         pendingPromotion: Bool
     ) async throws -> ExperimentalSigningIdentity {
         let csr = try createCertificateSigningRequest(key: key)
+        let installationIdentifier = try identityKeychain.installationIdentifier()
         recordIdentity(.csrCreated, generation: generation, tag: tag)
         var submittedCertificate: [String: Any]?
         do {
@@ -1493,8 +1986,13 @@ extension LiveApplePersonalTeamBackend {
                 operation: "ios/submitDevelopmentCSR",
                 parameters: [
                     "teamId": team.id,
-                    "machineId": UUID().uuidString,
-                    "machineName": "IOSSim",
+                    // Stable across every request from this installation, so a
+                    // later run can attribute the certificate to this Mac even
+                    // if the local key is gone -- and can recognise another
+                    // Mac's certificate as not its own. Build 1 and Build 2 sent
+                    // a fresh random UUID here, which threw that evidence away.
+                    "machineId": installationIdentifier,
+                    "machineName": veyaMachineName(installationIdentifier: installationIdentifier),
                     "csrContent": csr
                 ]
             )
@@ -1603,6 +2101,11 @@ extension LiveApplePersonalTeamBackend {
             )
             throw ExperimentalBackendError.missingPrivateKey
         }
+        // Schema-2 ownership evidence. Written on every completed identity so a
+        // future run can prove this certificate is this installation's even if
+        // the private key later becomes unreadable -- the exact situation that
+        // stranded Build 1's certificate.
+        let existing = (try? identityKeychain.load(teamIdentifier: team.id)) ?? nil
         let metadata = IOSSimIdentityMetadata(
             teamIdentifier: team.id,
             certificateFingerprint: match.fingerprint,
@@ -1610,7 +2113,11 @@ extension LiveApplePersonalTeamBackend {
             certificateExpiration: match.expiration,
             keyApplicationTag: tag,
             createdAt: createdAt,
-            generatedByIOSSim: true
+            generatedByIOSSim: true,
+            installationIdentifier: try? identityKeychain.installationIdentifier(),
+            certificateRequestIdentifier: match.requestIdentifier,
+            publicKeyFingerprint: publicKeyFingerprint(key),
+            retiredCertificates: existing?.retiredCertificates
         )
         let persistent = try identityKeychain.persistentReference(applicationTag: tag)
         if pendingPromotion {
@@ -2087,6 +2594,115 @@ private struct MatchedDevelopmentCertificate {
     let fingerprint: String
     let serial: String?
     let expiration: Date
+    /// Apple's own identifier for the certificate request, when the response
+    /// carried one. Persisted purely as additional ownership evidence.
+    let requestIdentifier: String?
+}
+
+/// The structured machine name Veya sends to Apple from Build 3 onward. The
+/// embedded short installation id is what lets a later run tell *this* Mac's
+/// certificate apart from another Mac's on the same Apple Account.
+func veyaMachineName(installationIdentifier: String) -> String {
+    "Veya (\(installationShortIdentifier(installationIdentifier)))"
+}
+
+func installationShortIdentifier(_ identifier: String) -> String {
+    String(identifier.replacingOccurrences(of: "-", with: "").prefix(8)).uppercased()
+}
+
+/// Extracts the installation id from a Veya structured machine name, or nil if
+/// the name was not written by a Build-3-or-later Veya. Build-1/Build-2 names
+/// were the constant "IOSSim" and deliberately yield nil, so a legacy
+/// certificate is never mistaken for another installation's.
+func veyaInstallationShortIdentifier(fromMachineName name: String?) -> String? {
+    guard let name, name.hasPrefix("Veya ("), name.hasSuffix(")") else { return nil }
+    let inner = name.dropFirst("Veya (".count).dropLast()
+    // Must match what `installationShortIdentifier` produces, which is
+    // alphanumeric rather than strictly hexadecimal. Requiring hex here would
+    // silently fail to recognise a real installation marker and, worse, would
+    // classify another Mac's certificate as unknown instead of off-limits.
+    guard !inner.isEmpty, inner.count <= 32,
+          inner.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
+    return String(inner).uppercased()
+}
+
+func certificateMachineName(_ dictionary: [String: Any]) -> String? {
+    certificateString(dictionary, names: ["machineName", "machineNameValue", "name"])
+}
+
+func certificateMachineIdentifier(_ dictionary: [String: Any]) -> String? {
+    certificateString(dictionary, names: ["machineId", "machineIdentifier"])
+}
+
+func certificateRequestIdentifier(_ dictionary: [String: Any]) -> String? {
+    certificateString(dictionary, names: ["certRequestId", "requestId", "certificateId"])
+}
+
+func certificateSerialNumber(_ dictionary: [String: Any]) -> String? {
+    certificateString(dictionary, names: ["serialNumber", "serialNum"])
+}
+
+/// SHA-256 over the certificate's SubjectPublicKeyInfo. Non-secret, and stable
+/// across reissue only when the same key is reused -- which is exactly the
+/// property that makes it usable as ownership evidence.
+func publicKeyFingerprint(_ key: SecKey) -> String? {
+    guard let publicKey = SecKeyCopyPublicKey(key),
+          let bytes = SecKeyCopyExternalRepresentation(publicKey, nil) as Data? else { return nil }
+    return Data(SHA256.hash(data: bytes)).map { String(format: "%02X", $0) }.joined()
+}
+
+/// Decides how strongly a single listed certificate is attributable to this
+/// installation.
+///
+/// Evaluation order is deliberate and is the multi-Mac safety property:
+///
+/// 1. `activeUsable` first, so a working identity can never be selected.
+/// 2. `ownedLocalRecord` next, because this installation's own persisted serial
+///    is the strongest evidence available and outranks any remote marker. A
+///    Build-1 certificate reaches this rung even though it predates every
+///    remote marker, which is what makes the dirty-Mac migration recoverable.
+/// 3. `ownedRemoteMarker` next, for certificates this installation created after
+///    Build 3 stamped a stable `machineId`.
+/// 4. `veyaOtherInstall` next. Note this is only reachable when the *structured*
+///    name names a different installation. Build-1/Build-2 wrote the constant
+///    "IOSSim" and never reach this rung, so legacy certificates are not
+///    misattributed to another Mac.
+/// 5. `unknown` otherwise.
+func classifyDevelopmentCertificate(
+    _ certificate: [String: Any],
+    activeMetadata: IOSSimIdentityMetadata?,
+    candidateMetadata: IOSSimIdentityMetadata?,
+    installationIdentifier: String,
+    usableFingerprints: Set<String>
+) -> CertificateOwnership {
+    let serial = certificateSerialNumber(certificate)
+    let fingerprint = certificateData(certificate).map(certificateFingerprint)
+
+    if let fingerprint, usableFingerprints.contains(fingerprint) { return .activeUsable }
+
+    let records = [activeMetadata, candidateMetadata].compactMap { $0 }
+    let namesThisCertificate = records.contains { record in
+        guard record.generatedByIOSSim,
+              canonicalManagedKeyTag(record.keyApplicationTag, teamIdentifier: record.teamIdentifier) != nil else {
+            return false
+        }
+        if let serial, let expected = record.certificateSerial, expected == serial { return true }
+        if let fingerprint, let expected = record.certificateFingerprint, expected == fingerprint { return true }
+        return false
+    }
+    if namesThisCertificate { return .ownedLocalRecord }
+
+    if let machineIdentifier = certificateMachineIdentifier(certificate),
+       machineIdentifier == installationIdentifier {
+        return .ownedRemoteMarker
+    }
+
+    if let other = veyaInstallationShortIdentifier(fromMachineName: certificateMachineName(certificate)),
+       other != installationShortIdentifier(installationIdentifier) {
+        return .veyaOtherInstall
+    }
+
+    return .unknown
 }
 
 private func rememberedCertificate(
@@ -2134,8 +2750,9 @@ private func matchingCertificate(
         return MatchedDevelopmentCertificate(
             certificate: certificate,
             fingerprint: certificateFingerprint(der),
-            serial: certificateString(object, names: ["serialNumber", "serialNum"]),
-            expiration: expiration
+            serial: certificateSerialNumber(object),
+            expiration: expiration,
+            requestIdentifier: certificateRequestIdentifier(object)
         )
     }
     return nil
@@ -2510,6 +3127,11 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
     private let diagnostics: ApplePersonalTeamDiagnosticsStore
     private let identityKeychain: any IOSSimManagedIdentityKeychain
     private let srpRandomBytesForTesting: Data?
+    /// Backoff between the revoke call and re-reading Apple's certificate
+    /// capacity. Apple's real propagation delay has never been physically
+    /// measured, so this is a bounded estimate; the physical Build-3 run records
+    /// the true timing. Overridden to zero in tests so no suite ever sleeps.
+    private let certificateCapacityRetryDelay: TimeInterval
     private var session: LiveSessionEnvelope?
     private var pendingTwoFactor: PendingTwoFactor?
     private var appIdentifierIDs: [String: String] = [:]
@@ -2531,6 +3153,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         self.diagnostics = diagnostics
         identityKeychain = IOSSimIdentityMetadataStore()
         srpRandomBytesForTesting = nil
+        certificateCapacityRetryDelay = LiveApplePersonalTeamBackend.defaultCapacityRetryDelay
         clientIdentityVersion = adapter.version
     }
 
@@ -2542,7 +3165,8 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         diagnostics: ApplePersonalTeamDiagnosticsStore,
         srpRandomBytesForTesting: Data,
         identityKeychain: any IOSSimManagedIdentityKeychain = IOSSimIdentityMetadataStore(),
-        endpointResolver: (any GrandSlamEndpointResolving)? = nil
+        endpointResolver: (any GrandSlamEndpointResolving)? = nil,
+        certificateCapacityRetryDelay: TimeInterval = 0
     ) {
         self.adapter = adapter
         self.transport = transport
@@ -2552,6 +3176,7 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         self.diagnostics = diagnostics
         self.identityKeychain = identityKeychain
         self.srpRandomBytesForTesting = srpRandomBytesForTesting
+        self.certificateCapacityRetryDelay = certificateCapacityRetryDelay
         clientIdentityVersion = adapter.version
     }
 
@@ -3201,7 +3826,10 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
             let safeText = appleDeveloperMessageCandidates(response).joined(separator: " ").lowercased()
             let error: ExperimentalBackendError
             if operation.contains("submitDevelopmentCSR")
-                && (safeText.contains("maximum") || safeText.contains("limit")) {
+                // 7460 is Apple's documented "Maximum number of certificates
+                // reached". The substring match stays as a fallback for message
+                // drift, but the numeric code is authoritative when present.
+                && (resultCode == 7460 || safeText.contains("maximum") || safeText.contains("limit")) {
                 error = .certificateLimit
             } else if operation.contains("addDevice")
                 && (safeText.contains("maximum") || safeText.contains("limit")) {

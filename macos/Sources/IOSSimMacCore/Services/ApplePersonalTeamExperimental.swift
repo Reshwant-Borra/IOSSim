@@ -402,6 +402,10 @@ public protocol ApplePersonalTeamService: Sendable {
     func submitVerification(code: SensitiveInput) async throws -> ExperimentalAuthorizationResult
     func invalidateSession() async
     func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws
+    /// SHA-256 of the certificate the currently promoted signing identity was
+    /// issued against, or nil when there is none. Read-only; used to decide
+    /// whether cached provisioning artifacts still match reality.
+    func activeSigningCertificateFingerprint(team: ExperimentalAppleTeam) async -> String?
     func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity
     func registerDevice(_ request: ExperimentalProvisioningRequest, team: ExperimentalAppleTeam) async throws
     func registerIdentifiers(_ identifiers: PersonalTeamBundleIdentifierSet, team: ExperimentalAppleTeam) async throws
@@ -433,6 +437,13 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
     case sessionExpired
     case noTeam
     case certificateLimit
+    /// Apple rejected the revoke call, or the attempt ceiling for one target was
+    /// reached. Distinct from `certificateLimit`, which means nothing was
+    /// safely reclaimable in the first place.
+    case certificateRevocationFailed
+    /// The revocation was accepted but Apple still reports no free slot inside
+    /// the bounded propagation window. Recoverable: Try Again reconciles.
+    case certificateCapacityNotReleased
     case missingPrivateKey
     case deviceLimit
     case deviceNameRequired
@@ -476,6 +487,8 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
         case .noTeam: return "PERSONAL_TEAM_NOT_FOUND"
         case .personalTeamAmbiguous: return "PERSONAL_TEAM_AMBIGUOUS"
         case .certificateLimit: return "CERTIFICATE_LIMIT_REACHED"
+        case .certificateRevocationFailed: return "CERTIFICATE_REVOCATION_FAILED"
+        case .certificateCapacityNotReleased: return "CERTIFICATE_CAPACITY_NOT_RELEASED"
         case .certificateRequestFailed: return "CERTIFICATE_REQUEST_FAILED"
         case .deviceLimit: return "DEVICE_LIMIT_REACHED"
         case .deviceNameRequired: return "DEVICE_NAME_REQUIRED"
@@ -525,6 +538,20 @@ public enum ApplePersonalTeamCheckpoint: String, Codable, CaseIterable, Sendable
     case csrCreated = "CSR_CREATED"
     case developmentCertificateCreated = "DEVELOPMENT_CERTIFICATE_CREATED"
     case managedIdentityRecoverySucceeded = "MANAGED_IDENTITY_RECOVERY_SUCCEEDED"
+    // Certificate capacity reclaim (physical defect 002). These are the
+    // checkpoints a support bundle is read against to prove exactly one
+    // Veya-owned certificate was retired and nothing else was touched.
+    case certificateCapacityExhausted = "CERTIFICATE_CAPACITY_EXHAUSTED"
+    case certificateOwnershipClassified = "CERTIFICATE_OWNERSHIP_CLASSIFIED"
+    case certificateOwnershipProven = "CERTIFICATE_OWNERSHIP_PROVEN"
+    case certificateReclaimStarted = "CERTIFICATE_RECLAIM_STARTED"
+    case certificateReclaimReconciled = "CERTIFICATE_RECLAIM_RECONCILED"
+    case certificateReclaimUnavailable = "CERTIFICATE_RECLAIM_UNAVAILABLE"
+    case certificateRevoked = "CERTIFICATE_REVOKED"
+    case certificateRevocationFailed = "CERTIFICATE_REVOCATION_FAILED"
+    case certificateCapacityPropagating = "CERTIFICATE_CAPACITY_PROPAGATING"
+    case certificateCapacityRestored = "CERTIFICATE_CAPACITY_RESTORED"
+    case certificateCapacityNotReleased = "CERTIFICATE_CAPACITY_NOT_RELEASED"
     case signingKeyUsabilityVerified = "SIGNING_KEY_USABILITY_VERIFIED"
     case signingKeyUsabilityFailed = "SIGNING_KEY_USABILITY_FAILED"
     case provisioningPreparationContinued = "PROVISIONING_PREPARATION_CONTINUED"
@@ -549,6 +576,12 @@ public enum ApplePersonalTeamCheckpoint: String, Codable, CaseIterable, Sendable
     case mainProfileReady = "MAIN_PROFILE_READY"
     case runnerProfileReady = "RUNNER_PROFILE_READY"
     case provisioningReady = "PROVISIONING_READY"
+}
+
+public extension ApplePersonalTeamService {
+    /// Conservative default: a backend that cannot report a fingerprint causes
+    /// callers to re-prepare rather than trust a cache.
+    func activeSigningCertificateFingerprint(team: ExperimentalAppleTeam) async -> String? { nil }
 }
 
 public struct ExperimentalProvisioningPreparation: Sendable {
@@ -745,6 +778,10 @@ public actor ExperimentalConsumerProvisioningCoordinator {
     /// provisioning artifacts cross into the packaged provisioner process.
     public func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws {
         try await backend.repairSigningIdentityAccess(team: team)
+    }
+
+    public func activeSigningCertificateFingerprint(team: ExperimentalAppleTeam) async -> String? {
+        await backend.activeSigningCertificateFingerprint(team: team)
     }
 
     public func invalidate() async {

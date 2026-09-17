@@ -100,6 +100,12 @@ public enum VeyaErrorTaxonomy {
         case .personalTeamUnavailable, .teamSelectionRequired: return (.apple, "011")
         case .accountTeamMismatch, .staleTeamState: return (.apple, "012")
         case .bundleIDRegistrationFailure: return (.apple, "022")
+        // 020 is the taxonomy's certificate-limit slot. It now has a specified
+        // exit rather than being terminal: Veya reclaims a certificate it can
+        // prove it owns, and only reports 020 when it cannot.
+        case .certificateCapacityExhausted: return (.apple, "020")
+        case .certificateRevocationFailed: return (.apple, "023")
+        case .certificateCapacityNotReleased: return (.apple, "024")
         case .signingIdentityMissing, .signingIdentityNotFound: return (.signing, "004")
         case .signingPrivateKeyNotFound: return (.signing, "002")
         case .signingCertificateNotFound: return (.signing, "005")
