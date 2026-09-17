@@ -1,0 +1,53 @@
+IOSSim Local Release Candidate Audit
+LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION
+
+[PASS] Local DMG exists: Veya-0.1.0-build3-2f87097-local-test.dmg
+[PASS] DMG integrity
+[PASS] DMG checksum: 0b8cb2616dbda203d4d97a30f97612b120c542dedcaecbe517630e9cead5619f
+[PASS] Local release metadata: LOCAL_TEST_ONLY
+[INFO] Developer ID: NO
+[INFO] Notarization: NO — intentionally not attempted
+[INFO] Stapling: NO — no notarization ticket exists
+[INFO] Gatekeeper qualification: NO — intentionally not claimed
+[INFO] Public distribution: NO
+[PASS] DMG contents: Applications, Veya.app
+[PASS] Applications shortcut
+[PASS] App bundle exists: /var/folders/2r/84f7ltfs18n1t6l6msl1rsth0000gn/T/iossim-local-release-audit-_8bqwkgy/mount/Veya.app
+[PASS] Mac executable exists: Contents/MacOS/IOSSim
+[PASS] Provisioner executable exists: Contents/MacOS/IOSSimProvisioner
+[PASS] Development repository locator absent
+[PASS] Production Info.plist: 0.1.0 (3)
+[PASS] Production app icon
+[PASS] idevice MIT license notice
+[PASS] BigInt MIT license notice
+[PASS] SPDX dependency inventory: 208 packages
+[PASS] Device artifact manifest: present
+[PASS] Consumer install set: iosMain, locationControlRunner
+[PASS] Witness consumer artifact absent
+[PASS] Production package metadata
+[PASS] Artifact hash iosMain: a95d87e24d70
+[PASS] Bundle ID iosMain: com.iossim.on-device-dvt-poc
+[PASS] Artifact hash locationControlRunner: c605a3311bdb
+[PASS] Bundle ID locationControlRunner: com.iossim.location-control-uitests.xctrunner
+[PASS] No source-like files
+[PASS] No forbidden development material
+[PASS] No developer provisioning profiles packaged
+[PASS] No absolute repository paths
+[PASS] No private keys/pairing/auth material
+[PASS] No world-writable files
+[PASS] Artifact-derived identity: architectures=arm64,x86_64 schemas={"artifactManifest": 2, "developerSupportProviderClassification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030", "helperProtocol": 2, "nativeBridgeABI": 2, "nativeBridgeABIExpected": 2, "provisioningManifest": 4, "setupState": 5}
+[PASS] Embedded distribution metadata: LOCAL_TEST_ONLY
+[PASS] Strict recursive local signature verification
+[PASS] Mach-O inventory: 6 executable code item(s)
+[PASS] Local signature Contents/MacOS/IOSSim: ad hoc / hardened runtime / no entitlements
+[PASS] Local signature Contents/MacOS/IOSSimProvisioner: ad hoc / hardened runtime / helper-only library validation exception
+[PASS] Local signature Contents/Resources/DeviceArtifacts/IOSSim DVT POC.app/IOSSim DVT POC: ad hoc / hardened runtime / no entitlements
+[PASS] Local signature Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app/IOSSimLocationControlUITests-Runner: ad hoc / hardened runtime / no entitlements
+[PASS] Local signature Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app/PlugIns/IOSSimLocationControlUITests.xctest/IOSSimLocationControlUITests: ad hoc / hardened runtime / no entitlements
+[PASS] Local signature Contents/Resources/NativeDeviceBridge/libiossim_device_bridge.dylib: ad hoc / hardened runtime / no entitlements
+[PASS] Bundled production provenance
+[PASS] Architectures IOSSim: arm64 x86_64
+[PASS] Architectures IOSSimProvisioner: arm64 x86_64
+[PASS] Source provenance: 2f87097aaf70393d67fb7800a06a8dc1a5e7d602 dirty=false
+
+Overall: PASS (LOCAL_TEST_ONLY; public gates not assessed)

@@ -3,7 +3,7 @@
 Tracks defects found by real physical validation of Installation V2.
 
 Status vocabulary: `FOUND` → `INVESTIGATING` → `INVESTIGATED_PLAN_READY` →
-`FIXED_SOFTWARE` → `RETEST_REQUIRED` → `PHYSICALLY_VERIFIED`.
+`IMPLEMENTED_SOFTWARE` → `RETEST_REQUIRED` → `PHYSICALLY_VERIFIED`.
 
 `INVESTIGATED_PLAN_READY` means the mechanism is understood and an implementation
 plan exists. No production source has been changed and nothing has been retested.
@@ -14,7 +14,7 @@ been run on real hardware and observed to pass. Software gates never confer it.
 | # | Defect | Found on | Status | Fixed in | Retest artifact |
 |---|---|---|---|---|---|
 | 001 | `SIGNING_KEY_ACCESS_DENIED` on a clean Mac — the Personal Team signing key was created in the login Keychain, where `securityd` stamps it with a `cdhash:<creator>` partition that `/usr/bin/codesign` can never match | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build1-1259da5-local-test.dmg` | **RETEST_REQUIRED** | `dd259bd` | `Veya-0.1.0-build2-dd259bd-local-test.dmg` (`a5cfa59e…`) |
-| 002 | `CERTIFICATE_LIMIT_REACHED` — Veya has no recovery path from its own obsolete signing certificate. Build 2 correctly rejects the Build-1 identity, tries to reissue, and finds the Personal Team's two certificate slots full — one of them holding Veya's own dead certificate | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build2-dd259bd-local-test.dmg`, run against intact Build 1 state | **INVESTIGATED_PLAN_READY** | — | — |
+| 002 | `CERTIFICATE_LIMIT_REACHED` — Veya has no recovery path from its own obsolete signing certificate. Build 2 correctly rejects the Build-1 identity, tries to reissue, and finds the Personal Team's two certificate slots full — one of them holding Veya's own dead certificate | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build2-dd259bd-local-test.dmg`, run against intact Build 1 state | **RETEST_REQUIRED** | `2f87097` | `Veya-0.1.0-build3-2f87097-local-test.dmg` (`0b8cb261…`) |
 
 ## Defect 001 detail
 
@@ -25,9 +25,18 @@ been run on real hardware and observed to pass. Software gates never confer it.
 * Retest instructions: [`PHYSICAL_RETEST_001.md`](PHYSICAL_RETEST_001.md)
 * Support bundle: `evidence/IOSSim-Support-1789592208.zip`
 
-Defect 001's retest is **blocked by defect 002**: the build2 run stops at the
-certificate limit before signing is reached, so the Keychain fix is still
-unproven on hardware. 001 stays `RETEST_REQUIRED`.
+Defect 001's retest was **blocked by defect 002**: the build2 run stopped at the
+certificate limit before signing was reached, so the Keychain fix is still
+unproven on hardware. 001 stays `RETEST_REQUIRED`, and the Build-3 run tests both
+defects in a single pass.
+
+Known limitation: the defect-001 **negative control**
+(`testLoginKeychainKeyCreatedByAPackagedHelperIsBlockedByItsPartitionList`) no
+longer reproduces on the *development* Mac, whose login Keychain now grants
+`/usr/bin/codesign` access. Evidence that this is host state rather than a code
+regression — including a fresh-cdhash experiment — is in the defect-002
+implementation record. The positive control still passes and no test was
+weakened.
 
 ## Defect 002 detail
 
@@ -41,7 +50,17 @@ unproven on hardware. 001 stays `RETEST_REQUIRED`.
 
 Build 3 must satisfy defects 001 and 002 **together** — no Keychain-password
 dialog *and* automatic, ownership-proven recovery from Veya's own obsolete
-certificate. Acceptance gates are in section 21 of the defect 002 plan.
+certificate.
+
+* Implementation record: [`PHYSICAL_DEFECT_002_CERTIFICATE_RECOVERY_IMPLEMENTATION.md`](PHYSICAL_DEFECT_002_CERTIFICATE_RECOVERY_IMPLEMENTATION.md)
+* Physical procedure: [`BUILD3_PHYSICAL_RETEST_HANDOFF.md`](BUILD3_PHYSICAL_RETEST_HANDOFF.md)
+* Independent DMG audit: [`logs/defect002-independent-dmg-audit.log`](logs/defect002-independent-dmg-audit.log)
+
+Build 3 artifact `Veya-0.1.0-build3-2f87097-local-test.dmg`
+(`0b8cb2616dbda203d4d97a30f97612b120c542dedcaecbe517630e9cead5619f`), built from
+`2f87097` with `dirty=false`. Full Swift suite 377 executed / 12 skipped / 0
+failures. Acceptance gates are in section 21 of the defect 002 plan and the
+success criteria of the handoff.
 
 ## Physical stage status
 

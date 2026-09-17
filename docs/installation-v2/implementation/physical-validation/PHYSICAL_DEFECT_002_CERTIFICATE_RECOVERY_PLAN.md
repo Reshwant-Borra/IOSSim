@@ -1,9 +1,20 @@
 # PHYSICAL_DEFECT_002 — Personal Team certificate recovery
 
-Status: **INVESTIGATED_PLAN_READY**
+Status: **IMPLEMENTED_SOFTWARE → RETEST_REQUIRED** (was `INVESTIGATED_PLAN_READY`)
 
-Not `FIXED`. Not `PHYSICALLY_VERIFIED`. No production source was changed by this
-pass, no certificate was revoked, and the Apple Account was not mutated.
+This document is the historical investigation and remains as written. It was the
+plan of record for the implementation; what actually shipped, including two
+deliberate deviations from section 18, is recorded in
+[`PHYSICAL_DEFECT_002_CERTIFICATE_RECOVERY_IMPLEMENTATION.md`](PHYSICAL_DEFECT_002_CERTIFICATE_RECOVERY_IMPLEMENTATION.md).
+The physical procedure is
+[`BUILD3_PHYSICAL_RETEST_HANDOFF.md`](BUILD3_PHYSICAL_RETEST_HANDOFF.md).
+
+Still not `PHYSICALLY_VERIFIED`. No certificate has been revoked and the Apple
+Account has not been mutated — the first real revocation happens during the
+physical Build-3 run.
+
+Implemented in `2f87097`, artifact `Veya-0.1.0-build3-2f87097-local-test.dmg`
+(`0b8cb261…`).
 
 Found on: Intel x86_64, macOS 14.8.9 (23J631), no Xcode, Personal Team
 `5337SALD55`, same iPhone, `Veya-0.1.0-build2-dd259bd-local-test.dmg`, run
