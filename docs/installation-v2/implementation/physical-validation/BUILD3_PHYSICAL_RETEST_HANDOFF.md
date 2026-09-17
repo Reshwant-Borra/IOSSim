@@ -11,10 +11,10 @@ tests defect 001 (signing key access) — Build 2 never reached the signing step
 
 | | |
 |---|---|
-| file | `Veya-0.1.0-build3-2f87097-local-test.dmg` |
-| SHA-256 | `0b8cb2616dbda203d4d97a30f97612b120c542dedcaecbe517630e9cead5619f` |
-| size | 16,403,091 bytes |
-| built from | `2f87097`, `dirty=false` |
+| file | `Veya-0.1.0-build3-ea8269b-local-test.dmg` |
+| SHA-256 | `d75908edc1989f4a5854a73c021077ce02266a9dfc698d113c9d060a7927d648` |
+| size | 16,402,646 bytes |
+| built from | `ea8269b`, `dirty=false` |
 | version / build | `0.1.0 (3)` |
 | architectures | `arm64`, `x86_64` |
 | class | `LOCAL_TEST_ONLY` — not notarized, not for distribution |
@@ -22,7 +22,7 @@ tests defect 001 (signing key access) — Build 2 never reached the signing step
 Verify before installing:
 
 ```
-shasum -a 256 ~/Downloads/Veya-0.1.0-build3-2f87097-local-test.dmg
+shasum -a 256 ~/Downloads/Veya-0.1.0-build3-ea8269b-local-test.dmg
 ```
 
 It must print the SHA-256 above. If it does not, stop.

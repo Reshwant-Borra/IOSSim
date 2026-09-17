@@ -13,8 +13,8 @@ Still not `PHYSICALLY_VERIFIED`. No certificate has been revoked and the Apple
 Account has not been mutated — the first real revocation happens during the
 physical Build-3 run.
 
-Implemented in `2f87097`, artifact `Veya-0.1.0-build3-2f87097-local-test.dmg`
-(`0b8cb261…`).
+Implemented in `ea8269b`, artifact `Veya-0.1.0-build3-ea8269b-local-test.dmg`
+(`d75908ed…`).
 
 Found on: Intel x86_64, macOS 14.8.9 (23J631), no Xcode, Personal Team
 `5337SALD55`, same iPhone, `Veya-0.1.0-build2-dd259bd-local-test.dmg`, run

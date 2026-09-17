@@ -1,9 +1,9 @@
 IOSSim Local Release Candidate Audit
 LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION
 
-[PASS] Local DMG exists: Veya-0.1.0-build3-2f87097-local-test.dmg
+[PASS] Local DMG exists: Veya-0.1.0-build3-ea8269b-local-test.dmg
 [PASS] DMG integrity
-[PASS] DMG checksum: 0b8cb2616dbda203d4d97a30f97612b120c542dedcaecbe517630e9cead5619f
+[PASS] DMG checksum: d75908edc1989f4a5854a73c021077ce02266a9dfc698d113c9d060a7927d648
 [PASS] Local release metadata: LOCAL_TEST_ONLY
 [INFO] Developer ID: NO
 [INFO] Notarization: NO — intentionally not attempted
@@ -12,7 +12,7 @@ LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION
 [INFO] Public distribution: NO
 [PASS] DMG contents: Applications, Veya.app
 [PASS] Applications shortcut
-[PASS] App bundle exists: /var/folders/2r/84f7ltfs18n1t6l6msl1rsth0000gn/T/iossim-local-release-audit-_8bqwkgy/mount/Veya.app
+[PASS] App bundle exists: /var/folders/2r/84f7ltfs18n1t6l6msl1rsth0000gn/T/iossim-local-release-audit-6lumplz7/mount/Veya.app
 [PASS] Mac executable exists: Contents/MacOS/IOSSim
 [PASS] Provisioner executable exists: Contents/MacOS/IOSSimProvisioner
 [PASS] Development repository locator absent
@@ -48,6 +48,6 @@ LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION
 [PASS] Bundled production provenance
 [PASS] Architectures IOSSim: arm64 x86_64
 [PASS] Architectures IOSSimProvisioner: arm64 x86_64
-[PASS] Source provenance: 2f87097aaf70393d67fb7800a06a8dc1a5e7d602 dirty=false
+[PASS] Source provenance: ea8269b91ad212ac32f16a435890d831b8ba50bf dirty=false
 
 Overall: PASS (LOCAL_TEST_ONLY; public gates not assessed)

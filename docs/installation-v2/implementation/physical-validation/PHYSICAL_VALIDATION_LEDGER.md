@@ -14,7 +14,7 @@ been run on real hardware and observed to pass. Software gates never confer it.
 | # | Defect | Found on | Status | Fixed in | Retest artifact |
 |---|---|---|---|---|---|
 | 001 | `SIGNING_KEY_ACCESS_DENIED` on a clean Mac — the Personal Team signing key was created in the login Keychain, where `securityd` stamps it with a `cdhash:<creator>` partition that `/usr/bin/codesign` can never match | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build1-1259da5-local-test.dmg` | **RETEST_REQUIRED** | `dd259bd` | `Veya-0.1.0-build2-dd259bd-local-test.dmg` (`a5cfa59e…`) |
-| 002 | `CERTIFICATE_LIMIT_REACHED` — Veya has no recovery path from its own obsolete signing certificate. Build 2 correctly rejects the Build-1 identity, tries to reissue, and finds the Personal Team's two certificate slots full — one of them holding Veya's own dead certificate | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build2-dd259bd-local-test.dmg`, run against intact Build 1 state | **RETEST_REQUIRED** | `2f87097` | `Veya-0.1.0-build3-2f87097-local-test.dmg` (`0b8cb261…`) |
+| 002 | `CERTIFICATE_LIMIT_REACHED` — Veya has no recovery path from its own obsolete signing certificate. Build 2 correctly rejects the Build-1 identity, tries to reissue, and finds the Personal Team's two certificate slots full — one of them holding Veya's own dead certificate | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build2-dd259bd-local-test.dmg`, run against intact Build 1 state | **RETEST_REQUIRED** | `ea8269b` | `Veya-0.1.0-build3-ea8269b-local-test.dmg` (`d75908ed…`) |
 
 ## Defect 001 detail
 
@@ -56,9 +56,9 @@ certificate.
 * Physical procedure: [`BUILD3_PHYSICAL_RETEST_HANDOFF.md`](BUILD3_PHYSICAL_RETEST_HANDOFF.md)
 * Independent DMG audit: [`logs/defect002-independent-dmg-audit.log`](logs/defect002-independent-dmg-audit.log)
 
-Build 3 artifact `Veya-0.1.0-build3-2f87097-local-test.dmg`
-(`0b8cb2616dbda203d4d97a30f97612b120c542dedcaecbe517630e9cead5619f`), built from
-`2f87097` with `dirty=false`. Full Swift suite 377 executed / 12 skipped / 0
+Build 3 artifact `Veya-0.1.0-build3-ea8269b-local-test.dmg`
+(`d75908edc1989f4a5854a73c021077ce02266a9dfc698d113c9d060a7927d648`), built from
+`ea8269b` with `dirty=false`. Full Swift suite 377 executed / 12 skipped / 0
 failures. Acceptance gates are in section 21 of the defect 002 plan and the
 success criteria of the handoff.
 

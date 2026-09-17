@@ -283,3 +283,53 @@ device, changes an App ID, or creates a real profile.
 * Whether Vanish binds a revoke, error or prompt policy at its certificate limit
   remains unknown; this design diverges deliberately toward silent recovery under
   proven ownership.
+
+## 12. Build 3 artifact
+
+| | |
+|---|---|
+| file | `Veya-0.1.0-build3-ea8269b-local-test.dmg` |
+| path | `.build/iossim/local-release/` |
+| SHA-256 | `d75908edc1989f4a5854a73c021077ce02266a9dfc698d113c9d060a7927d648` |
+| size | 16,402,646 bytes |
+| source revision | `ea8269b`, `dirty=false` |
+| version / build | `0.1.0 (3)` — `config/release.json` bumped 2 → 3 |
+| architectures | `arm64`, `x86_64` |
+| distribution class | `LOCAL_TEST_ONLY` — ad-hoc signed, not notarized |
+| schemas | artifactManifest 2, helperProtocol 2, nativeBridgeABI 2, provisioningManifest 4, setupState 5 |
+
+Superseded: `Veya-0.1.0-build2-dd259bd-local-test.dmg`
+(`a5cfa59e7355b9a89482280b1c9546ebf5a892c8c19071c0b8895333c19ab2e7`). Build 2 was
+not overwritten.
+
+Produced by `./iossim release-local`, the pipeline's own mechanism — the build
+number and the embedded artifact metadata agree, and no bytes were renamed by
+hand.
+
+### Independent mounted-DMG audit
+
+`./iossim release-local-audit` was run as a separate invocation against the
+finished DMG, mounting it rather than trusting staging output. Full log:
+[`logs/defect002-independent-dmg-audit.log`](logs/defect002-independent-dmg-audit.log).
+
+`Overall: PASS (LOCAL_TEST_ONLY; public gates not assessed)`, covering DMG
+identity and contents, `Veya.app`, `CFBundleExecutable`, both `arm64` and
+`x86_64` slices of `IOSSim` and `IOSSimProvisioner`, the native bridge dylib,
+the device artifact manifest and payload hashes, bundle identifiers, the 208-entry
+SPDX inventory, provenance, strict recursive ad-hoc signature verification across
+all six Mach-O items, embedded distribution metadata, and the negative checks: no
+source-like files, no repository paths, no provisioning profiles, no private key
+or pairing material, no world-writable files.
+
+The SHA-256 above was recomputed independently with `shasum -a 256` and matches
+both the pipeline's report and the `.sha256` sidecar.
+
+## 13. Physical retest
+
+Procedure, success criteria and stop conditions:
+[`BUILD3_PHYSICAL_RETEST_HANDOFF.md`](BUILD3_PHYSICAL_RETEST_HANDOFF.md).
+
+The tester uses the same Intel Mac, iPhone and Apple Account, with Build-1 and
+Build-2 state left intact. Defect 002 reaches `PHYSICALLY_VERIFIED` only on the
+eight criteria listed there; defect 001 may be promoted from `RETEST_REQUIRED` in
+the same run. A disappearing `certificateLimit` error is not sufficient on its own.
