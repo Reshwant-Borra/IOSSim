@@ -1838,13 +1838,16 @@ extension LiveApplePersonalTeamBackend {
                 operation: "ios/revokeDevelopmentCert",
                 parameters: ["teamId": team.id, "serialNumber": serial]
             )
-        } catch let failure as AppleServiceFailure {
-            // A certificate Apple no longer knows about is a success for our
-            // purposes: the slot is free. Anything else is a real failure.
-            guard failure.error == .developerServicesFailed else {
-                recordIdentity(.certificateRevocationFailed, generation: generation)
-                throw ExperimentalBackendError.certificateRevocationFailed
-            }
+        } catch {
+            // Any rejected revoke is reported as exactly that, never collapsed
+            // into the capacity error and never retried against a different
+            // certificate. The recovery intent stays persisted, so a later
+            // attempt reconciles this same serial against Apple's real state
+            // instead of choosing a new target.
+            //
+            // A certificate Apple has already forgotten does not reach here: it
+            // is absent from the listing, so the intent-reconciliation path
+            // above handles it before any revoke is attempted.
             recordIdentity(.certificateRevocationFailed, generation: generation)
             throw ExperimentalBackendError.certificateRevocationFailed
         }
