@@ -31,6 +31,7 @@ public enum RecoveryAction: Codable, Equatable, Sendable {
     case renewSigning
     case prepareDeveloperSupport
     case reinstallOwnedArtifacts
+    case rerunRuntimeProof
 }
 
 public struct RecoveryPlan: Codable, Equatable, Sendable {
@@ -74,16 +75,81 @@ public actor ReadinessCoordinator {
 
     public static func plan(for values: [ReadinessDomain: ReadinessDomainStatus]) -> RecoveryPlan {
         func state(_ domain: ReadinessDomain) -> ReadinessStateKind { values[domain]?.state ?? .unknown }
-        var actions: [RecoveryAction] = []
         if state(.device) == .userActionRequired || state(.device) == .blocked {
-            actions.append(.askUser(action: values[.device]?.reason?.code ?? "unlock_or_trust_device"))
+            return RecoveryPlan(actions: [.askUser(action: values[.device]?.reason?.code ?? "unlock_or_trust_device")])
         }
-        if state(.pairing) == .repairable { actions.append(.repairPairing) }
-        if state(.signing) == .expired || state(.signing) == .stale { actions.append(.renewSigning) }
-        if state(.developerSupport) == .repairable || state(.developerSupport) == .stale { actions.append(.prepareDeveloperSupport) }
-        if state(.runtime) == .transientFailure { actions.append(.retryTransport(maxAttempts: 3, backoffSeconds: [0.5, 1, 2])) }
-        if state(.vpnTunnel) == .transientFailure { actions.append(.retryTransport(maxAttempts: 3, backoffSeconds: [1, 2, 4])) }
-        return RecoveryPlan(actions: actions)
+        if state(.appleAccount) == .userActionRequired || state(.appleAccount) == .expired {
+            return RecoveryPlan(actions: [.askUser(action: values[.appleAccount]?.reason?.code ?? "reauthorize_apple_account")])
+        }
+        if state(.signing) == .expired || state(.signing) == .stale {
+            return RecoveryPlan(actions: [.renewSigning])
+        }
+        if state(.installation) == .repairable || state(.installation) == .stale {
+            return RecoveryPlan(actions: [.reinstallOwnedArtifacts])
+        }
+        if state(.developerSupport) == .repairable || state(.developerSupport) == .stale {
+            return RecoveryPlan(actions: [.prepareDeveloperSupport])
+        }
+        if state(.pairing) == .repairable || state(.pairing) == .stale {
+            return RecoveryPlan(actions: [.repairPairing])
+        }
+        if state(.vpnTunnel) == .userActionRequired {
+            return RecoveryPlan(actions: [.askUser(action: values[.vpnTunnel]?.reason?.code ?? "start_or_approve_vpn")])
+        }
+        if state(.vpnTunnel) == .transientFailure {
+            return RecoveryPlan(actions: [.retryTransport(maxAttempts: 3, backoffSeconds: [1, 2, 4])])
+        }
+        if state(.runtime) == .stale || state(.runtime) == .repairable {
+            return RecoveryPlan(actions: [.rerunRuntimeProof])
+        }
+        if state(.runtime) == .transientFailure {
+            return RecoveryPlan(actions: [.retryTransport(maxAttempts: 3, backoffSeconds: [0.5, 1, 2])])
+        }
+        return RecoveryPlan()
+    }
+}
+
+public enum SetupRepairScope: String, Codable, Equatable, Sendable {
+    case none = "NONE"
+    case waitForDevice = "WAIT_FOR_DEVICE"
+    case reauthorizeAppleAccount = "REAUTHORIZE_APPLE_ACCOUNT"
+    case renewSigning = "RENEW_SIGNING"
+    case reinstallMain = "REINSTALL_MAIN"
+    case reinstallRunner = "REINSTALL_RUNNER"
+    case reinstallOwnedArtifacts = "REINSTALL_OWNED_ARTIFACTS"
+    case prepareDeveloperSupport = "PREPARE_DEVELOPER_SUPPORT"
+    case repairPairing = "REPAIR_PAIRING"
+    case startOrApproveVPN = "START_OR_APPROVE_VPN"
+    case rerunRuntimeProof = "RERUN_RUNTIME_PROOF"
+}
+
+public struct SetupReconciliationInput: Equatable, Sendable {
+    public var deviceAvailable = true
+    public var appleSessionValid = true
+    public var signingCurrent = true
+    public var releaseCurrent = true
+    public var mainInstalled = true
+    public var runnerInstalled = true
+    public var developerSupportCurrent = true
+    public var pairingOperational = true
+    public var vpnReady = true
+    public var runtimeProofCurrent = true
+
+    public init() {}
+
+    public var smallestRepair: SetupRepairScope {
+        if !deviceAvailable { return .waitForDevice }
+        if !appleSessionValid { return .reauthorizeAppleAccount }
+        if !signingCurrent { return .renewSigning }
+        if !releaseCurrent { return .reinstallOwnedArtifacts }
+        if !mainInstalled && !runnerInstalled { return .reinstallOwnedArtifacts }
+        if !mainInstalled { return .reinstallMain }
+        if !runnerInstalled { return .reinstallRunner }
+        if !developerSupportCurrent { return .prepareDeveloperSupport }
+        if !pairingOperational { return .repairPairing }
+        if !vpnReady { return .startOrApproveVPN }
+        if !runtimeProofCurrent { return .rerunRuntimeProof }
+        return .none
     }
 }
 

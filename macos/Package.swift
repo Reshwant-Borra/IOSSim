@@ -37,9 +37,13 @@ let package = Package(
             name: "IOSSimAuthDiagnostic",
             dependencies: ["IOSSimMacCore"]
         ),
+        .executableTarget(
+            name: "IOSSimSigningKeyTestHelper",
+            dependencies: ["IOSSimMacCore"]
+        ),
         .testTarget(
             name: "IOSSimMacCoreTests",
-            dependencies: ["IOSSimMacCore", "BigInt"],
+            dependencies: ["IOSSimMacCore", "IOSSimSigningKeyTestHelper", "BigInt"],
             exclude: ["Fixtures"]
         )
     ]

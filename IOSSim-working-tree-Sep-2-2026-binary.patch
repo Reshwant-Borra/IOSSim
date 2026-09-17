@@ -1,0 +1,3183 @@
+diff --git a/docs/iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md b/docs/iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md
+index 8d63645..b5796b8 100644
+--- a/docs/iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md
++++ b/docs/iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md
+@@ -1,6 +1,6 @@
+ # Experimental Drive Mode Implementation
+ 
+-Status date: 2026-09-01
++Status date: 2026-09-02
+ 
+ This document describes the testing-only Drive Mode added to the existing IOSSim iPhone app. It does not replace the proven static on-device DVT location simulation flow.
+ 
+@@ -13,6 +13,8 @@ BASIC DRIVE POC PHYSICALLY DEMONSTRATED
+ WITH FIRST INSTRUMENTED PHYSICAL CHARACTERIZATION COMPLETE
+ ABSOLUTE-DEADLINE 1 HZ / 2 HZ CADENCE EXPERIMENT SOFTWARE-VALIDATED
+ RICH XCUILOCATION DRIVE IS THE DEFAULT TRANSPORT
++SMOOTH 2 HZ IS THE DEFAULT CADENCE
++AUTOMATIC COMPATIBILITY FALLBACKS ARE IMPLEMENTED
+ ```
+ 
+ Implemented:
+@@ -20,8 +22,8 @@ Implemented:
+ - Experimental `Drive Mode` entry under the existing app's `Experimental` section.
+ - MapKit automobile route generation and SwiftUI route preview.
+ - Constant-speed route playback from 15-70 mph.
+-- Monotonic elapsed-time scheduler at approximately 1 Hz.
+-- Pause, resume, completed-holding, and explicit Stop/Clear controls.
++- Monotonic elapsed-time scheduler with Smooth 2 Hz default and Baseline 1 Hz Compatibility fallback.
++- Pause, resume, Stop & Hold, Clear Simulation, and destination-hold controls.
+ - Single authoritative `LocationCoordinator` actor shared by static Set Location and Drive Mode.
+ - Writer IDs for static and drive ownership.
+ - Connection generations and stale-generation callback handling.
+@@ -31,10 +33,12 @@ Implemented:
+ - iPhone target Debug iphoneos build validation.
+ - Basic foreground physical Drive route simulation on an actual iPhone.
+ - First instrumented physical Drive characterization session `DRIVE-20260828-100624`.
+-- Configurable Drive playback cadence: baseline 1 Hz and smooth-test 2 Hz.
++- Configurable Drive playback cadence: Smooth 2 Hz and Baseline 1 Hz Compatibility.
+ - Absolute-deadline scheduler timing based on `ContinuousClock`.
+ - Rich XCUILocation Drive transport as the default Drive output.
+-- DVT LocationSimulation retained as the explicit compatibility fallback.
++- DVT LocationSimulation retained as manual and automatic compatibility fallback.
++- Automatic Rich Drive to DVT Compatibility fallback after bounded startup/runtime Rich failure.
++- Automatic Smooth 2 Hz to Baseline 1 Hz Compatibility fallback after sustained scheduler/transport health failure.
+ - IOSSimLocationWitness JSON Export Metrics control for owned validation recordings.
+ 
+ Proven physical results:
+@@ -127,9 +131,11 @@ manual choice is preserved.
+ 
+ Rich Drive still depends on Developer Mode, LocalDevVPN, saved RPPairing, a
+ preinstalled signed XCTest runner, and developer-service availability. Startup
+-failure is surfaced in the UI and diagnostics. IOSSim does not silently auto
+-fallback to DVT because unsafe automatic fallback can reintroduce duplicate
+-writers; fallback is a manual Drive Output selection.
++failure is surfaced in the UI and diagnostics. If Rich Drive cannot start or
++cannot continue after bounded health checks, IOSSim stops the scheduler, tears
++down Rich IPC and the XCTest runner, releases the Rich writer, starts DVT
++Compatibility, writes the current route coordinate once through DVT, and resumes
++from that route position. It never starts DVT while Rich still owns writes.
+ 
+ `IdeviceOnDeviceTunnelClient` remains the only low-level native client. It still owns the FFI handles and still calls:
+ 
+@@ -179,6 +185,15 @@ LocationCoordinator rejects stale writer
+ Drive remains authoritative
+ ```
+ 
++Fallback transitions preserve this invariant:
++
++- exactly one `DriveScheduler` is stored in `DriveViewModel`;
++- exactly one active `DriveLocationTransport` owns the session writer at a time;
++- Rich is stopped before DVT starts during automatic transport fallback;
++- cadence fallback replaces the scheduler only after the old scheduler is stopped;
++- stale generations and stale writer IDs are rejected by `LocationCoordinator`;
++- once a session falls back to DVT or Baseline 1 Hz, it stays there until the user starts a new Drive session.
++
+ ## Connection Lifecycle
+ 
+ `LocationCoordinator` owns the current connection generation. Every fresh DVT connection increments `connectionGeneration`. Stale callbacks from older generations are logged as `STALE_GENERATION` and ignored.
+@@ -226,11 +241,12 @@ Pause stops route progression through the controller's existing active-elapsed c
+ Drive Mode exposes an explicit playback cadence:
+ 
+ ```text
+-Baseline - 1 update/sec:      1.0s interval
+-Smooth Test - 2 updates/sec:  0.5s interval
++Smooth 2 Hz:                    0.5s interval
++Baseline 1 Hz Compatibility:    1.0s interval
+ ```
+ 
+-Baseline 1 Hz remains the default to preserve the physically characterized behavior as the regression baseline. Smooth Test 2 Hz is an experimental comparison mode only.
++Smooth 2 Hz is the default. Baseline 1 Hz Compatibility remains selectable and is
++also the automatic fallback cadence.
+ 
+ Route speed is cadence-independent:
+ 
+@@ -242,10 +258,15 @@ At 35 mph / ~15.646 m/s, expected spatial step is approximately:
+ 
+ ```text
+ Baseline 1 Hz:     ~15.65 m/update
+-Smooth Test 2 Hz:  ~7.82 m/update
++Smooth 2 Hz:       ~7.82 m/update
+ ```
+ 
+-The 2 Hz mode is not yet physically proven to improve visual smoothness or native speed/course metadata.
++Automatic cadence fallback uses a bounded rolling window rather than one-off
++jitter. Smooth 2 Hz falls back to Baseline 1 Hz Compatibility after sustained
++missed scheduler deadlines, repeated dropped/replaced samples, or repeated ACK
++latency pressure approaching the 0.5 second update interval. The route active
++elapsed time is preserved, missed points are not replayed, and a fresh
++absolute-deadline segment starts at the current route position.
+ 
+ ## Route Design
+ 
+@@ -261,9 +282,21 @@ It does not treat raw polyline vertices as scheduler ticks.
+ 
+ ## Completion Behavior
+ 
+-When expected distance reaches the route distance, Drive Mode enters `completedHolding`. It holds the destination coordinate and does not call `clear`.
++When expected distance reaches the route distance, Drive Mode enters
++`completedHolding`. It sends the final destination coordinate, sends one
++stationary held sample for Rich Drive so native speed is no longer the selected
++moving speed, stops route progression, and holds the destination coordinate. It
++does not call `clear`.
+ 
+-The user must press `STOP / CLEAR SIMULATION` to call `location_simulation_clear` and return to real location behavior.
++Stop & Hold stops route progression immediately and holds the most recent
++authoritative route coordinate. It stops scheduler ticks and keeps the active
++transport only as needed to retain the simulated coordinate. It does not snap to
++origin, destination, static state, or real location.
++
++Clear Simulation stops the scheduler, stops Rich IPC/XCTest or DVT transport,
++calls the developer clear path, releases Drive state, and allows physical Core
++Location to resume naturally. Clear is intended to be idempotent from active,
++paused, held, arrived, fallback, reconnecting, or partially failed startup states.
+ 
+ ## Background Behavior
+ 
+@@ -305,7 +338,14 @@ Per requested update, Drive Mode records:
+ - missed-deadline count
+ - spatial step distance
+ 
+-Lifecycle and connection events include start, pause, resume, completion, explicit stop, clear, reconnect start/success/failure, and stale generation callbacks.
++Lifecycle and connection events include start, pause, resume, Stop & Hold,
++destination hold, clear, transport fallback trigger/completion/failure, cadence
++fallback trigger/completion, reconnect start/success/failure, and stale
++generation callbacks.
++
++Fallback diagnostics include fallback reason, first error when available, active
++transport, active cadence, route progress, coordinate, transition duration, and
++whether the previous writer was confirmed stopped.
+ 
+ Possible snap-back is detected when observed route progress decreases by more than 50 meters while Drive diagnostics are active. The event category is `POSSIBLE_SNAP_BACK`, with previous/current/expected progress, writer ID, generation, lifecycle state, and source flags.
+ 
+@@ -526,35 +566,35 @@ Foreground test:
+ 2. Open `Experimental` -> `Drive Mode`.
+ 3. Use approximately the same route, selected speed, device, network, app build, and test duration for all comparison runs.
+ 
+-Test A - Baseline 1 Hz:
++Test A - Smooth 2 Hz:
+ 
+-1. Set `Playback Cadence` to `Baseline - 1 update/sec`.
++1. Confirm `Playback Cadence` is `Smooth 2 Hz`.
+ 2. Select approximately 35 mph.
+ 3. Use the same short route.
+ 4. Keep IOSSim foregrounded initially.
+ 5. Drive approximately 2-5 minutes.
+-6. Stop/Clear.
++6. Use Stop & Hold, then Clear Simulation.
+ 7. Export diagnostics.
+ 
+-Test B - Smooth Test 2 Hz:
++Test B - Baseline 1 Hz Compatibility:
+ 
+ 1. Use the same route.
+ 2. Use the same speed.
+-3. Set `Playback Cadence` to `Smooth Test - 2 updates/sec`.
++3. Set `Playback Cadence` to `Baseline 1 Hz Compatibility`.
+ 4. Keep the same foreground state.
+ 5. Drive a similar duration.
+-6. Stop/Clear.
++6. Use Stop & Hold, then Clear Simulation.
+ 7. Export diagnostics.
+ 
+ Test C - 2 Hz Background:
+ 
+ 1. Run only after foreground 2 Hz works.
+-2. Start a 2 Hz Drive.
++2. Start a Smooth 2 Hz Drive.
+ 3. Keep IOSSim visible approximately 30 seconds.
+ 4. Switch to another normal app without force-closing IOSSim.
+ 5. Leave IOSSim backgrounded several minutes.
+ 6. Return to IOSSim.
+-7. Stop/Clear.
++7. Use Stop & Hold, then Clear Simulation.
+ 8. Export diagnostics.
+ 
+ Compare visual smoothness, tick interval, distance per tick, DVT latency, Core Location latency, native `CLLocation.speed` availability, native `CLLocation.course` availability, snap-backs, and route completion timing.
+@@ -575,7 +615,9 @@ Status:
+ 
+ ```text
+ RICH DRIVE DEFAULT IMPLEMENTED
+-DVT FALLBACK PRESERVED
++DVT FALLBACK PRESERVED AND AUTOMATED
++SMOOTH 2 HZ DEFAULT IMPLEMENTED
++BASELINE 1 HZ FALLBACK PRESERVED AND AUTOMATED
+ WITNESS EXPORT METRICS IMPLEMENTED
+ ```
+ 
+@@ -603,13 +645,20 @@ From the preserved checkpoint at commit `728c745929d585a529854fb1944c2e449c453d0
+ ### IMPLEMENTED IN THIS PASS
+ 
+ - Rich Drive is now `DriveLocationOutputMode.defaultMode`.
++- Smooth 2 Hz is now `DriveUpdateCadence.defaultCadence`.
+ - The normal picker label is `Rich Drive`.
+ - DVT remains selectable as `DVT Compatibility`.
++- Cadence labels are `Smooth 2 Hz` and `Baseline 1 Hz Compatibility`.
+ - Stored selection migration prefers Rich Drive for unmigrated active-development installs.
+ - Manual DVT selection after migration is preserved.
+ - Rich startup failure cleanup stops any partially-started transport and clears coordinator ownership.
++- Rich startup/runtime failure now falls back to DVT only after Rich teardown.
++- Smooth 2 Hz now falls back to Baseline 1 Hz only after sustained health failure.
++- Stop & Hold keeps the most recent authoritative coordinate simulated.
++- Clear Simulation explicitly clears developer location simulation and lets real Core Location resume.
++- Natural route completion holds the exact destination coordinate with stationary held speed semantics.
+ - Rich reconnect restores current route position through Rich IPC and avoids a DVT restore set.
+-- IOSSimLocationWitness has a visible `Export Metrics` ShareLink backed by a JSON file.
++- IOSSimLocationWitness has a visible `Export Metrics` share-sheet button backed by a JSON file with non-overlapping hit targets.
+ - Witness exports include metadata, summary, simulated_summary, optional speed_plateaus, and raw observations.
+ 
+ ### UNRESOLVED RISKS
+diff --git a/ios/App/DriveView.swift b/ios/App/DriveView.swift
+index 288b54d..61661d9 100644
+--- a/ios/App/DriveView.swift
++++ b/ios/App/DriveView.swift
+@@ -57,7 +57,7 @@ final class DriveViewModel: ObservableObject {
+   /// shows `status`'s human-readable text.
+   @Published var lastTechnicalError: String?
+   @Published var speedMPH = 35.0
+-  @Published var updateCadence = DriveUpdateCadence.baseline1Hz
++  @Published var updateCadence = DriveUpdateCadence.defaultCadence
+   @Published var outputMode: DriveLocationOutputMode {
+     didSet {
+       outputSelectionStore.save(outputMode)
+@@ -74,6 +74,9 @@ final class DriveViewModel: ObservableObject {
+   @Published var routeResult: MapKitRouteResult?
+   @Published var breadcrumbs: [CLLocationCoordinate2D] = []
+   @Published var liveMetrics = DriveLiveMetrics.empty
++  @Published var activeOutputMode: DriveLocationOutputMode?
++  @Published var activeUpdateCadence: DriveUpdateCadence?
++  @Published var fallbackNotice: String?
+ 
+   private let searchProvider = MapKitSearchProvider()
+   private let routeProvider = MapKitRouteProvider()
+@@ -90,6 +93,11 @@ final class DriveViewModel: ObservableObject {
+   private var startCoordinate: CLLocationCoordinate2D?
+   private var destinationCoordinate: CLLocationCoordinate2D?
+   private var refreshLoopStarted = false
++  private var lastAuthoritativePosition: DrivePosition?
++  private var didFallbackTransportThisSession = false
++  private var didFallbackCadenceThisSession = false
++  private var transitionInProgress = false
++  private var clearRequested = false
+ 
+   init(outputSelectionStore: DriveOutputSelectionStore = DriveOutputSelectionStore()) {
+     self.outputSelectionStore = outputSelectionStore
+@@ -142,6 +150,18 @@ final class DriveViewModel: ObservableObject {
+       expectedTravelTimeText = duration(snapshot.expectedTravelTime)
+       expectedProgressText = meters(snapshot.currentExpectedDistanceMeters)
+       currentCoordinateText = coordinate(snapshot.currentLatitude, snapshot.currentLongitude)
++      if snapshot.state == .completedHolding {
++        scheduler?.stop()
++        scheduler = nil
++        background.end(reason: "drive destination holding")
++        background.setDiagnostics(nil)
++        verifier.stop()
++        if status != "Arrived — Holding Location" {
++          status = "Arrived — Holding Location"
++        }
++      } else if snapshot.state == .holding, status != "Holding Location" {
++        status = "Holding Location"
++      }
+     }
+     exportURLs = await diagnostics.exportURLs()
+     liveMetrics = await diagnostics.liveMetrics()
+@@ -271,11 +291,9 @@ final class DriveViewModel: ObservableObject {
+ 
+   func startDrive() {
+     Task {
+-      var startedController: DriveSessionController?
+-      var startedTransport: DriveLocationTransport?
+       do {
+         guard activeTransport == nil, scheduler == nil,
+-          state != .driving, state != .paused, state != .completedHolding
++          state != .driving, state != .paused, state != .holding, state != .completedHolding
+         else {
+           throw POCError(
+             .invalidDriveState,
+@@ -287,17 +305,42 @@ final class DriveViewModel: ObservableObject {
+         let activeController = DriveSessionController()
+         activeController.prepareRoute(result.driveRoute, speedMPH: speedMPH)
+         try activeController.startDrive(now: clock.nowSeconds())
+-        startedController = activeController
+         controller = activeController
++        lastAuthoritativePosition = nil
++        didFallbackTransportThisSession = false
++        didFallbackCadenceThisSession = false
++        transitionInProgress = false
++        clearRequested = false
++        fallbackNotice = nil
++        let normalOutputMode = DriveLocationOutputMode.defaultMode
++        let normalUpdateCadence = DriveUpdateCadence.defaultCadence
++        outputMode = normalOutputMode
++        updateCadence = normalUpdateCadence
+         diagnostics = DriveDiagnostics(recorder: POCAppDependencies.recorder)
+         await diagnostics.start(
+           sessionID: activeController.sessionID,
+           writerID: activeController.writerID,
+           route: result.driveRoute.resampler,
+           selectedSpeedMps: DriveSpeed.metersPerSecond(fromMPH: speedMPH),
+-          updateCadence: updateCadence,
+-          outputMode: outputMode
++          updateCadence: normalUpdateCadence,
++          outputMode: normalOutputMode
+         )
++        await diagnostics.recordState(
++          "transport_primary_selected",
++          message: "primary drive transport selected",
++          metadata: [
++            "event": "TRANSPORT_PRIMARY_SELECTED",
++            "active_transport": normalOutputMode.displayName,
++            "active_cadence": normalUpdateCadence.diagnosticName,
++          ])
++        await diagnostics.recordState(
++          "cadence_primary_selected",
++          message: "primary drive cadence selected",
++          metadata: [
++            "event": "CADENCE_PRIMARY_SELECTED",
++            "active_transport": normalOutputMode.displayName,
++            "active_cadence": normalUpdateCadence.diagnosticName,
++          ])
+         background.setDiagnostics(diagnostics)
+         background.begin()
+         verifier.setRequestedCoordinate(
+@@ -305,38 +348,36 @@ final class DriveViewModel: ObservableObject {
+           longitude: result.driveRoute.origin.longitude
+         )
+         verifier.start(backgroundCapable: true)
+-        let transport = makeTransport(for: outputMode)
+-        startedTransport = transport
+-        try await transport.start(
+-          DriveLocationTransportStartContext(
+-            sessionID: activeController.sessionID,
+-            writerID: activeController.writerID,
++        do {
++          try await startTransportAndScheduler(
++            controller: activeController,
++            mode: normalOutputMode,
++            cadence: normalUpdateCadence,
+             initialCoordinate: result.driveRoute.origin
+-          ))
+-        activeTransport = transport
+-        scheduler = DriveScheduler(
+-          controller: activeController,
+-          locationTransport: transport,
+-          diagnostics: diagnostics,
+-          clock: clock,
+-          updateCadence: updateCadence,
+-          observedProvider: { [weak verifier] in verifier?.latestObservation() },
+-          lifecycleProvider: { [background] in background.applicationLifecycleState() },
+-          backgroundActiveProvider: { [background] in background.isBackgroundSessionActive() }
+-        )
+-        scheduler?.start()
+-        status = "Drive started with \(outputMode.displayName). Destination will hold until Stop."
++          )
++        } catch {
++          guard normalOutputMode == .richXCUILocationExperimental,
++            try await startDVTAfterRichStartupFailure(
++              error: error,
++              controller: activeController,
++              initialCoordinate: result.driveRoute.origin
++            )
++          else {
++            throw error
++          }
++        }
++        status = "Drive started."
+         await diagnostics.recordState("driving", message: "drive started")
+         await refresh()
+       } catch {
+         scheduler?.stop()
+         await scheduler?.waitUntilStopped()
+         scheduler = nil
+-        if let startedController {
+-          let writerID = startedController.writerID
+-          startedController.stop(clearSimulation: true)
+-          if let startedTransport {
+-            try? await startedTransport.stop(writerID: writerID, clearLocation: true)
++        if let controller {
++          let writerID = controller.writerID
++          controller.stop(clearSimulation: true)
++          if let activeTransport {
++            try? await activeTransport.stop(writerID: writerID, clearLocation: true)
+           } else {
+             try? await coordinator.stopSimulation(writerID: writerID, clearLocation: true)
+           }
+@@ -353,6 +394,9 @@ final class DriveViewModel: ObservableObject {
+           state = .idle
+         }
+         activeTransport = nil
++        activeOutputMode = nil
++        activeUpdateCadence = nil
++        lastAuthoritativePosition = nil
+         background.end(reason: "drive start failed")
+         background.setDiagnostics(nil)
+         verifier.stop()
+@@ -372,7 +416,7 @@ final class DriveViewModel: ObservableObject {
+ 
+   func selectOutputMode(_ mode: DriveLocationOutputMode) {
+     guard activeTransport == nil, scheduler == nil,
+-      state != .driving, state != .paused, state != .completedHolding
++      state != .driving, state != .paused, state != .holding, state != .completedHolding
+     else {
+       fail(
+         POCError(
+@@ -386,8 +430,389 @@ final class DriveViewModel: ObservableObject {
+     status = "Drive output set to \(mode.displayName)."
+   }
+ 
++  private func startTransportAndScheduler(
++    controller: DriveSessionController,
++    mode: DriveLocationOutputMode,
++    cadence: DriveUpdateCadence,
++    initialCoordinate: CLLocationCoordinate2D
++  ) async throws {
++    let transport = makeTransport(for: mode)
++    try await transport.start(
++      DriveLocationTransportStartContext(
++        sessionID: controller.sessionID,
++        writerID: controller.writerID,
++        initialCoordinate: initialCoordinate
++      ))
++    activeTransport = transport
++    activeOutputMode = mode
++    activeUpdateCadence = cadence
++    let newScheduler = makeScheduler(
++      controller: controller,
++      transport: transport,
++      cadence: cadence
++    )
++    scheduler = newScheduler
++    newScheduler.start()
++  }
++
++  private func startDVTAfterRichStartupFailure(
++    error: Error,
++    controller: DriveSessionController,
++    initialCoordinate: CLLocationCoordinate2D
++  ) async throws -> Bool {
++    guard !didFallbackTransportThisSession else { return false }
++    guard !clearRequested else { return false }
++    didFallbackTransportThisSession = true
++    let transitionStart = ProcessInfo.processInfo.systemUptime
++    let position = controller.expectedPosition(now: clock.nowSeconds())
++      ?? DrivePosition(
++        coordinate: initialCoordinate,
++        expectedDistanceMeters: 0,
++        activeElapsedSeconds: 0,
++        completed: false
++      )
++    controller.pauseForTransition(position: position, now: clock.nowSeconds())
++    await diagnostics.recordState(
++      "transport_fallback_triggered",
++      message: "Rich Drive startup failed; falling back to DVT Compatibility",
++      metadata: fallbackMetadata(
++        event: "TRANSPORT_FALLBACK_TRIGGERED",
++        reason: String(describing: error),
++        position: position,
++        oldWriterStopped: false
++      )
++    )
++
++    var oldWriterStopped = true
++    if let activeTransport {
++      do {
++        try await activeTransport.stop(writerID: controller.writerID, clearLocation: false)
++      } catch {
++        oldWriterStopped = false
++        await diagnostics.recordState(
++          "transport_fallback_teardown_warning",
++          message: "Rich Drive startup fallback teardown reported an error",
++          metadata: ["error": String(describing: error)]
++        )
++      }
++      self.activeTransport = nil
++    } else {
++      try? await coordinator.stopSimulation(writerID: controller.writerID, clearLocation: false)
++    }
++
++    do {
++      guard !clearRequested else { return false }
++      let dvt = makeTransport(for: .dvtBaseline)
++      try await dvt.start(
++        DriveLocationTransportStartContext(
++          sessionID: controller.sessionID,
++          writerID: controller.writerID,
++          initialCoordinate: position.coordinate
++        ))
++      activeTransport = dvt
++      activeOutputMode = .dvtBaseline
++      activeUpdateCadence = updateCadence
++      fallbackNotice = "Rich Drive unavailable. Using DVT Compatibility."
++      try await writeAuthoritativePosition(
++        position,
++        speedMetersPerSecond: controller.snapshot(now: clock.nowSeconds()).speedMetersPerSecond,
++        transport: dvt,
++        reason: "transport_startup_fallback_takeover"
++      )
++      controller.resume(now: clock.nowSeconds())
++      let newScheduler = makeScheduler(controller: controller, transport: dvt, cadence: updateCadence)
++      scheduler = newScheduler
++      newScheduler.start()
++      await diagnostics.recordState(
++        "transport_fallback_completed",
++        message: "DVT Compatibility took over after Rich Drive startup failure",
++        metadata: fallbackMetadata(
++          event: "TRANSPORT_FALLBACK_COMPLETED",
++          reason: String(describing: error),
++          position: position,
++          oldWriterStopped: oldWriterStopped
++        ).merging([
++          "transition_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - transitionStart) * 1000),
++          "fallback_transport": DriveLocationOutputMode.dvtBaseline.displayName,
++        ]) { _, new in new }
++      )
++      return true
++    } catch {
++      activeTransport = nil
++      activeOutputMode = nil
++      activeUpdateCadence = nil
++      await diagnostics.recordState(
++        "transport_fallback_failed",
++        message: "DVT Compatibility failed to take over after Rich Drive startup failure",
++        metadata: fallbackMetadata(
++          event: "TRANSPORT_FALLBACK_FAILED",
++          reason: String(describing: error),
++          position: position,
++          oldWriterStopped: oldWriterStopped
++        )
++      )
++      throw error
++    }
++  }
++
++  private func makeScheduler(
++    controller: DriveSessionController,
++    transport: DriveLocationTransport,
++    cadence: DriveUpdateCadence
++  ) -> DriveScheduler {
++    DriveScheduler(
++      controller: controller,
++      locationTransport: transport,
++      diagnostics: diagnostics,
++      clock: clock,
++      updateCadence: cadence,
++      observedProvider: { [weak verifier] in verifier?.latestObservation() },
++      lifecycleProvider: { [background] in background.applicationLifecycleState() },
++      backgroundActiveProvider: { [background] in background.isBackgroundSessionActive() },
++      onAuthoritativePosition: { [weak self] position, _, _ in
++        Task { @MainActor [weak self] in
++          self?.lastAuthoritativePosition = position
++        }
++      },
++      onTransportFallbackNeeded: { [weak self] request in
++        Task { @MainActor [weak self] in
++          await self?.handleTransportFallback(request)
++        }
++      },
++      onCadenceFallbackNeeded: { [weak self] request in
++        Task { @MainActor [weak self] in
++          await self?.handleCadenceFallback(request)
++        }
++      }
++    )
++  }
++
++  private func handleTransportFallback(_ request: DriveTransportFallbackRequest) async {
++    guard !transitionInProgress, !didFallbackTransportThisSession,
++      !clearRequested,
++      activeOutputMode == .richXCUILocationExperimental,
++      let controller,
++      let oldTransport = activeTransport
++    else { return }
++    transitionInProgress = true
++    didFallbackTransportThisSession = true
++    let transitionStart = ProcessInfo.processInfo.systemUptime
++
++    scheduler?.stop()
++    await scheduler?.waitUntilStopped()
++    scheduler = nil
++    controller.pauseForTransition(position: request.position, now: clock.nowSeconds())
++
++    await diagnostics.recordState(
++      "transport_fallback_triggered",
++      message: "Rich Drive became unavailable; falling back to DVT Compatibility",
++      metadata: fallbackMetadata(
++        event: "TRANSPORT_FALLBACK_TRIGGERED",
++        reason: request.reason,
++        position: request.position,
++        oldWriterStopped: false
++      ).merging([
++        "first_error": request.errorDescription ?? request.reason,
++        "failing_transport": request.transportName,
++      ]) { _, new in new }
++    )
++
++    var oldWriterStopped = false
++    do {
++      activeTransport = nil
++      try await oldTransport.stop(writerID: controller.writerID, clearLocation: false)
++      oldWriterStopped = true
++      guard !clearRequested else {
++        transitionInProgress = false
++        return
++      }
++
++      let dvt = makeTransport(for: .dvtBaseline)
++      try await dvt.start(
++        DriveLocationTransportStartContext(
++          sessionID: controller.sessionID,
++          writerID: controller.writerID,
++          initialCoordinate: request.position.coordinate
++        ))
++      activeTransport = dvt
++      activeOutputMode = .dvtBaseline
++      activeUpdateCadence = activeUpdateCadence ?? updateCadence
++      fallbackNotice = "Rich Drive unavailable. Using DVT Compatibility."
++      try await writeAuthoritativePosition(
++        request.position,
++        speedMetersPerSecond: controller.snapshot(now: clock.nowSeconds()).speedMetersPerSecond,
++        transport: dvt,
++        reason: "transport_runtime_fallback_takeover"
++      )
++      controller.resume(now: clock.nowSeconds())
++      let newScheduler = makeScheduler(
++        controller: controller,
++        transport: dvt,
++        cadence: activeUpdateCadence ?? updateCadence
++      )
++      scheduler = newScheduler
++      newScheduler.start()
++      transitionInProgress = false
++      await diagnostics.recordState(
++        "transport_fallback_completed",
++        message: "DVT Compatibility took over from Rich Drive",
++        metadata: fallbackMetadata(
++          event: "TRANSPORT_FALLBACK_COMPLETED",
++          reason: request.reason,
++          position: request.position,
++          oldWriterStopped: oldWriterStopped
++        ).merging([
++          "transition_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - transitionStart) * 1000),
++          "fallback_transport": DriveLocationOutputMode.dvtBaseline.displayName,
++          "successful_dvt_takeover": "true",
++        ]) { _, new in new }
++      )
++      await refresh()
++    } catch {
++      transitionInProgress = false
++      activeTransport = nil
++      activeOutputMode = nil
++      activeUpdateCadence = nil
++      background.end(reason: "transport fallback failed")
++      background.setDiagnostics(nil)
++      verifier.stop()
++      fail(error, operation: "transportFallback")
++      await diagnostics.recordState(
++        "transport_fallback_failed",
++        message: "DVT Compatibility failed to take over from Rich Drive",
++        metadata: fallbackMetadata(
++          event: "TRANSPORT_FALLBACK_FAILED",
++          reason: String(describing: error),
++          position: request.position,
++          oldWriterStopped: oldWriterStopped
++        )
++      )
++      await refresh()
++    }
++  }
++
++  private func handleCadenceFallback(_ request: DriveCadenceFallbackRequest) async {
++    guard !transitionInProgress, !didFallbackCadenceThisSession,
++      !clearRequested,
++      request.activeCadence == .smooth2Hz,
++      let controller,
++      let transport = activeTransport
++    else { return }
++    transitionInProgress = true
++    didFallbackCadenceThisSession = true
++    let transitionStart = ProcessInfo.processInfo.systemUptime
++
++    scheduler?.stop()
++    await scheduler?.waitUntilStopped()
++    scheduler = nil
++    controller.pauseForTransition(position: request.position, now: clock.nowSeconds())
++    await diagnostics.recordState(
++      "cadence_fallback_triggered",
++      message: "Smooth 2 Hz became unhealthy; falling back to Baseline 1 Hz Compatibility",
++      metadata: fallbackMetadata(
++        event: "CADENCE_FALLBACK_TRIGGERED",
++        reason: request.reason,
++        position: request.position,
++        oldWriterStopped: true
++      ).merging([
++        "previous_cadence": request.activeCadence.diagnosticName,
++        "fallback_cadence": DriveUpdateCadence.baseline1Hz.diagnosticName,
++        "active_transport": request.transportName,
++      ]) { _, new in new }
++    )
++
++    activeUpdateCadence = .baseline1Hz
++    fallbackNotice = "\(fallbackNotice.map { "\($0) " } ?? "")Using Baseline 1 Hz Compatibility."
++    guard !clearRequested else {
++      transitionInProgress = false
++      return
++    }
++    try? await writeAuthoritativePosition(
++      request.position,
++      speedMetersPerSecond: controller.snapshot(now: clock.nowSeconds()).speedMetersPerSecond,
++      transport: transport,
++      reason: "cadence_fallback_segment_start"
++    )
++    controller.resume(now: clock.nowSeconds())
++    let newScheduler = makeScheduler(controller: controller, transport: transport, cadence: .baseline1Hz)
++    scheduler = newScheduler
++    newScheduler.start()
++    transitionInProgress = false
++    await diagnostics.recordState(
++      "cadence_fallback_completed",
++      message: "Baseline 1 Hz Compatibility resumed from the current route position",
++      metadata: fallbackMetadata(
++        event: "CADENCE_FALLBACK_COMPLETED",
++        reason: request.reason,
++        position: request.position,
++        oldWriterStopped: true
++      ).merging([
++        "transition_duration_ms": String(format: "%.3f", max(0, ProcessInfo.processInfo.systemUptime - transitionStart) * 1000),
++        "active_cadence": DriveUpdateCadence.baseline1Hz.diagnosticName,
++      ]) { _, new in new }
++    )
++    await refresh()
++  }
++
++  private func writeAuthoritativePosition(
++    _ position: DrivePosition,
++    speedMetersPerSecond: Double,
++    transport: DriveLocationTransport,
++    reason: String
++  ) async throws {
++    guard let route = controller?.routeResampler(), let controller else { return }
++    let sample = RichDriveSampleBuilder.sample(
++      position: position,
++      route: route,
++      speedMetersPerSecond: speedMetersPerSecond,
++      previousCourseDegrees: nil
++    )
++    let requestTime = ProcessInfo.processInfo.systemUptime
++    let context = DriveTraceContext(
++      tickTraceID: "\(controller.sessionID.uuidString):\(reason)",
++      driveSessionID: controller.sessionID.uuidString,
++      tickSequence: 0,
++      requestSequence: 0,
++      updateRequestMonotonicTime: requestTime,
++      expectedRouteDistanceMeters: position.expectedDistanceMeters,
++      previousExpectedRouteDistanceMeters: nil,
++      expectedCoordinate: position.coordinate,
++      selectedSpeedMetersPerSecond: speedMetersPerSecond,
++      lifecycleState: background.applicationLifecycleState()
++    )
++    let result = try await transport.set(
++      sample: sample,
++      writerID: controller.writerID,
++      mode: .drive(sessionID: controller.sessionID, current: SimulatedCoordinate(position.coordinate)),
++      traceContext: context,
++      diagnostics: diagnostics
++    )
++    lastAuthoritativePosition = position
++    await diagnostics.recordRichDriveTransportSet(context: context, sample: sample, result: result)
++  }
++
++  private func fallbackMetadata(
++    event: String,
++    reason: String,
++    position: DrivePosition,
++    oldWriterStopped: Bool
++  ) -> [String: String] {
++    [
++      "event": event,
++      "fallback_reason": reason,
++      "route_progress_m": String(format: "%.3f", position.expectedDistanceMeters),
++      "latitude": String(format: "%.6f", position.coordinate.latitude),
++      "longitude": String(format: "%.6f", position.coordinate.longitude),
++      "active_transport": activeOutputMode?.displayName ?? outputMode.displayName,
++      "active_cadence": (activeUpdateCadence ?? updateCadence).diagnosticName,
++      "old_writer_confirmed_stopped": "\(oldWriterStopped)",
++      "timestamp": ISO8601DateFormatter().string(from: Date()),
++    ]
++  }
++
+   func pause() {
+     guard let controller else { return }
++    guard controller.currentState() == .driving else { return }
+     _ = controller.pause(now: clock.nowSeconds())
+     state = controller.currentState()
+     Task {
+@@ -398,38 +823,119 @@ final class DriveViewModel: ObservableObject {
+ 
+   func resume() {
+     guard let controller else { return }
++    let previousState = controller.currentState()
++    guard previousState == .paused || previousState == .holding else { return }
+     controller.resume(now: clock.nowSeconds())
+     state = controller.currentState()
++    if previousState == .holding, let activeTransport, scheduler == nil {
++      background.setDiagnostics(diagnostics)
++      background.begin()
++      if let position = controller.expectedPosition(now: clock.nowSeconds()) {
++        verifier.setRequestedCoordinate(
++          latitude: position.coordinate.latitude,
++          longitude: position.coordinate.longitude
++        )
++      }
++      verifier.start(backgroundCapable: true)
++      let newScheduler = makeScheduler(
++        controller: controller,
++        transport: activeTransport,
++        cadence: activeUpdateCadence ?? updateCadence
++      )
++      scheduler = newScheduler
++      newScheduler.start()
++    }
+     Task {
+       await diagnostics.recordState("driving", message: "drive resumed")
+       await refresh()
+     }
+   }
+ 
+-  func stopAndClear() {
++  func stopAndHold() {
++    Task {
++      guard let controller, let activeTransport else { return }
++      scheduler?.stop()
++      await scheduler?.waitUntilStopped()
++      scheduler = nil
++      let position = lastAuthoritativePosition
++        ?? controller.holdCurrent(now: clock.nowSeconds())
++      guard let position else { return }
++      controller.hold(position: position)
++      do {
++        try await writeAuthoritativePosition(
++          position,
++          speedMetersPerSecond: 0,
++          transport: activeTransport,
++          reason: "stop_and_hold"
++        )
++        status = "Holding Location"
++        state = controller.currentState()
++        background.end(reason: "drive stop and hold")
++        background.setDiagnostics(nil)
++        verifier.stop()
++        await diagnostics.recordState(
++          "holding",
++          message: "drive stopped and current simulated coordinate is held",
++          metadata: fallbackMetadata(
++            event: "DRIVE_STOP_AND_HOLD",
++            reason: "user_requested_stop_and_hold",
++            position: position,
++            oldWriterStopped: false
++          ))
++      } catch {
++        fail(error, operation: "stopAndHold")
++      }
++      await refresh()
++    }
++  }
++
++  func clearSimulation() {
+     Task {
+-      guard let controller else { return }
+-      let writerID = controller.writerID
++      let activeController = controller
++      let writerID = activeController?.writerID
++      clearRequested = true
+       scheduler?.stop()
+       await scheduler?.waitUntilStopped()
+       scheduler = nil
+-      controller.stop(clearSimulation: true)
++      activeController?.stop(clearSimulation: true)
++
++      var clearSucceeded = true
+       do {
+-        if let activeTransport {
++        if let activeTransport, let writerID {
+           try await activeTransport.stop(writerID: writerID, clearLocation: true)
+-          self.activeTransport = nil
+-        } else {
++        } else if let writerID {
+           try await coordinator.stopSimulation(writerID: writerID, clearLocation: true)
+         }
+-        status = "Drive stopped and simulation cleared."
++      } catch let error as POCError where error.code == .staleWriter {
++        clearSucceeded = true
+       } catch {
+-        fail(error, operation: "stopAndClear")
++        clearSucceeded = false
++        fail(error, operation: "clearSimulation")
+       }
+-      background.end(reason: "drive stop clear")
++
++      activeTransport = nil
++      activeOutputMode = nil
++      activeUpdateCadence = nil
++      lastAuthoritativePosition = nil
++      fallbackNotice = nil
++      transitionInProgress = false
++      background.end(reason: "drive clear simulation")
+       background.setDiagnostics(nil)
+       verifier.stop()
+-      await diagnostics.recordState("stopped", message: "explicit stop and clear")
++      if clearSucceeded {
++        status = "Simulation cleared. Real Core Location can resume."
++      }
++      await diagnostics.recordState(
++        "stopped",
++        message: "drive simulation explicitly cleared",
++        metadata: [
++          "event": "DRIVE_CLEAR_SIMULATION",
++          "clear_succeeded": "\(clearSucceeded)",
++          "active_transport": activeOutputMode?.displayName ?? "none",
++          "active_cadence": activeUpdateCadence?.diagnosticName ?? "none",
++        ])
+       _ = await diagnostics.finalizeSummary()
++      state = activeController?.currentState() ?? .stopped
+       await refresh()
+     }
+   }
+@@ -462,6 +968,15 @@ final class DriveViewModel: ObservableObject {
+     return String(format: "~%.1f m/update", meters)
+   }
+ 
++  var activeModeText: String {
++    "\(activeOutputMode?.displayName ?? outputMode.displayName) - \((activeUpdateCadence ?? updateCadence).displayName)"
++  }
++
++  var isFallbackActive: Bool {
++    activeOutputMode == .dvtBaseline && outputMode == .richXCUILocationExperimental
++      || activeUpdateCadence == .baseline1Hz && updateCadence == .smooth2Hz
++  }
++
+   private func coordinate(_ latitude: Double?, _ longitude: Double?) -> String {
+     guard let latitude, let longitude else { return "UNKNOWN" }
+     return String(format: "%.6f, %.6f", latitude, longitude)
+@@ -511,9 +1026,11 @@ final class DriveViewModel: ObservableObject {
+     case .dvtBaseline:
+       return DVTDriveLocationTransport(locationCoordinator: coordinator)
+     case .richXCUILocationExperimental:
+-      return XCTestRichDriveLocationTransport(
+-        locationCoordinator: coordinator,
+-        runnerClient: POCAppDependencies.tunnelClient
++      return LatestSampleDriveLocationTransport(
++        base: XCTestRichDriveLocationTransport(
++          locationCoordinator: coordinator,
++          runnerClient: POCAppDependencies.tunnelClient
++        )
+       )
+     }
+   }
+@@ -538,7 +1055,7 @@ struct DriveView: View {
+           routeSetupCard
+         case .routeReady:
+           routeReviewCard
+-        case .driving, .paused, .completedHolding:
++        case .driving, .paused, .holding, .completedHolding:
+           activeDriveCard
+         }
+         Spacer()
+@@ -547,16 +1064,6 @@ struct DriveView: View {
+     }
+     .navigationTitle("Drive")
+     .navigationBarTitleDisplayMode(.inline)
+-    .toolbar {
+-      ToolbarItem(placement: .topBarTrailing) {
+-        NavigationLink {
+-          DriveDiagnosticsView(model: model)
+-        } label: {
+-          Image(systemName: "wrench.and.screwdriver")
+-        }
+-        .accessibilityLabel("Drive Diagnostics")
+-      }
+-    }
+     .task {
+       model.startRefreshLoop()
+     }
+@@ -654,47 +1161,6 @@ struct DriveView: View {
+         Slider(value: $model.speedMPH, in: DriveSpeed.minimumMPH...DriveSpeed.maximumMPH, step: 5)
+       }
+ 
+-      VStack(alignment: .leading, spacing: 6) {
+-        Text("Playback Cadence")
+-          .font(.caption)
+-          .foregroundStyle(.secondary)
+-        Picker("Playback Cadence", selection: $model.updateCadence) {
+-          ForEach(DriveUpdateCadence.allCases) { cadence in
+-            Text(cadence.displayName).tag(cadence)
+-          }
+-        }
+-        .pickerStyle(.segmented)
+-        LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
+-          .font(.footnote)
+-          .foregroundStyle(.secondary)
+-      }
+-
+-      VStack(alignment: .leading, spacing: 6) {
+-        Text("Drive Output")
+-          .font(.caption)
+-          .foregroundStyle(.secondary)
+-        Picker(
+-          "Drive Output",
+-          selection: Binding(
+-            get: { model.outputMode },
+-            set: { model.selectOutputMode($0) }
+-          )
+-        ) {
+-          ForEach(DriveLocationOutputMode.allCases) { mode in
+-            Text(mode.displayName).tag(mode)
+-          }
+-        }
+-        .pickerStyle(.menu)
+-        if model.outputMode == .richXCUILocationExperimental {
+-          Text("Requires Developer Mode, LocalDevVPN, saved RPPairing, a preinstalled signed XCTest runner, and developer services.")
+-            .font(.caption2)
+-            .foregroundStyle(.secondary)
+-        }
+-        Text("Developer detail: \(model.outputMode.developerDetail)")
+-          .font(.caption2)
+-          .foregroundStyle(.secondary)
+-      }
+-
+       if model.status.hasPrefix("FAIL") {
+         Label(model.status, systemImage: "exclamationmark.triangle.fill")
+           .font(.footnote)
+@@ -726,7 +1192,7 @@ struct DriveView: View {
+     VStack(alignment: .leading, spacing: 10) {
+       HStack {
+         Circle()
+-          .fill(model.state == .paused ? Color.orange : Color.green)
++          .fill(model.state == .paused ? Color.orange : model.state == .driving ? Color.green : Color.blue)
+           .frame(width: 8, height: 8)
+         Text(driveStateLabel)
+           .font(.subheadline.weight(.semibold))
+@@ -738,11 +1204,7 @@ struct DriveView: View {
+       Text("\(model.expectedProgressText) of \(model.routeDistanceText)")
+         .font(.footnote)
+         .foregroundStyle(.secondary)
+-      Text("Output: \(model.outputMode.displayName)")
+-        .font(.footnote)
+-        .foregroundStyle(.secondary)
+-
+-      HStack(spacing: 10) {
++      VStack(spacing: 10) {
+         if model.state == .paused {
+           Button {
+             model.resume()
+@@ -751,6 +1213,14 @@ struct DriveView: View {
+               .frame(maxWidth: .infinity)
+           }
+           .buttonStyle(.borderedProminent)
++        } else if model.state == .holding {
++          Button {
++            model.resume()
++          } label: {
++            Label("Resume Drive", systemImage: "play.fill")
++              .frame(maxWidth: .infinity)
++          }
++          .buttonStyle(.borderedProminent)
+         } else if model.state == .driving {
+           Button {
+             model.pause()
+@@ -761,10 +1231,20 @@ struct DriveView: View {
+           .buttonStyle(.bordered)
+         }
+ 
++        if model.state == .driving || model.state == .paused {
++          Button {
++            model.stopAndHold()
++          } label: {
++            Label("Stop & Hold", systemImage: "pause.circle.fill")
++              .frame(maxWidth: .infinity)
++          }
++          .buttonStyle(.bordered)
++        }
++
+         Button(role: .destructive) {
+-          model.stopAndClear()
++          model.clearSimulation()
+         } label: {
+-          Label("Stop", systemImage: "stop.fill")
++          Label("Clear Simulation", systemImage: "xmark.circle.fill")
+             .frame(maxWidth: .infinity)
+         }
+         .buttonStyle(.bordered)
+@@ -779,7 +1259,8 @@ struct DriveView: View {
+     switch model.state {
+     case .driving: return "Driving"
+     case .paused: return "Paused"
+-    case .completedHolding: return "Arrived"
++    case .holding: return "Holding Location"
++    case .completedHolding: return "Arrived — Holding Location"
+     default: return model.state.rawValue
+     }
+   }
+@@ -819,6 +1300,10 @@ struct DriveDiagnosticsView: View {
+         LabeledContent("Drive Output", value: model.outputMode.displayName)
+         LabeledContent("Transport Detail", value: model.outputMode.developerDetail)
+         LabeledContent("Playback Cadence", value: model.updateCadence.displayName)
++        LabeledContent("Active Mode", value: model.activeModeText)
++        if let fallbackNotice = model.fallbackNotice {
++          LabeledContent("Fallback", value: fallbackNotice)
++        }
+         LabeledContent("Estimated step", value: model.expectedDistancePerUpdateText)
+       }
+ 
+@@ -849,7 +1334,8 @@ struct DriveDiagnosticsView: View {
+         Button("START DRIVE") { model.startDrive() }
+         Button("PAUSE") { model.pause() }
+         Button("RESUME") { model.resume() }
+-        Button("STOP / CLEAR SIMULATION", role: .destructive) { model.stopAndClear() }
++        Button("STOP & HOLD") { model.stopAndHold() }
++        Button("CLEAR SIMULATION", role: .destructive) { model.clearSimulation() }
+       }
+ 
+       Section("Export") {
+diff --git a/ios/LocationWitness/LocationWitnessView.swift b/ios/LocationWitness/LocationWitnessView.swift
+index 4edfb69..f3a7d8f 100644
+--- a/ios/LocationWitness/LocationWitnessView.swift
++++ b/ios/LocationWitness/LocationWitnessView.swift
+@@ -15,6 +15,7 @@ final class LocationWitnessViewModel: ObservableObject {
+     @Published private(set) var exportAvailabilityText = "No recording data to export."
+ 
+     private let recorder = LocationWitnessRecorder()
++    private var preparedExportSignature: ExportSignature?
+ 
+     init() {
+         recorder.onChange = { [weak self] in
+@@ -25,6 +26,7 @@ final class LocationWitnessViewModel: ObservableObject {
+ 
+     func reset() {
+         recorder.reset()
++        removePreparedExportFile()
+         statusText = "Reset"
+         refresh()
+     }
+@@ -40,6 +42,7 @@ final class LocationWitnessViewModel: ObservableObject {
+         recorder.stop()
+         isRecording = false
+         statusText = "Stopped"
++        prepareMetricsExport()
+         refresh()
+     }
+ 
+@@ -51,13 +54,7 @@ final class LocationWitnessViewModel: ObservableObject {
+         isRecording = recorder.isRecording
+         latestRawMetadataSummaryText = observations.last?.wireText ?? Self.unknownObservationText
+         persistedObservationsText = observations.map(\.wireText).joined(separator: "|")
+-        metricsExportFileURL = Self.writeMetricsExport(
+-            observations: observations,
+-            callbackCount: recorder.callbackCount,
+-            isRecording: recorder.isRecording,
+-            recordingStartTimestamp: recorder.recordingStartTimestamp,
+-            recordingStopTimestamp: recorder.recordingStopTimestamp
+-        )
++        prepareMetricsExportIfNeeded()
+         if observations.isEmpty {
+             exportAvailabilityText = "No recording data to export."
+         } else if recorder.isRecording {
+@@ -69,15 +66,71 @@ final class LocationWitnessViewModel: ObservableObject {
+         }
+     }
+ 
++    func prepareMetricsExportForSharing() -> URL? {
++        prepareMetricsExport()
++        return metricsExportFileURL
++    }
++
++    private func prepareMetricsExportIfNeeded() {
++        let signature = ExportSignature(
++            observationCount: recorder.observations.count,
++            callbackCount: recorder.callbackCount,
++            recordingStartTimestamp: recorder.recordingStartTimestamp,
++            recordingStopTimestamp: recorder.recordingStopTimestamp
++        )
++        guard !recorder.observations.isEmpty, !recorder.isRecording else {
++            removePreparedExportFile()
++            return
++        }
++        guard signature != preparedExportSignature || metricsExportFileURL?.isReachableFileURL != true else {
++            return
++        }
++        prepareMetricsExport(generatedAt: recorder.recordingStopTimestamp ?? Date())
++    }
++
++    private func prepareMetricsExport(generatedAt: Date = Date()) {
++        guard !recorder.observations.isEmpty, !recorder.isRecording else {
++            removePreparedExportFile()
++            return
++        }
++        let signature = ExportSignature(
++            observationCount: recorder.observations.count,
++            callbackCount: recorder.callbackCount,
++            recordingStartTimestamp: recorder.recordingStartTimestamp,
++            recordingStopTimestamp: recorder.recordingStopTimestamp
++        )
++        if signature == preparedExportSignature, metricsExportFileURL?.isReachableFileURL == true {
++            return
++        }
++        removePreparedExportFile()
++        metricsExportFileURL = Self.writeMetricsExport(
++            observations: recorder.observations,
++            callbackCount: recorder.callbackCount,
++            isRecording: recorder.isRecording,
++            recordingStartTimestamp: recorder.recordingStartTimestamp,
++            recordingStopTimestamp: recorder.recordingStopTimestamp,
++            generatedAt: generatedAt
++        )
++        preparedExportSignature = metricsExportFileURL == nil ? nil : signature
++    }
++
++    private func removePreparedExportFile() {
++        if let metricsExportFileURL {
++            try? FileManager.default.removeItem(at: metricsExportFileURL)
++        }
++        metricsExportFileURL = nil
++        preparedExportSignature = nil
++    }
++
+     private static func writeMetricsExport(
+         observations: [LocationWitnessObservation],
+         callbackCount: Int,
+         isRecording: Bool,
+         recordingStartTimestamp: Date?,
+-        recordingStopTimestamp: Date?
++        recordingStopTimestamp: Date?,
++        generatedAt: Date
+     ) -> URL? {
+         guard !observations.isEmpty, !isRecording else { return nil }
+-        let generatedAt = Date()
+         let url = FileManager.default.temporaryDirectory
+             .appendingPathComponent(LocationWitnessMetricsExporter.fileName(generatedAt: generatedAt))
+         let document = LocationWitnessMetricsExporter.document(
+@@ -124,6 +177,13 @@ final class LocationWitnessViewModel: ObservableObject {
+         @unknown default: return "unknown"
+         }
+     }
++
++    private struct ExportSignature: Equatable {
++        let observationCount: Int
++        let callbackCount: Int
++        let recordingStartTimestamp: Date?
++        let recordingStopTimestamp: Date?
++    }
+ }
+ 
+ struct LocationWitnessView: View {
+@@ -132,33 +192,36 @@ struct LocationWitnessView: View {
+     var body: some View {
+         List {
+             Section("Recorder") {
+-                HStack {
+-                    Button("Reset") {
++                LazyVGrid(
++                    columns: [
++                        GridItem(.flexible(), spacing: 10),
++                        GridItem(.flexible(), spacing: 10)
++                    ],
++                    spacing: 10
++                ) {
++                    witnessButton("Reset", id: "LocationWitness.Reset") {
+                         model.reset()
+                     }
+-                    .accessibilityIdentifier("LocationWitness.Reset")
+ 
+-                    Button("Start") {
++                    witnessButton("Start", id: "LocationWitness.Start") {
+                         model.start()
+                     }
+                     .disabled(model.isRecording)
+-                    .accessibilityIdentifier("LocationWitness.Start")
+ 
+-                    Button("Stop") {
++                    witnessButton("Stop", id: "LocationWitness.Stop", role: .destructive) {
+                         model.stop()
+                     }
+                     .disabled(!model.isRecording)
+-                    .accessibilityIdentifier("LocationWitness.Stop")
+-
+-                    if let metricsExportFileURL = model.metricsExportFileURL {
+-                        ShareLink("Export Metrics", item: metricsExportFileURL)
+-                            .accessibilityIdentifier("LocationWitness.ExportMetrics")
+-                    } else {
+-                        Button("Export Metrics") {}
+-                            .disabled(true)
+-                            .accessibilityIdentifier("LocationWitness.ExportMetrics")
++
++                    witnessButton("Export Metrics", id: "LocationWitness.ExportMetrics") {
++                        if let url = model.prepareMetricsExportForSharing() {
++                            ShareSheetPresenter.present(url: url)
++                        }
+                     }
++                    .disabled(model.metricsExportFileURL == nil)
++                    .accessibilityValue(model.metricsExportFileURL?.lastPathComponent ?? "disabled")
+                 }
++                .buttonStyle(.bordered)
+ 
+                 Text(model.statusText)
+                     .font(.caption.monospaced())
+@@ -194,6 +257,76 @@ struct LocationWitnessView: View {
+             model.refresh()
+         }
+     }
++
++    private func witnessButton(
++        _ title: String,
++        id: String,
++        role: ButtonRole? = nil,
++        action: @escaping () -> Void
++    ) -> some View {
++        Button(role: role, action: action) {
++            Text(title)
++                .font(.subheadline.weight(.semibold))
++                .lineLimit(2)
++                .multilineTextAlignment(.center)
++                .frame(maxWidth: .infinity, minHeight: 44)
++                .contentShape(Rectangle())
++        }
++        .accessibilityIdentifier(id)
++    }
++}
++
++private enum ShareSheetPresenter {
++    @MainActor
++    static func present(url: URL) {
++        guard let presenter = UIApplication.shared.activePresenter else { return }
++        let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
++        if let popover = activity.popoverPresentationController {
++            popover.sourceView = presenter.view
++            popover.sourceRect = CGRect(
++                x: presenter.view.bounds.midX,
++                y: presenter.view.bounds.midY,
++                width: 0,
++                height: 0
++            )
++            popover.permittedArrowDirections = []
++        }
++        presenter.present(activity, animated: true)
++    }
++}
++
++private extension UIApplication {
++    @MainActor
++    var activePresenter: UIViewController? {
++        connectedScenes
++            .compactMap { $0 as? UIWindowScene }
++            .filter { $0.activationState == .foregroundActive }
++            .flatMap(\.windows)
++            .first { $0.isKeyWindow }?
++            .rootViewController?
++            .topMostPresented
++    }
++}
++
++private extension UIViewController {
++    var topMostPresented: UIViewController {
++        if let navigationController = self as? UINavigationController {
++            return navigationController.visibleViewController?.topMostPresented ?? navigationController
++        }
++        if let tabBarController = self as? UITabBarController {
++            return tabBarController.selectedViewController?.topMostPresented ?? tabBarController
++        }
++        if let presentedViewController {
++            return presentedViewController.topMostPresented
++        }
++        return self
++    }
++}
++
++private extension URL {
++    var isReachableFileURL: Bool {
++        (try? checkResourceIsReachable()) == true
++    }
+ }
+ 
+ final class LocationWitnessRecorder: NSObject, CLLocationManagerDelegate {
+diff --git a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveLocationTransport.swift b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveLocationTransport.swift
+index 4bd2c31..d10e8c5 100644
+--- a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveLocationTransport.swift
++++ b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveLocationTransport.swift
+@@ -86,6 +86,7 @@ public struct DriveLocationTransportSetResult: Sendable {
+   public let ackMonotonicTime: TimeInterval?
+   public let ackLatencyMs: Double?
+   public let droppedOrReplacedSamples: Int
++  public let authoritative: Bool
+ 
+   public init(
+     transportName: String,
+@@ -93,7 +94,8 @@ public struct DriveLocationTransportSetResult: Sendable {
+     sendMonotonicTime: TimeInterval? = nil,
+     ackMonotonicTime: TimeInterval? = nil,
+     ackLatencyMs: Double? = nil,
+-    droppedOrReplacedSamples: Int = 0
++    droppedOrReplacedSamples: Int = 0,
++    authoritative: Bool = true
+   ) {
+     self.transportName = transportName
+     self.connectionGeneration = connectionGeneration
+@@ -101,6 +103,57 @@ public struct DriveLocationTransportSetResult: Sendable {
+     self.ackMonotonicTime = ackMonotonicTime
+     self.ackLatencyMs = ackLatencyMs
+     self.droppedOrReplacedSamples = droppedOrReplacedSamples
++    self.authoritative = authoritative
++  }
++}
++
++public struct DriveTransportFallbackRequest: Sendable {
++  public let reason: String
++  public let errorDescription: String?
++  public let position: DrivePosition
++  public let transportName: String
++  public let routeProgressMeters: CLLocationDistance
++  public let timestamp: Date
++
++  public init(
++    reason: String,
++    errorDescription: String?,
++    position: DrivePosition,
++    transportName: String,
++    routeProgressMeters: CLLocationDistance,
++    timestamp: Date = Date()
++  ) {
++    self.reason = reason
++    self.errorDescription = errorDescription
++    self.position = position
++    self.transportName = transportName
++    self.routeProgressMeters = routeProgressMeters
++    self.timestamp = timestamp
++  }
++}
++
++public struct DriveCadenceFallbackRequest: Sendable {
++  public let reason: String
++  public let position: DrivePosition
++  public let activeCadence: DriveUpdateCadence
++  public let transportName: String
++  public let routeProgressMeters: CLLocationDistance
++  public let timestamp: Date
++
++  public init(
++    reason: String,
++    position: DrivePosition,
++    activeCadence: DriveUpdateCadence,
++    transportName: String,
++    routeProgressMeters: CLLocationDistance,
++    timestamp: Date = Date()
++  ) {
++    self.reason = reason
++    self.position = position
++    self.activeCadence = activeCadence
++    self.transportName = transportName
++    self.routeProgressMeters = routeProgressMeters
++    self.timestamp = timestamp
+   }
+ }
+ 
+@@ -112,6 +165,10 @@ public protocol DriveLocationTransport: Sendable {
+     sample: RichDriveSample, writerID: String, mode: SimulationMode,
+     traceContext: DriveTraceContext?, diagnostics: DriveDiagnostics?
+   ) async throws -> DriveLocationTransportSetResult
++  func submit(
++    sample: RichDriveSample, writerID: String, mode: SimulationMode,
++    traceContext: DriveTraceContext?, diagnostics: DriveDiagnostics?
++  ) async throws -> DriveLocationTransportSetResult
+   func stop(writerID: String, clearLocation: Bool) async throws
+   func reconnectIfNeeded() async
+   func currentConnectionGeneration() async -> Int
+@@ -119,6 +176,25 @@ public protocol DriveLocationTransport: Sendable {
+     writerID: String, provider: (@Sendable () async -> RichDriveSample?)?) async
+ }
+ 
++public extension DriveLocationTransport {
++  func submit(
++    sample: RichDriveSample, writerID: String, mode: SimulationMode,
++    traceContext: DriveTraceContext?, diagnostics: DriveDiagnostics?
++  ) async throws -> DriveLocationTransportSetResult {
++    try await set(
++      sample: sample,
++      writerID: writerID,
++      mode: mode,
++      traceContext: traceContext,
++      diagnostics: diagnostics
++    )
++  }
++}
++
++public protocol TerminalDriveLocationTransport: DriveLocationTransport {
++  func markTerminalForStop() async
++}
++
+ public final class DVTDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
+   public let transportName = DriveLocationOutputMode.dvtBaseline.displayName
+ 
+@@ -180,7 +256,188 @@ public final class DVTDriveLocationTransport: DriveLocationTransport, @unchecked
+   }
+ }
+ 
+-public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
++public final class LatestSampleDriveLocationTransport: DriveLocationTransport, @unchecked Sendable {
++  public var transportName: String { base.transportName }
++
++  private let base: DriveLocationTransport
++  private let sender = LatestSampleDriveTransportSender()
++
++  public init(base: DriveLocationTransport) {
++    self.base = base
++  }
++
++  public func start(_ context: DriveLocationTransportStartContext) async throws {
++    await sender.start()
++    try await base.start(context)
++  }
++
++  public func set(
++    sample: RichDriveSample,
++    writerID: String,
++    mode: SimulationMode,
++    traceContext: DriveTraceContext?,
++    diagnostics: DriveDiagnostics?
++  ) async throws -> DriveLocationTransportSetResult {
++    try await base.set(
++      sample: sample,
++      writerID: writerID,
++      mode: mode,
++      traceContext: traceContext,
++      diagnostics: diagnostics
++    )
++  }
++
++  public func submit(
++    sample: RichDriveSample,
++    writerID: String,
++    mode: SimulationMode,
++    traceContext: DriveTraceContext?,
++    diagnostics: DriveDiagnostics?
++  ) async throws -> DriveLocationTransportSetResult {
++    try await sender.submit(
++      sample: sample,
++      writerID: writerID,
++      mode: mode,
++      traceContext: traceContext,
++      diagnostics: diagnostics,
++      base: base,
++      transportName: transportName
++    )
++  }
++
++  public func stop(writerID: String, clearLocation: Bool) async throws {
++    await (base as? TerminalDriveLocationTransport)?.markTerminalForStop()
++    await sender.stop()
++    try await base.stop(writerID: writerID, clearLocation: clearLocation)
++  }
++
++  public func reconnectIfNeeded() async {
++    await base.reconnectIfNeeded()
++  }
++
++  public func currentConnectionGeneration() async -> Int {
++    await base.currentConnectionGeneration()
++  }
++
++  public func setReconnectRestoreProvider(
++    writerID: String,
++    provider: (@Sendable () async -> RichDriveSample?)?
++  ) async {
++    await base.setReconnectRestoreProvider(writerID: writerID, provider: provider)
++  }
++}
++
++private struct LatestSampleDriveTransportItem: Sendable {
++  let sample: RichDriveSample
++  let writerID: String
++  let mode: SimulationMode
++  let traceContext: DriveTraceContext?
++  let diagnostics: DriveDiagnostics?
++}
++
++private actor LatestSampleDriveTransportSender {
++  private var pending: LatestSampleDriveTransportItem?
++  private var worker: Task<Void, Never>?
++  private var stopped = true
++  private var lastFailure: Error?
++
++  func start() {
++    pending = nil
++    lastFailure = nil
++    stopped = false
++  }
++
++  func submit(
++    sample: RichDriveSample,
++    writerID: String,
++    mode: SimulationMode,
++    traceContext: DriveTraceContext?,
++    diagnostics: DriveDiagnostics?,
++    base: DriveLocationTransport,
++    transportName: String
++  ) async throws -> DriveLocationTransportSetResult {
++    if let failure = lastFailure {
++      lastFailure = nil
++      throw failure
++    }
++    guard !stopped else {
++      throw POCError(.disconnected, "Latest-sample sender is stopped.")
++    }
++
++    let replaced = pending == nil ? 0 : 1
++    pending = LatestSampleDriveTransportItem(
++      sample: sample,
++      writerID: writerID,
++      mode: mode,
++      traceContext: traceContext,
++      diagnostics: diagnostics
++    )
++    if worker == nil {
++      worker = Task { [weak self] in
++        await self?.drain(base: base, transportName: transportName)
++      }
++    }
++    return DriveLocationTransportSetResult(
++      transportName: transportName,
++      connectionGeneration: await base.currentConnectionGeneration(),
++      droppedOrReplacedSamples: replaced,
++      authoritative: false
++    )
++  }
++
++  func stop() async {
++    stopped = true
++    pending = nil
++    worker?.cancel()
++    let running = worker
++    await running?.value
++    worker = nil
++  }
++
++  private func drain(base: DriveLocationTransport, transportName: String) async {
++    while !Task.isCancelled {
++      guard let item = takePending() else { break }
++      do {
++        let result = try await base.set(
++          sample: item.sample,
++          writerID: item.writerID,
++          mode: item.mode,
++          traceContext: item.traceContext,
++          diagnostics: item.diagnostics
++        )
++        guard !Task.isCancelled, !stopped else { continue }
++        if let traceContext = item.traceContext {
++          await item.diagnostics?.recordRichDriveTransportSet(
++            context: traceContext,
++            sample: item.sample,
++            result: result
++          )
++        }
++      } catch {
++        guard !Task.isCancelled, !stopped else { continue }
++        lastFailure = error
++        await item.diagnostics?.recordState(
++          "rich_latest_sample_send_failed",
++          message: "latest-sample transport send failed",
++          metadata: ["error": String(describing: error), "transport": transportName]
++        )
++      }
++    }
++    finishWorker()
++  }
++
++  private func takePending() -> LatestSampleDriveTransportItem? {
++    guard !stopped else { return nil }
++    defer { pending = nil }
++    return pending
++  }
++
++  private func finishWorker() {
++    worker = nil
++  }
++}
++
++public final class XCTestRichDriveLocationTransport: TerminalDriveLocationTransport, @unchecked Sendable {
+   public let transportName = DriveLocationOutputMode.richXCUILocationExperimental.displayName
+ 
+   private let coordinator: LocationCoordinator
+@@ -189,7 +446,7 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
+   private let port: UInt16
+   private let runnerTimeoutSeconds: Double
+   private let restoreStore = RichDriveRestoreSampleStore()
+-  private var sessionID: String?
++  private let lifecycle = RichDriveTransportLifecycle()
+ 
+   public init(
+     locationCoordinator: LocationCoordinator,
+@@ -205,7 +462,7 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
+   }
+ 
+   public func start(_ context: DriveLocationTransportStartContext) async throws {
+-    sessionID = context.sessionID.uuidString
++    await lifecycle.start(sessionID: context.sessionID.uuidString)
+     try await coordinator.startSimulation(
+       writerID: context.writerID,
+       mode: .drive(
+@@ -228,9 +485,16 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
+     traceContext: DriveTraceContext?,
+     diagnostics: DriveDiagnostics?
+   ) async throws -> DriveLocationTransportSetResult {
++    guard let activeSessionID = await lifecycle.activeSessionID() else {
++      throw POCError(.disconnected, "Rich Drive transport is stopped.")
++    }
+     let generation = await coordinator.currentConnectionGeneration()
+     let result = try await tcpClient.setLocation(
+-      sample: sample, sessionID: sessionID, ackTimeoutSeconds: 0.2)
++      sample: sample, sessionID: activeSessionID, ackTimeoutSeconds: 0.2)
++    guard await lifecycle.isActive(sessionID: activeSessionID) else {
++      throw CancellationError()
++    }
++    try await coordinator.holdSimulation(writerID: writerID, mode: mode)
+     return DriveLocationTransportSetResult(
+       transportName: transportName,
+       connectionGeneration: generation,
+@@ -242,8 +506,10 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
+   }
+ 
+   public func stop(writerID: String, clearLocation: Bool) async throws {
++    let stoppedSessionID = await lifecycle.markTerminal()
++    await restoreStore.set(nil)
+     _ = try? await tcpClient.send(
+-      RichDriveIPCMessage(type: .stopSession, sequence: -1, sessionID: sessionID),
++      RichDriveIPCMessage(type: .stopSession, sequence: -1, sessionID: stoppedSessionID),
+       ackTimeoutSeconds: 1
+     )
+     await tcpClient.disconnect()
+@@ -251,21 +517,33 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
+     try await coordinator.stopSimulation(writerID: writerID, clearLocation: clearLocation)
+   }
+ 
++  public func markTerminalForStop() async {
++    _ = await lifecycle.markTerminal()
++    await restoreStore.set(nil)
++  }
++
+   public func reconnectIfNeeded() async {
++    guard let activeSessionID = await lifecycle.activeSessionID() else { return }
+     await tcpClient.disconnect()
+     await runnerClient.stopGate3OnDeviceXCTest()
++    guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
+     await coordinator.reconnectIfNeeded()
++    guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
+     do {
+       try await runnerClient.startRichDriveOnDeviceXCTest(
+         port: port, timeoutSeconds: runnerTimeoutSeconds)
++      guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
+       try await tcpClient.connect(timeoutSeconds: 8)
++      guard await lifecycle.isActive(sessionID: activeSessionID) else { return }
+       _ = try await tcpClient.send(
+-        RichDriveIPCMessage(type: .startSession, sequence: 0, sessionID: sessionID),
++        RichDriveIPCMessage(type: .startSession, sequence: 0, sessionID: activeSessionID),
+         ackTimeoutSeconds: 1
+       )
+-      if let sample = await currentRestoreSample() {
++      if await lifecycle.isActive(sessionID: activeSessionID),
++        let sample = await currentRestoreSample()
++      {
+         _ = try await tcpClient.setLocation(
+-          sample: sample, sessionID: sessionID, ackTimeoutSeconds: 0.5)
++          sample: sample, sessionID: activeSessionID, ackTimeoutSeconds: 0.5)
+       }
+     } catch {
+       // The next scheduler send records the concrete failure.
+@@ -291,6 +569,29 @@ public final class XCTestRichDriveLocationTransport: DriveLocationTransport, @un
+   }
+ }
+ 
++private actor RichDriveTransportLifecycle {
++  private var sessionID: String?
++  private var terminal = true
++
++  func start(sessionID: String) {
++    self.sessionID = sessionID
++    terminal = false
++  }
++
++  func activeSessionID() -> String? {
++    terminal ? nil : sessionID
++  }
++
++  func isActive(sessionID candidate: String) -> Bool {
++    !terminal && sessionID == candidate
++  }
++
++  func markTerminal() -> String? {
++    terminal = true
++    return sessionID
++  }
++}
++
+ private actor RichDriveRestoreSampleStore {
+   private var provider: (@Sendable () async -> RichDriveSample?)?
+ 
+@@ -382,9 +683,11 @@ public actor RichDriveTCPClient {
+       guard socketFD >= 0 else {
+         throw POCError(.disconnected, "Rich Drive IPC is not connected.")
+       }
++      try Task.checkCancellation()
+       let sendTime = ProcessInfo.processInfo.systemUptime
+       let line = try RichDriveIPCCodec.encodeLine(message)
+       try writeAll(line)
++      try Task.checkCancellation()
+       let ack = try readAck(sequence: message.sequence, timeoutSeconds: ackTimeoutSeconds)
+       let ackTime = ack == nil ? nil : ProcessInfo.processInfo.systemUptime
+       return RichDriveTCPSendResult(
+@@ -429,6 +732,7 @@ public actor RichDriveTCPClient {
+       guard timeoutSeconds > 0 else { return nil }
+       let deadline = Date().addingTimeInterval(timeoutSeconds)
+       while Date() < deadline {
++        try Task.checkCancellation()
+         if let line = nextBufferedLine(),
+           let ack = try? RichDriveIPCCodec.decodeAcknowledgementLine(line),
+           ack.sequence == expectedSequence
+@@ -438,7 +742,8 @@ public actor RichDriveTCPClient {
+ 
+         let remaining = max(0, deadline.timeIntervalSinceNow)
+         var descriptor = pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)
+-        let ready = Darwin.poll(&descriptor, 1, Int32(remaining * 1000))
++        let pollMilliseconds = Int32(min(remaining * 1000, 50))
++        let ready = Darwin.poll(&descriptor, 1, pollMilliseconds)
+         if ready < 0 {
+           throw POCError(.disconnected, "Rich Drive IPC ACK poll failed: \(errnoDescription())")
+         }
+diff --git a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveScheduler.swift b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveScheduler.swift
+index 1a088b6..16cfba5 100644
+--- a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveScheduler.swift
++++ b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveScheduler.swift
+@@ -11,9 +11,12 @@ public final class DriveScheduler: @unchecked Sendable {
+   private let observedProvider: @Sendable () -> LocationObservation?
+   private let lifecycleProvider: @Sendable () -> String
+   private let backgroundActiveProvider: @Sendable () -> Bool
++  private let onAuthoritativePosition: @Sendable (DrivePosition, RichDriveSample, DriveLocationTransportSetResult) async -> Void
++  private let onTransportFallbackNeeded: @Sendable (DriveTransportFallbackRequest) -> Void
++  private let onCadenceFallbackNeeded: @Sendable (DriveCadenceFallbackRequest) -> Void
+ 
+   private let lock = NSLock()
+-  private var task: Task<Void, Never>?
++  private var task: RunningTask?
+   private var sequenceNumber = 0
+   private var tickNumber = 0
+   private var firstTickClockTime: TimeInterval?
+@@ -21,6 +24,9 @@ public final class DriveScheduler: @unchecked Sendable {
+   private var previousExpectedDistanceForDiagnostics: CLLocationDistance?
+   private var previousExpectedCoordinateForDiagnostics: CLLocationCoordinate2D?
+   private var previousRichCourseDegrees: Double?
++  private var transportHealth = DriveTransportHealthPolicy()
++  private var cadenceHealth = DriveCadenceHealthPolicy()
++  private var fallbackRequested = false
+ 
+   public init(
+     controller: DriveSessionController,
+@@ -30,7 +36,10 @@ public final class DriveScheduler: @unchecked Sendable {
+     updateCadence: DriveUpdateCadence = .baseline1Hz,
+     observedProvider: @escaping @Sendable () -> LocationObservation? = { nil },
+     lifecycleProvider: @escaping @Sendable () -> String = { "unknown" },
+-    backgroundActiveProvider: @escaping @Sendable () -> Bool = { false }
++    backgroundActiveProvider: @escaping @Sendable () -> Bool = { false },
++    onAuthoritativePosition: @escaping @Sendable (DrivePosition, RichDriveSample, DriveLocationTransportSetResult) async -> Void = { _, _, _ in },
++    onTransportFallbackNeeded: @escaping @Sendable (DriveTransportFallbackRequest) -> Void = { _ in },
++    onCadenceFallbackNeeded: @escaping @Sendable (DriveCadenceFallbackRequest) -> Void = { _ in }
+   ) {
+     self.controller = controller
+     self.locationTransport = DVTDriveLocationTransport(locationCoordinator: locationCoordinator)
+@@ -41,6 +50,9 @@ public final class DriveScheduler: @unchecked Sendable {
+     self.observedProvider = observedProvider
+     self.lifecycleProvider = lifecycleProvider
+     self.backgroundActiveProvider = backgroundActiveProvider
++    self.onAuthoritativePosition = onAuthoritativePosition
++    self.onTransportFallbackNeeded = onTransportFallbackNeeded
++    self.onCadenceFallbackNeeded = onCadenceFallbackNeeded
+   }
+ 
+   public init(
+@@ -51,7 +63,10 @@ public final class DriveScheduler: @unchecked Sendable {
+     updateCadence: DriveUpdateCadence = .baseline1Hz,
+     observedProvider: @escaping @Sendable () -> LocationObservation? = { nil },
+     lifecycleProvider: @escaping @Sendable () -> String = { "unknown" },
+-    backgroundActiveProvider: @escaping @Sendable () -> Bool = { false }
++    backgroundActiveProvider: @escaping @Sendable () -> Bool = { false },
++    onAuthoritativePosition: @escaping @Sendable (DrivePosition, RichDriveSample, DriveLocationTransportSetResult) async -> Void = { _, _, _ in },
++    onTransportFallbackNeeded: @escaping @Sendable (DriveTransportFallbackRequest) -> Void = { _ in },
++    onCadenceFallbackNeeded: @escaping @Sendable (DriveCadenceFallbackRequest) -> Void = { _ in }
+   ) {
+     self.controller = controller
+     self.locationTransport = locationTransport
+@@ -62,38 +77,59 @@ public final class DriveScheduler: @unchecked Sendable {
+     self.observedProvider = observedProvider
+     self.lifecycleProvider = lifecycleProvider
+     self.backgroundActiveProvider = backgroundActiveProvider
++    self.onAuthoritativePosition = onAuthoritativePosition
++    self.onTransportFallbackNeeded = onTransportFallbackNeeded
++    self.onCadenceFallbackNeeded = onCadenceFallbackNeeded
+   }
+ 
+   public func start() {
++    let taskID = UUID()
++    let newTask = Task { [weak self] in
++      await self?.run()
++      self?.markTaskFinished(id: taskID)
++    }
+     lock.lock()
+     guard task == nil else {
+       lock.unlock()
++      newTask.cancel()
+       return
+     }
+-    task = Task { [weak self] in
+-      await self?.run()
+-    }
++    task = RunningTask(id: taskID, task: newTask)
+     lock.unlock()
+   }
+ 
+   public func stop() {
+     lock.lock()
+-    task?.cancel()
+-    task = nil
++    task?.task.cancel()
+     lock.unlock()
+   }
+ 
+   public func waitUntilStopped() async {
+     let running = currentTask()
+-    await running?.value
++    await running?.task.value
++    if let running {
++      clearTaskIfCurrent(id: running.id)
++    }
+   }
+ 
+-  private func currentTask() -> Task<Void, Never>? {
++  private func currentTask() -> RunningTask? {
+     lock.lock()
+     defer { lock.unlock() }
+     return task
+   }
+ 
++  private func markTaskFinished(id: UUID) {
++    clearTaskIfCurrent(id: id)
++  }
++
++  private func clearTaskIfCurrent(id: UUID) {
++    lock.lock()
++    if task?.id == id {
++      task = nil
++    }
++    lock.unlock()
++  }
++
+   private func run() async {
+     await locationTransport.setReconnectRestoreProvider(writerID: controller.writerID) {
+       [weak self, controller, clock] in
+@@ -112,7 +148,7 @@ public final class DriveScheduler: @unchecked Sendable {
+ 
+     while !Task.isCancelled {
+       let state = controller.currentState()
+-      guard state == .driving || state == .completedHolding else {
++      guard state == .driving else {
+         wasRunnable = false
+         resetSchedulerSegment()
+         do {
+@@ -166,9 +202,19 @@ public final class DriveScheduler: @unchecked Sendable {
+       )
+ 
+       if position.completed, controller.currentState() == .driving {
+-        _ = controller.completeHolding(now: now)
++        let heldPosition = controller.completeHolding(now: now) ?? position
++        await sendHeldDestination(position: heldPosition, now: now)
+         await diagnostics.recordState(
+-          "completed_holding", message: "route completed; destination held until explicit stop")
++          "completed_holding",
++          message: "route completed; destination held until explicit clear",
++          metadata: [
++            "event": "DRIVE_DESTINATION_HELD",
++            "active_transport": locationTransport.transportName,
++            "active_cadence": updateCadence.diagnosticName,
++            "route_progress_m": String(format: "%.3f", heldPosition.expectedDistanceMeters),
++            "latitude": String(format: "%.6f", heldPosition.coordinate.latitude),
++            "longitude": String(format: "%.6f", heldPosition.coordinate.longitude),
++          ])
+         break
+       }
+ 
+@@ -195,6 +241,7 @@ public final class DriveScheduler: @unchecked Sendable {
+   ) async {
+     sequenceNumber += 1
+     tickNumber += 1
++    guard !Task.isCancelled else { return }
+     let coordinate = position.coordinate
+     let lifecycleState = lifecycleProvider()
+     let generation = await locationTransport.currentConnectionGeneration()
+@@ -247,24 +294,54 @@ public final class DriveScheduler: @unchecked Sendable {
+       updateCadence: updateCadence,
+       missedDeadlineCount: missedDeadlines
+     )
++    guard !Task.isCancelled else { return }
+     await diagnostics.recordCoordinatorUpdateRequested(
+       context: traceContext,
+       writerID: controller.writerID,
+       connectionGeneration: generation
+     )
+     do {
+-      let transportResult = try await locationTransport.set(
++      guard !Task.isCancelled else { return }
++      let transportResult = try await locationTransport.submit(
+         sample: richSample,
+         writerID: controller.writerID,
+         mode: .drive(sessionID: controller.sessionID, current: SimulatedCoordinate(coordinate)),
+         traceContext: traceContext,
+         diagnostics: diagnostics
+       )
+-      await diagnostics.recordRichDriveTransportSet(
+-        context: traceContext,
+-        sample: richSample,
+-        result: transportResult
+-      )
++      guard !Task.isCancelled else { return }
++      if transportResult.authoritative {
++        await onAuthoritativePosition(position, richSample, transportResult)
++        await diagnostics.recordRichDriveTransportSet(
++          context: traceContext,
++          sample: richSample,
++          result: transportResult
++        )
++      }
++      if !position.completed, locationTransport.transportName
++        == DriveLocationOutputMode.richXCUILocationExperimental.displayName,
++        let reason = transportHealth.recordSuccess(result: transportResult)
++      {
++        requestTransportFallback(
++          reason: reason,
++          errorDescription: nil,
++          position: position
++        )
++        return
++      }
++      if !position.completed, let reason = cadenceHealth.record(
++        sample: DriveCadenceHealthSample(
++          missedDeadlineCount: missedDeadlines,
++          ackLatencyMs: locationTransport.transportName
++            == DriveLocationOutputMode.richXCUILocationExperimental.displayName
++            ? transportResult.ackLatencyMs : nil,
++          droppedOrReplacedSamples: transportResult.droppedOrReplacedSamples
++        ),
++        cadence: updateCadence
++      ) {
++        requestCadenceFallback(reason: reason, position: position)
++        return
++      }
+       let updatedGeneration = await locationTransport.currentConnectionGeneration()
+       await diagnostics.recordRequestedUpdate(
+         sequenceNumber: sequenceNumber,
+@@ -289,15 +366,100 @@ public final class DriveScheduler: @unchecked Sendable {
+       previousExpectedDistanceForDiagnostics = position.expectedDistanceMeters
+       previousExpectedCoordinateForDiagnostics = coordinate
+     } catch {
++      guard !Task.isCancelled else { return }
+       await diagnostics.recordState(
+         "update_failed",
+         message: "drive update failed",
+         metadata: ["error": String(describing: error)]
+       )
++      if locationTransport.transportName
++        == DriveLocationOutputMode.richXCUILocationExperimental.displayName,
++        let reason = transportHealth.recordFailure(error)
++      {
++        requestTransportFallback(
++          reason: reason,
++          errorDescription: String(describing: error),
++          position: position
++        )
++        return
++      }
+       await locationTransport.reconnectIfNeeded()
+     }
+   }
+ 
++  private func sendHeldDestination(position: DrivePosition, now: TimeInterval) async {
++    guard !Task.isCancelled else { return }
++    guard let route = controller.routeResampler() else { return }
++    let heldSample = RichDriveSampleBuilder.sample(
++      position: position,
++      route: route,
++      speedMetersPerSecond: 0,
++      previousCourseDegrees: previousRichCourseDegrees
++    )
++    let requestTime = ProcessInfo.processInfo.systemUptime
++    let traceContext = DriveTraceContext(
++      tickTraceID: "\(controller.sessionID.uuidString):destination-held",
++      driveSessionID: controller.sessionID.uuidString,
++      tickSequence: tickNumber,
++      requestSequence: sequenceNumber + 1,
++      updateRequestMonotonicTime: requestTime,
++      expectedRouteDistanceMeters: position.expectedDistanceMeters,
++      previousExpectedRouteDistanceMeters: previousExpectedDistanceForDiagnostics,
++      expectedCoordinate: position.coordinate,
++      selectedSpeedMetersPerSecond: 0,
++      lifecycleState: lifecycleProvider()
++    )
++    do {
++      guard !Task.isCancelled else { return }
++      let result = try await locationTransport.set(
++        sample: heldSample,
++        writerID: controller.writerID,
++        mode: .drive(sessionID: controller.sessionID, current: SimulatedCoordinate(position.coordinate)),
++        traceContext: traceContext,
++        diagnostics: diagnostics
++      )
++      guard !Task.isCancelled else { return }
++      await onAuthoritativePosition(position, heldSample, result)
++      await diagnostics.recordRichDriveTransportSet(context: traceContext, sample: heldSample, result: result)
++    } catch {
++      await diagnostics.recordState(
++        "destination_hold_update_failed",
++        message: "stationary destination hold update failed",
++        metadata: ["error": String(describing: error)]
++      )
++    }
++  }
++
++  private func requestTransportFallback(
++    reason: String,
++    errorDescription: String?,
++    position: DrivePosition
++  ) {
++    guard !fallbackRequested else { return }
++    fallbackRequested = true
++    onTransportFallbackNeeded(
++      DriveTransportFallbackRequest(
++        reason: reason,
++        errorDescription: errorDescription,
++        position: position,
++        transportName: locationTransport.transportName,
++        routeProgressMeters: position.expectedDistanceMeters
++      ))
++  }
++
++  private func requestCadenceFallback(reason: String, position: DrivePosition) {
++    guard !fallbackRequested, updateCadence == .smooth2Hz else { return }
++    fallbackRequested = true
++    onCadenceFallbackNeeded(
++      DriveCadenceFallbackRequest(
++        reason: reason,
++        position: position,
++        activeCadence: updateCadence,
++        transportName: locationTransport.transportName,
++        routeProgressMeters: position.expectedDistanceMeters
++      ))
++  }
++
+   private func richSample(
+     position: DrivePosition,
+     route: RouteResampler,
+@@ -313,3 +475,8 @@ public final class DriveScheduler: @unchecked Sendable {
+     return sample
+   }
+ }
++
++private struct RunningTask: Sendable {
++  let id: UUID
++  let task: Task<Void, Never>
++}
+diff --git a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveSessionController.swift b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveSessionController.swift
+index 5e9236a..7d1bf56 100644
+--- a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveSessionController.swift
++++ b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveSessionController.swift
+@@ -6,6 +6,7 @@ public enum DriveSessionState: String, Codable, Equatable, Sendable {
+     case routeReady
+     case driving
+     case paused
++    case holding
+     case completedHolding
+     case stopped
+ }
+@@ -37,6 +38,18 @@ public struct DrivePosition: Sendable {
+     public let expectedDistanceMeters: CLLocationDistance
+     public let activeElapsedSeconds: TimeInterval
+     public let completed: Bool
++
++    public init(
++        coordinate: CLLocationCoordinate2D,
++        expectedDistanceMeters: CLLocationDistance,
++        activeElapsedSeconds: TimeInterval,
++        completed: Bool
++    ) {
++        self.coordinate = coordinate
++        self.expectedDistanceMeters = expectedDistanceMeters
++        self.activeElapsedSeconds = activeElapsedSeconds
++        self.completed = completed
++    }
+ }
+ 
+ public final class DriveSessionController: @unchecked Sendable {
+@@ -108,14 +121,54 @@ public final class DriveSessionController: @unchecked Sendable {
+     public func resume(now: TimeInterval) {
+         lock.lock()
+         defer { lock.unlock() }
+-        guard state == .paused else { return }
+-        if let pauseStartedInstant {
++        if state == .paused, let pauseStartedInstant {
+             accumulatedPausedDuration += max(0, now - pauseStartedInstant)
++        } else if state == .holding {
++            let activeElapsedAtHold = speedMetersPerSecond > 0
++                ? previousExpectedDistance / speedMetersPerSecond
++                : 0
++            driveStartInstant = now - activeElapsedAtHold
++            accumulatedPausedDuration = 0
++        } else {
++            return
+         }
+         pauseStartedInstant = nil
+         state = .driving
+     }
+ 
++    public func holdCurrent(now: TimeInterval) -> DrivePosition? {
++        lock.lock()
++        defer { lock.unlock() }
++        guard route != nil else { return nil }
++        let position = expectedPositionLocked(now: now)
++        pausedPosition = position
++        driveStartInstant = nil
++        pauseStartedInstant = nil
++        accumulatedPausedDuration = 0
++        state = .holding
++        return position
++    }
++
++    public func hold(position: DrivePosition) {
++        lock.lock()
++        pausedPosition = position
++        previousExpectedDistance = position.expectedDistanceMeters
++        driveStartInstant = nil
++        pauseStartedInstant = nil
++        accumulatedPausedDuration = 0
++        state = position.completed ? .completedHolding : .holding
++        lock.unlock()
++    }
++
++    public func pauseForTransition(position: DrivePosition, now: TimeInterval) {
++        lock.lock()
++        pausedPosition = position
++        previousExpectedDistance = position.expectedDistanceMeters
++        pauseStartedInstant = now
++        state = .paused
++        lock.unlock()
++    }
++
+     public func completeHolding(now: TimeInterval) -> DrivePosition? {
+         lock.lock()
+         defer { lock.unlock() }
+@@ -192,7 +245,7 @@ public final class DriveSessionController: @unchecked Sendable {
+         switch state {
+         case .idle, .routeReady, .stopped:
+             return pausedPosition
+-        case .paused, .completedHolding:
++        case .paused, .holding, .completedHolding:
+             return pausedPosition
+         case .driving:
+             let activeElapsed = activeElapsedLocked(now: now)
+diff --git a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveTiming.swift b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveTiming.swift
+index bcb4824..fd97308 100644
+--- a/ios/Sources/IOSSimOnDeviceDVTPOC/DriveTiming.swift
++++ b/ios/Sources/IOSSimOnDeviceDVTPOC/DriveTiming.swift
+@@ -79,12 +79,14 @@ public enum DriveUpdateCadence: String, CaseIterable, Codable, Equatable, Sendab
+ 
+     public var id: String { rawValue }
+ 
++    public static let defaultCadence: DriveUpdateCadence = .smooth2Hz
++
+     public var displayName: String {
+         switch self {
+         case .baseline1Hz:
+-            return "Baseline - 1 update/sec"
++            return "Baseline 1 Hz Compatibility"
+         case .smooth2Hz:
+-            return "Smooth Test - 2 updates/sec"
++            return "Smooth 2 Hz"
+         }
+     }
+ 
+@@ -93,7 +95,7 @@ public enum DriveUpdateCadence: String, CaseIterable, Codable, Equatable, Sendab
+         case .baseline1Hz:
+             return "baseline_1hz"
+         case .smooth2Hz:
+-            return "smooth_test_2hz"
++            return "smooth_2hz"
+         }
+     }
+ 
+@@ -119,6 +121,92 @@ public enum DriveUpdateCadence: String, CaseIterable, Codable, Equatable, Sendab
+     }
+ }
+ 
++public struct DriveTransportHealthPolicy: Sendable {
++    public static let richConsecutiveFailureLimit = 2
++    public static let richMissingAckLimit = 3
++
++    private var consecutiveFailures = 0
++    private var consecutiveMissingAcks = 0
++
++    public init() {}
++
++    public mutating func recordSuccess(result: DriveLocationTransportSetResult) -> String? {
++        consecutiveFailures = 0
++        if result.sendMonotonicTime != nil && result.ackMonotonicTime == nil {
++            consecutiveMissingAcks += 1
++        } else {
++            consecutiveMissingAcks = 0
++        }
++        guard consecutiveMissingAcks >= Self.richMissingAckLimit else { return nil }
++        return "Rich Drive did not acknowledge \(consecutiveMissingAcks) consecutive location updates."
++    }
++
++    public mutating func recordFailure(_ error: Error) -> String? {
++        consecutiveFailures += 1
++        consecutiveMissingAcks = 0
++        guard consecutiveFailures >= Self.richConsecutiveFailureLimit else { return nil }
++        return "Rich Drive failed \(consecutiveFailures) consecutive location updates: \(String(describing: error))"
++    }
++}
++
++public struct DriveCadenceHealthSample: Sendable {
++    public let missedDeadlineCount: Int
++    public let ackLatencyMs: Double?
++    public let droppedOrReplacedSamples: Int
++
++    public init(
++        missedDeadlineCount: Int,
++        ackLatencyMs: Double?,
++        droppedOrReplacedSamples: Int
++    ) {
++        self.missedDeadlineCount = missedDeadlineCount
++        self.ackLatencyMs = ackLatencyMs
++        self.droppedOrReplacedSamples = droppedOrReplacedSamples
++    }
++}
++
++public struct DriveCadenceHealthPolicy: Sendable {
++    public static let evaluationWindow = 8
++    public static let unhealthyMissedDeadlineTotal = 3
++    public static let unhealthyDroppedOrReplacedTotal = 3
++    public static let unhealthyAckLatencyFractionOfInterval = 0.8
++    public static let unhealthyAckPressureCount = 4
++
++    private var samples: [DriveCadenceHealthSample] = []
++
++    public init() {}
++
++    public mutating func record(
++        sample: DriveCadenceHealthSample,
++        cadence: DriveUpdateCadence
++    ) -> String? {
++        guard cadence == .smooth2Hz else { return nil }
++        samples.append(sample)
++        if samples.count > Self.evaluationWindow {
++            samples.removeFirst(samples.count - Self.evaluationWindow)
++        }
++        guard samples.count == Self.evaluationWindow else { return nil }
++
++        let missedDeadlines = samples.reduce(0) { $0 + max(0, $1.missedDeadlineCount) }
++        if missedDeadlines >= Self.unhealthyMissedDeadlineTotal {
++            return "Smooth 2 Hz missed \(missedDeadlines) scheduler deadlines in the recent window."
++        }
++
++        let dropped = samples.reduce(0) { $0 + max(0, $1.droppedOrReplacedSamples) }
++        if dropped >= Self.unhealthyDroppedOrReplacedTotal {
++            return "Smooth 2 Hz replaced \(dropped) pending transport samples in the recent window."
++        }
++
++        let ackPressureThreshold = cadence.targetIntervalMs * Self.unhealthyAckLatencyFractionOfInterval
++        let pressuredAcks = samples.filter { ($0.ackLatencyMs ?? 0) >= ackPressureThreshold }.count
++        if pressuredAcks >= Self.unhealthyAckPressureCount {
++            return "Smooth 2 Hz transport ACK latency approached the update interval \(pressuredAcks) times in the recent window."
++        }
++
++        return nil
++    }
++}
++
+ public enum DriveSchedulerTimeline {
+     public static func deadlineOffset(sequence: Int, intervalSeconds: TimeInterval) -> TimeInterval {
+         Double(max(0, sequence)) * max(0, intervalSeconds)
+diff --git a/ios/Sources/IOSSimOnDeviceDVTPOC/LocationCoordinator.swift b/ios/Sources/IOSSimOnDeviceDVTPOC/LocationCoordinator.swift
+index 466832d..2097592 100644
+--- a/ios/Sources/IOSSimOnDeviceDVTPOC/LocationCoordinator.swift
++++ b/ios/Sources/IOSSimOnDeviceDVTPOC/LocationCoordinator.swift
+@@ -174,6 +174,23 @@ public actor LocationCoordinator {
+         )
+     }
+ 
++    public func holdSimulation(writerID: String, mode requestedMode: SimulationMode) async throws {
++        guard writerID == activeWriterID else {
++            await recordStaleWriter(writerID)
++            throw POCError(.staleWriter, "Ignoring hold from stale writer \(writerID).")
++        }
++        mode = requestedMode
++        desiredCoordinate = requestedMode.coordinate ?? desiredCoordinate
++        await recorder.record(
++            category: "LOCATION_HELD",
++            component: "LocationCoordinator",
++            previousState: nil,
++            newState: "held",
++            message: "authoritative writer retained simulated coordinate",
++            metadata: writerMetadata(writerID: writerID)
++        )
++    }
++
+     public func stopSimulation(writerID: String, clearLocation: Bool = true) async throws {
+         guard writerID == activeWriterID else {
+             await recordStaleWriter(writerID)
+diff --git a/ios/Sources/IOSSimOnDeviceDVTPOC/LocationWitnessMetrics.swift b/ios/Sources/IOSSimOnDeviceDVTPOC/LocationWitnessMetrics.swift
+index 00e8c48..83d4b40 100644
+--- a/ios/Sources/IOSSimOnDeviceDVTPOC/LocationWitnessMetrics.swift
++++ b/ios/Sources/IOSSimOnDeviceDVTPOC/LocationWitnessMetrics.swift
+@@ -273,7 +273,7 @@ public enum LocationWitnessMetricsExporter {
+     let formatter = DateFormatter()
+     formatter.locale = Locale(identifier: "en_US_POSIX")
+     formatter.timeZone = TimeZone(secondsFromGMT: 0)
+-    formatter.dateFormat = "yyyyMMdd-HHmmss"
++    formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+     return "IOSSim-Witness-Metrics-\(formatter.string(from: generatedAt)).json"
+   }
+ 
+diff --git a/ios/Sources/POCUnitChecks/main.swift b/ios/Sources/POCUnitChecks/main.swift
+index f71a56f..c5e9d8e 100644
+--- a/ios/Sources/POCUnitChecks/main.swift
++++ b/ios/Sources/POCUnitChecks/main.swift
+@@ -22,6 +22,8 @@ struct POCUnitChecks {
+     try routeInterpolation()
+     try constantSpeedDistanceCalculations()
+     try driveCadenceConfiguration()
++    try driveCadenceDefaultsToSmoothPreferred()
++    try driveCadenceFallbackPolicyRequiresSustainedFailure()
+     try absoluteDeadlineSchedulerCalculations()
+     try missedDeadlineCalculationsSkipReplay()
+     try cadenceDoesNotChangeRouteTraversalTime()
+@@ -29,6 +31,7 @@ struct POCUnitChecks {
+     try richDriveSampleUsesSelectedSpeed()
+     try richDriveCourseCardinalsAndDiagonal()
+     try richDriveCourseTurnTransitionAndRouteEnd()
++    try richDriveHeldSampleIsStationary()
+     try richDriveIPCSerialization()
+     try richDriveACKSequencing()
+     try richDriveLatestSampleWins()
+@@ -39,15 +42,23 @@ struct POCUnitChecks {
+     try await richStopBeforeDVTFallbackLeavesNoRichWriter()
+     try pauseDoesNotAdvanceRouteProgress()
+     try resumeUsesActiveElapsedTime()
++    try stopAndHoldPreservesCurrentCoordinate()
++    try resumeFromHoldContinuesFromHeldProgress()
+     try pauseResumeDeadlineCalculations()
+     try backgroundDelayCalculationsCollapseMissedTicks()
+     try suspensionTickSkipsMissedPoints()
+     try monotonicRouteProgression()
+     try completedHoldingDoesNotClearSimulation()
++    try naturalCompletionHoldsExactDestination()
++    try driveTransportFallbackPolicyRequiresRepeatedRichFailure()
+     try await staleWriterCannotSendAfterOwnershipChanges()
+     try await staleGenerationCallbackCannotAffectCurrentConnection()
+     try await reconnectRestoresCurrentDrivePosition()
+     try await stopPreventsDelayedWrites()
++    try await schedulerStopWaitsForBlockedTransportSet()
++    try await cancelledSchedulerSetDoesNotReconnect()
++    try await latestSampleTransportWrapperCoalescesPendingSamples()
++    try await latestSampleTransportWrapperDropsPendingSamplesOnStop()
+     try routeDistanceClamping()
+     try await driveDiagnosticsSerialize()
+     try driveTraceMetricCalculations()
+@@ -396,10 +407,64 @@ struct POCUnitChecks {
+ 
+   static func driveCadenceConfiguration() throws {
+     try require(DriveUpdateCadence.baseline1Hz.intervalSeconds == 1, "baseline cadence is 1 Hz")
+-    try require(DriveUpdateCadence.smooth2Hz.intervalSeconds == 0.5, "smooth test cadence is 2 Hz")
++    try require(DriveUpdateCadence.smooth2Hz.intervalSeconds == 0.5, "smooth cadence is 2 Hz")
+     try require(
+       DriveUpdateCadence.baseline1Hz.effectiveUpdateFrequencyHz == 1, "baseline frequency")
+     try require(DriveUpdateCadence.smooth2Hz.effectiveUpdateFrequencyHz == 2, "smooth frequency")
++    try require(
++      DriveUpdateCadence.smooth2Hz.displayName == "Smooth 2 Hz",
++      "smooth cadence label is preferred")
++    try require(
++      DriveUpdateCadence.baseline1Hz.displayName == "Baseline 1 Hz Compatibility",
++      "baseline cadence label is compatibility")
++    try require(
++      DriveUpdateCadence.smooth2Hz.diagnosticName == "smooth_2hz",
++      "smooth diagnostic name is stable")
++  }
++
++  static func driveCadenceDefaultsToSmoothPreferred() throws {
++    try require(
++      DriveUpdateCadence.defaultCadence == .smooth2Hz,
++      "Drive cadence defaults to Smooth 2 Hz")
++  }
++
++  static func driveCadenceFallbackPolicyRequiresSustainedFailure() throws {
++    var policy = DriveCadenceHealthPolicy()
++    for _ in 0..<DriveCadenceHealthPolicy.evaluationWindow - 1 {
++      let reason = policy.record(
++        sample: DriveCadenceHealthSample(
++          missedDeadlineCount: 1,
++          ackLatencyMs: nil,
++          droppedOrReplacedSamples: 0
++        ),
++        cadence: .smooth2Hz
++      )
++      try require(reason == nil, "cadence fallback waits for a full health window")
++    }
++    let reason = policy.record(
++      sample: DriveCadenceHealthSample(
++        missedDeadlineCount: 1,
++        ackLatencyMs: nil,
++        droppedOrReplacedSamples: 0
++      ),
++      cadence: .smooth2Hz
++    )
++    try require(
++      reason?.contains("missed") == true,
++      "sustained missed deadlines trigger cadence fallback")
++
++    var baselinePolicy = DriveCadenceHealthPolicy()
++    for _ in 0..<DriveCadenceHealthPolicy.evaluationWindow {
++      let baselineReason = baselinePolicy.record(
++        sample: DriveCadenceHealthSample(
++          missedDeadlineCount: 10,
++          ackLatencyMs: 1_000,
++          droppedOrReplacedSamples: 10
++        ),
++        cadence: .baseline1Hz
++      )
++      try require(baselineReason == nil, "baseline cadence does not fall back again")
++    }
+   }
+ 
+   static func absoluteDeadlineSchedulerCalculations() throws {
+@@ -555,6 +620,24 @@ struct POCUnitChecks {
+     try require(RichDriveSample.normalizedCourse(450) == 90, "over-360 course normalized")
+   }
+ 
++  static func richDriveHeldSampleIsStationary() throws {
++    let route = try testRoute()
++    let position = DrivePosition(
++      coordinate: route.coordinate(atDistance: 100),
++      expectedDistanceMeters: 100,
++      activeElapsedSeconds: 12,
++      completed: false
++    )
++    let sample = RichDriveSampleBuilder.sample(
++      position: position,
++      route: route,
++      speedMetersPerSecond: 0,
++      previousCourseDegrees: 90
++    )
++    try require(sample.speedMetersPerSecond == 0, "held rich sample reports stationary speed")
++    try require(angleClose(sample.courseDegrees, 90, tolerance: 1), "held rich sample keeps route course")
++  }
++
+   static func richDriveIPCSerialization() throws {
+     let sample = RichDriveSample(
+       latitude: 37.3349,
+@@ -710,6 +793,39 @@ struct POCUnitChecks {
+       abs(position.expectedDistanceMeters - expected) < 1, "resume excludes paused duration")
+   }
+ 
++  static func stopAndHoldPreservesCurrentCoordinate() throws {
++    let controller = DriveSessionController()
++    controller.prepareRoute(try driveRoute(), speedMPH: 35)
++    try controller.startDrive(now: 0)
++    let beforeHold = try requireValue(controller.expectedPosition(now: 20), "position before hold")
++    let held = try requireValue(controller.holdCurrent(now: 20), "held position")
++    let later = try requireValue(controller.expectedPosition(now: 120), "held later")
++    try require(controller.currentState() == .holding, "stop and hold enters holding state")
++    try require(
++      abs(held.expectedDistanceMeters - beforeHold.expectedDistanceMeters) < 0.001,
++      "hold preserves current route progress")
++    try require(
++      abs(later.expectedDistanceMeters - held.expectedDistanceMeters) < 0.001,
++      "held route progress does not advance")
++    try require(
++      abs(later.coordinate.longitude - held.coordinate.longitude) < 0.000001,
++      "held coordinate does not move")
++  }
++
++  static func resumeFromHoldContinuesFromHeldProgress() throws {
++    let controller = DriveSessionController()
++    controller.prepareRoute(try driveRoute(), speedMPH: 35)
++    try controller.startDrive(now: 0)
++    let held = try requireValue(controller.holdCurrent(now: 20), "held position")
++    controller.resume(now: 60)
++    let resumed = try requireValue(controller.expectedPosition(now: 70), "resumed position")
++    let expectedDelta = DriveSpeed.metersPerSecond(fromMPH: 35) * 10
++    try require(controller.currentState() == .driving, "held route resumes driving")
++    try require(
++      abs(resumed.expectedDistanceMeters - (held.expectedDistanceMeters + expectedDelta)) < 1,
++      "resume from hold continues from held route progress")
++  }
++
+   static func pauseResumeDeadlineCalculations() throws {
+     let controller = DriveSessionController()
+     controller.prepareRoute(try driveRoute(), speedMPH: 30)
+@@ -786,6 +902,57 @@ struct POCUnitChecks {
+     try require(controller.currentState() == .completedHolding, "destination held after completion")
+   }
+ 
++  static func naturalCompletionHoldsExactDestination() throws {
++    let route = try driveRoute()
++    let controller = DriveSessionController()
++    controller.prepareRoute(route, speedMPH: 70)
++    try controller.startDrive(now: 0)
++    let complete = try requireValue(controller.expectedPosition(now: 10_000), "complete")
++    try require(complete.completed, "route naturally completes")
++    let held = try requireValue(controller.completeHolding(now: 10_000), "held destination")
++    try require(held.completed, "destination held position is completed")
++    try require(
++      abs(held.expectedDistanceMeters - route.routeDistanceMeters) < 0.001,
++      "held route distance is exact destination distance")
++    try require(
++      abs(held.coordinate.latitude - route.destination.latitude) < 0.000001,
++      "held destination latitude exact")
++    try require(
++      abs(held.coordinate.longitude - route.destination.longitude) < 0.000001,
++      "held destination longitude exact")
++    let later = try requireValue(controller.expectedPosition(now: 20_000), "later destination")
++    try require(
++      abs(later.expectedDistanceMeters - held.expectedDistanceMeters) < 0.001,
++      "destination hold does not advance after completion")
++  }
++
++  static func driveTransportFallbackPolicyRequiresRepeatedRichFailure() throws {
++    var failurePolicy = DriveTransportHealthPolicy()
++    let oneFailure = failurePolicy.recordFailure(POCError(.disconnected, "first"))
++    try require(oneFailure == nil, "one rich send failure does not trigger fallback")
++    let secondFailure = failurePolicy.recordFailure(POCError(.disconnected, "second"))
++    try require(
++      secondFailure?.contains("Rich Drive failed") == true,
++      "repeated rich send failures trigger fallback")
++
++    var ackPolicy = DriveTransportHealthPolicy()
++    for index in 0..<DriveTransportHealthPolicy.richMissingAckLimit {
++      let reason = ackPolicy.recordSuccess(
++        result: DriveLocationTransportSetResult(
++          transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName,
++          connectionGeneration: 1,
++          sendMonotonicTime: Double(index),
++          ackMonotonicTime: nil,
++          ackLatencyMs: nil
++        ))
++      if index < DriveTransportHealthPolicy.richMissingAckLimit - 1 {
++        try require(reason == nil, "missing ACK fallback waits for repeated misses")
++      } else {
++        try require(reason?.contains("acknowledge") == true, "repeated missing ACKs trigger fallback")
++      }
++    }
++  }
++
+   static func staleWriterCannotSendAfterOwnershipChanges() async throws {
+     let tunnel = MockTunnelClient()
+     let store = InMemoryRPPairingStore(data: try makePairingPlist())
+@@ -894,6 +1061,171 @@ struct POCUnitChecks {
+     try require(clearCount == 1, "stop clears exactly once")
+   }
+ 
++  static func schedulerStopWaitsForBlockedTransportSet() async throws {
++    let transport = BlockingDriveLocationTransport(
++      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
++    await transport.setBlocksUntilReleased(true)
++    let scheduler = try await startedScheduler(transport: transport)
++
++    scheduler.start()
++    await transport.waitForSetCount(1)
++    scheduler.stop()
++
++    let waitFinished = AsyncFlag()
++    let waiter = Task {
++      await scheduler.waitUntilStopped()
++      await waitFinished.set()
++    }
++    try await Task.sleep(nanoseconds: 50_000_000)
++    let stoppedEarly = await waitFinished.value()
++    try require(stoppedEarly == false, "scheduler wait remains blocked by in-flight set")
++
++    await transport.releaseBlockedSets()
++    await waiter.value
++    let count = await transport.setCount()
++    try require(count == 1, "cancelled scheduler does not emit another set after shutdown")
++  }
++
++  static func cancelledSchedulerSetDoesNotReconnect() async throws {
++    let transport = BlockingDriveLocationTransport(
++      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
++    await transport.setBlocksUntilReleased(true)
++    await transport.failReleasedSets(POCError(.disconnected, "forced send failure"))
++    let scheduler = try await startedScheduler(transport: transport)
++
++    scheduler.start()
++    await transport.waitForSetCount(1)
++    scheduler.stop()
++    let waiter = Task {
++      await scheduler.waitUntilStopped()
++    }
++    await transport.releaseBlockedSets()
++    await waiter.value
++
++    let reconnectCount = await transport.reconnectCount()
++    try require(reconnectCount == 0, "cancelled scheduler send cannot reconnect")
++  }
++
++  static func latestSampleTransportWrapperCoalescesPendingSamples() async throws {
++    let base = BlockingDriveLocationTransport(
++      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
++    await base.setBlocksUntilReleased(true)
++    let wrapper = LatestSampleDriveLocationTransport(base: base)
++    let sessionID = UUID()
++    try await wrapper.start(
++      DriveLocationTransportStartContext(
++        sessionID: sessionID,
++        writerID: "drive:test",
++        initialCoordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0)
++      ))
++
++    _ = try await wrapper.submit(
++      sample: richSample(latitude: 1),
++      writerID: "drive:test",
++      mode: .drive(sessionID: sessionID, current: nil),
++      traceContext: nil,
++      diagnostics: nil
++    )
++    await base.waitForSetCount(1)
++    let second = try await wrapper.submit(
++      sample: richSample(latitude: 2),
++      writerID: "drive:test",
++      mode: .drive(sessionID: sessionID, current: nil),
++      traceContext: nil,
++      diagnostics: nil
++    )
++    let third = try await wrapper.submit(
++      sample: richSample(latitude: 3),
++      writerID: "drive:test",
++      mode: .drive(sessionID: sessionID, current: nil),
++      traceContext: nil,
++      diagnostics: nil
++    )
++
++    try require(second.droppedOrReplacedSamples == 0, "first pending sample is retained")
++    try require(third.droppedOrReplacedSamples == 1, "newer pending sample replaces stale pending sample")
++    try require(!second.authoritative && !third.authoritative, "queued submits are not synchronous authority")
++
++    await base.setBlocksUntilReleased(false)
++    await base.releaseBlockedSets()
++    await base.waitForSetCount(2)
++    try await wrapper.stop(writerID: "drive:test", clearLocation: false)
++
++    let latitudes = await base.samples().map(\.latitude)
++    try require(latitudes == [1, 3], "latest-sample wrapper sends first in-flight and newest pending only")
++  }
++
++  static func latestSampleTransportWrapperDropsPendingSamplesOnStop() async throws {
++    let base = BlockingDriveLocationTransport(
++      transportName: DriveLocationOutputMode.richXCUILocationExperimental.displayName)
++    await base.setBlocksUntilReleased(true)
++    let wrapper = LatestSampleDriveLocationTransport(base: base)
++    let sessionID = UUID()
++    try await wrapper.start(
++      DriveLocationTransportStartContext(
++        sessionID: sessionID,
++        writerID: "drive:test",
++        initialCoordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0)
++      ))
++
++    _ = try await wrapper.submit(
++      sample: richSample(latitude: 10),
++      writerID: "drive:test",
++      mode: .drive(sessionID: sessionID, current: nil),
++      traceContext: nil,
++      diagnostics: nil
++    )
++    await base.waitForSetCount(1)
++    _ = try await wrapper.submit(
++      sample: richSample(latitude: 11),
++      writerID: "drive:test",
++      mode: .drive(sessionID: sessionID, current: nil),
++      traceContext: nil,
++      diagnostics: nil
++    )
++
++    let stopper = Task {
++      try await wrapper.stop(writerID: "drive:test", clearLocation: true)
++    }
++    try await Task.sleep(nanoseconds: 50_000_000)
++    await base.setBlocksUntilReleased(false)
++    await base.releaseBlockedSets()
++    try await stopper.value
++
++    let latitudes = await base.samples().map(\.latitude)
++    try require(latitudes == [10], "pending latest sample is invalidated during stop")
++    let stopCount = await base.stopCount()
++    try require(stopCount == 1, "base transport stopped once")
++  }
++
++  static func startedScheduler(transport: DriveLocationTransport) async throws -> DriveScheduler {
++    let controller = DriveSessionController()
++    controller.prepareRoute(try driveRoute(), speedMPH: 35)
++    try controller.startDrive(now: 0)
++    try await transport.start(
++      DriveLocationTransportStartContext(
++        sessionID: controller.sessionID,
++        writerID: controller.writerID,
++        initialCoordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0)
++      ))
++    return DriveScheduler(
++      controller: controller,
++      locationTransport: transport,
++      diagnostics: DriveDiagnostics(recorder: testRecorder()),
++      clock: ManualDriveClock(start: 0),
++      updateCadence: .smooth2Hz
++    )
++  }
++
++  static func richSample(latitude: Double) -> RichDriveSample {
++    RichDriveSample(
++      latitude: latitude,
++      longitude: latitude,
++      speedMetersPerSecond: 1,
++      courseDegrees: 90
++    )
++  }
++
+   static func routeDistanceClamping() throws {
+     let route = try testRoute()
+     let before = route.coordinate(atDistance: -100)
+@@ -1195,7 +1527,7 @@ struct POCUnitChecks {
+     let name = LocationWitnessMetricsExporter.fileName(
+       generatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+     try require(
+-      name == "IOSSim-Witness-Metrics-20270115-080000.json",
++      name == "IOSSim-Witness-Metrics-20270115T080000Z.json",
+       "filename is deterministic UTC JSON")
+   }
+ 
+@@ -1962,6 +2294,133 @@ private final class LockedValues<T>: @unchecked Sendable {
+   }
+ }
+ 
++private actor AsyncFlag {
++  private var storage = false
++
++  func set() {
++    storage = true
++  }
++
++  func value() -> Bool {
++    storage
++  }
++}
++
++private actor BlockingDriveLocationTransport: DriveLocationTransport {
++  let transportName: String
++  private var shouldBlockSets = false
++  private var releasedSetError: Error?
++  private var setSamples: [RichDriveSample] = []
++  private var setWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
++  private var blockedSetContinuations: [CheckedContinuation<Void, Never>] = []
++  private var starts = 0
++  private var stops = 0
++  private var reconnects = 0
++  private var generation = 1
++
++  init(transportName: String) {
++    self.transportName = transportName
++  }
++
++  func start(_ context: DriveLocationTransportStartContext) async throws {
++    starts += 1
++  }
++
++  func set(
++    sample: RichDriveSample,
++    writerID: String,
++    mode: SimulationMode,
++    traceContext: DriveTraceContext?,
++    diagnostics: DriveDiagnostics?
++  ) async throws -> DriveLocationTransportSetResult {
++    setSamples.append(sample)
++    resumeReadySetWaiters()
++    if shouldBlockSets {
++      await withCheckedContinuation { continuation in
++        blockedSetContinuations.append(continuation)
++      }
++    }
++    if let releasedSetError {
++      throw releasedSetError
++    }
++    return DriveLocationTransportSetResult(
++      transportName: transportName,
++      connectionGeneration: generation,
++      sendMonotonicTime: ProcessInfo.processInfo.systemUptime,
++      ackMonotonicTime: ProcessInfo.processInfo.systemUptime,
++      ackLatencyMs: 0
++    )
++  }
++
++  func stop(writerID: String, clearLocation: Bool) async throws {
++    stops += 1
++  }
++
++  func reconnectIfNeeded() async {
++    reconnects += 1
++  }
++
++  func currentConnectionGeneration() async -> Int {
++    generation
++  }
++
++  func setReconnectRestoreProvider(
++    writerID: String,
++    provider: (@Sendable () async -> RichDriveSample?)?
++  ) async {}
++
++  func setBlocksUntilReleased(_ value: Bool) {
++    shouldBlockSets = value
++  }
++
++  func failReleasedSets(_ error: Error?) {
++    releasedSetError = error
++  }
++
++  func releaseBlockedSets() {
++    let continuations = blockedSetContinuations
++    blockedSetContinuations = []
++    for continuation in continuations {
++      continuation.resume()
++    }
++  }
++
++  func waitForSetCount(_ target: Int) async {
++    guard setSamples.count < target else { return }
++    await withCheckedContinuation { continuation in
++      setWaiters.append((target, continuation))
++    }
++  }
++
++  func setCount() -> Int {
++    setSamples.count
++  }
++
++  func samples() -> [RichDriveSample] {
++    setSamples
++  }
++
++  func stopCount() -> Int {
++    stops
++  }
++
++  func reconnectCount() -> Int {
++    reconnects
++  }
++
++  private func resumeReadySetWaiters() {
++    var remaining: [(Int, CheckedContinuation<Void, Never>)] = []
++    for waiter in setWaiters {
++      if setSamples.count >= waiter.0 {
++        waiter.1.resume()
++      } else {
++        remaining.append(waiter)
++      }
++    }
++    setWaiters = remaining
++  }
++}
++
+ private struct FakeInterfaces: InterfaceSnapshotProvider {
+   let values: [NetworkInterfaceSnapshot]
+ 
+diff --git a/ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift b/ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift
+index 49391ec..b3ea847 100644
+--- a/ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift
++++ b/ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift
+@@ -27,6 +27,68 @@ final class AppleXCUILocationControlUITests: XCTestCase {
+     XCTAssertTrue(app.buttons["AppleLocationControls.StopRecording"].exists)
+   }
+ 
++  func testLocationWitnessExportMetricsDoesNotTriggerStop() throws {
++    try requireXCUILocationSupport()
++    let witness = launchWitnessApp()
++    XCTAssertTrue(witness.buttons["LocationWitness.Reset"].waitForExistence(timeout: 10))
++
++    let reset = witness.buttons["LocationWitness.Reset"]
++    let start = witness.buttons["LocationWitness.Start"]
++    let stop = witness.buttons["LocationWitness.Stop"]
++    let export = witness.buttons["LocationWitness.ExportMetrics"]
++
++    assertControlsDoNotOverlap([reset, start, stop, export])
++
++    reset.tap()
++    XCTAssertFalse(export.isEnabled, "Export remains disabled before completed recording data exists.")
++
++    start.tap()
++    allowLocationIfPrompted(in: witness)
++    allowAlwaysLocationUpgradeIfPrompted()
++    let baselineSequence =
++      latestRawLocationSnapshot(in: witness, prefix: "LocationWitness")?.sequence ?? 0
++    let injectedLatitude = 37.334_456
++    let injectedLongitude = -122.008_654
++    XCUIDevice.shared.location = XCUILocation(
++      location: richLocation(
++        latitude: injectedLatitude,
++        longitude: injectedLongitude,
++        altitude: 123,
++        course: 90,
++        speed: 15.646,
++        timestamp: Date()
++      ))
++    XCTAssertNotNil(
++      waitForFreshRawLocation(
++        in: witness,
++        prefix: "LocationWitness",
++        afterSequence: baselineSequence,
++        latitude: injectedLatitude,
++        longitude: injectedLongitude,
++        timeout: 15
++      ),
++      "Witness should receive at least one raw callback before exporting."
++    )
++
++    stop.tap()
++    let status = witness.staticTexts["LocationWitness.Status"]
++    XCTAssertTrue(status.waitForExistence(timeout: 3))
++    XCTAssertEqual(status.label, "Stopped")
++    XCTAssertTrue(export.waitForExistence(timeout: 3))
++    XCTAssertTrue(export.isEnabled)
++    XCTAssertTrue(
++      ((export.value as? String) ?? "").contains("IOSSim-Witness-Metrics-"),
++      "Export button exposes a prepared JSON file name."
++    )
++
++    export.tap()
++    XCTAssertEqual(status.label, "Stopped", "Export Metrics must not change recorder state.")
++    XCTAssertTrue(
++      waitForShareSheet(in: witness, timeout: 8),
++      "Export Metrics should present the system share sheet."
++    )
++  }
++
+   func testXCUILocationSinglePointMetadataControl() throws {
+     try requireXCUILocationSupport()
+     let app = launchApp()
+@@ -624,6 +686,52 @@ final class AppleXCUILocationControlUITests: XCTestCase {
+     )
+   }
+ 
++  private func assertControlsDoNotOverlap(
++    _ controls: [XCUIElement],
++    file: StaticString = #filePath,
++    line: UInt = #line
++  ) {
++    for index in controls.indices {
++      XCTAssertTrue(controls[index].waitForExistence(timeout: 5), file: file, line: line)
++      for otherIndex in controls.indices where otherIndex > index {
++        XCTAssertFalse(
++          controls[index].frame.intersects(controls[otherIndex].frame),
++          "\(controls[index].identifier) overlaps \(controls[otherIndex].identifier)",
++          file: file,
++          line: line
++        )
++      }
++    }
++  }
++
++  private func waitForShareSheet(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
++    let sharingViewService = XCUIApplication(bundleIdentifier: "com.apple.SharingViewService")
++    let uiKitActivityService = XCUIApplication(bundleIdentifier: "com.apple.UIKit.activity")
++    let end = Date().addingTimeInterval(timeout)
++    while Date() < end {
++      if app.sheets.firstMatch.exists
++        || app.navigationBars["Share"].exists
++        || app.buttons["Copy"].exists
++        || sharingViewService.state == .runningForeground
++        || sharingViewService.sheets.firstMatch.exists
++        || sharingViewService.navigationBars["Share"].exists
++        || sharingViewService.buttons["Copy"].exists
++        || sharingViewService.staticTexts["AirDrop"].exists
++        || sharingViewService.staticTexts["Messages"].exists
++        || uiKitActivityService.state == .runningForeground
++        || uiKitActivityService.sheets.firstMatch.exists
++        || uiKitActivityService.navigationBars["Share"].exists
++        || uiKitActivityService.buttons["Copy"].exists
++        || uiKitActivityService.staticTexts["AirDrop"].exists
++        || uiKitActivityService.staticTexts["Messages"].exists
++      {
++        return true
++      }
++      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
++    }
++    return false
++  }
++
+   private func openAppleLocationControls(in app: XCUIApplication) {
+     app.tabBars.buttons["Settings"].tap()
+     let link = app.buttons["Apple Location Controls"]
+@@ -1142,6 +1250,7 @@ private final class RichDriveRunnerServer {
+   private let port: UInt16
+   private let timeoutSeconds: TimeInterval
+   private var readBuffer = Data()
++  private var activeSessionID: String?
+ 
+   init(port: UInt16, timeoutSeconds: TimeInterval) {
+     self.port = port
+@@ -1211,8 +1320,19 @@ private final class RichDriveRunnerServer {
+         let message = try JSONDecoder().decode(RichDriveRunnerMessage.self, from: line)
+         switch message.type {
+         case .startSession, .ping:
++          if message.type == .startSession {
++            activeSessionID = message.sessionID
++          }
+           try writeAck(sequence: message.sequence, fd: clientFD)
+         case .setLocation:
++          guard acceptsSession(message.sessionID) else {
++            try writeAck(
++              sequence: message.sequence,
++              fd: clientFD,
++              status: "ERROR",
++              message: "stale session")
++            continue
++          }
+           guard let sample = message.sample else {
+             try writeAck(
+               sequence: message.sequence, fd: clientFD, status: "ERROR", message: "missing sample")
+@@ -1231,6 +1351,15 @@ private final class RichDriveRunnerServer {
+             ].joined(separator: " "))
+           try writeAck(sequence: message.sequence, fd: clientFD)
+         case .stopSession:
++          guard acceptsSession(message.sessionID) else {
++            try writeAck(
++              sequence: message.sequence,
++              fd: clientFD,
++              status: "ERROR",
++              message: "stale session")
++            continue
++          }
++          activeSessionID = nil
+           try writeAck(sequence: message.sequence, fd: clientFD)
+           print("RICH_DRIVE_RUNNER_STOPPED")
+           return
+@@ -1241,6 +1370,11 @@ private final class RichDriveRunnerServer {
+     print("RICH_DRIVE_RUNNER_TIMEOUT")
+   }
+ 
++  private func acceptsSession(_ sessionID: String?) -> Bool {
++    guard let activeSessionID else { return true }
++    return sessionID == activeSessionID
++  }
++
+   private func acceptClient(serverFD: Int32) throws -> Int32 {
+     let deadline = Date().addingTimeInterval(timeoutSeconds)
+     while Date() < deadline {

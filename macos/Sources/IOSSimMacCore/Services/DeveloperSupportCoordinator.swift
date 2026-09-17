@@ -17,8 +17,13 @@ public enum DeveloperSupportState: String, Codable, Equatable, Sendable {
 
 public enum DeveloperSupportFailure: String, Error, Codable, Equatable, Sendable {
     case noApprovedSource
+    case sourceUnavailable
+    case networkUnavailable
     case wrongBuildIdentity
+    case invalidManifest
     case corruptAsset
+    case revokedAsset
+    case cacheWriteFailed
     case developerModeDisabled
     case personalizationRejected
     case tssUnavailable
@@ -26,6 +31,106 @@ public enum DeveloperSupportFailure: String, Error, Codable, Equatable, Sendable
     case mountRejected
     case serviceMapUnavailable
     case deviceDisconnected
+}
+
+public enum DeveloperSupportPersonalizationStatus: String, Codable, Equatable, Sendable {
+    case notStarted
+    case completed
+}
+
+/// Release-policy classification for developer-support inputs. This is a
+/// security boundary, not descriptive metadata: a public-production selector
+/// must never execute a development mirror or test fixture.
+public enum DeveloperSupportProviderClassification: String, Codable, Equatable, Sendable {
+    case existingValidatedCache
+    case thirdPartyMirrorDevelopment
+    case testFixture
+    case approvedProductionSource
+}
+
+public enum DeveloperSupportDistributionClass: String, Codable, Equatable, Sendable {
+    case development
+    case localTest
+    case publicProduction
+}
+
+public struct DeveloperSupportProviderDescriptor: Codable, Equatable, Sendable {
+    public let providerID: String
+    public let classification: DeveloperSupportProviderClassification
+    public let supportsFreshAcquisition: Bool
+    public let provenancePolicyID: String
+
+    public init(
+        providerID: String,
+        classification: DeveloperSupportProviderClassification,
+        supportsFreshAcquisition: Bool,
+        provenancePolicyID: String
+    ) {
+        self.providerID = providerID
+        self.classification = classification
+        self.supportsFreshAcquisition = supportsFreshAcquisition
+        self.provenancePolicyID = provenancePolicyID
+    }
+}
+
+public enum DeveloperSupportProviderPolicyError: Error, Equatable, Sendable {
+    case invalidDescriptor(String)
+    case providerNotAllowed(providerID: String, distribution: DeveloperSupportDistributionClass)
+    case approvedProductionProviderRequired
+}
+
+public struct DeveloperSupportProviderPolicy: Codable, Equatable, Sendable {
+    public let distribution: DeveloperSupportDistributionClass
+
+    public init(distribution: DeveloperSupportDistributionClass) {
+        self.distribution = distribution
+    }
+
+    public static let development = Self(distribution: .development)
+    public static let localTest = Self(distribution: .localTest)
+    public static let publicProduction = Self(distribution: .publicProduction)
+
+    public func validate(_ descriptor: DeveloperSupportProviderDescriptor) throws {
+        guard !descriptor.providerID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !descriptor.provenancePolicyID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DeveloperSupportProviderPolicyError.invalidDescriptor(descriptor.providerID)
+        }
+        guard permits(descriptor) else {
+            throw DeveloperSupportProviderPolicyError.providerNotAllowed(
+                providerID: descriptor.providerID,
+                distribution: distribution
+            )
+        }
+    }
+
+    public func permits(_ descriptor: DeveloperSupportProviderDescriptor) -> Bool {
+        switch distribution {
+        case .development, .localTest:
+            return true
+        case .publicProduction:
+            switch descriptor.classification {
+            case .existingValidatedCache, .approvedProductionSource:
+                return true
+            case .thirdPartyMirrorDevelopment, .testFixture:
+                return false
+            }
+        }
+    }
+
+    /// A validated cache may be consumed in production, but it cannot satisfy
+    /// the clean-machine public release gate by itself.
+    public func assertFreshAcquisitionConfigured(
+        _ descriptors: [DeveloperSupportProviderDescriptor]
+    ) throws {
+        for descriptor in descriptors { try validate(descriptor) }
+        if distribution == .publicProduction {
+            guard descriptors.contains(where: {
+                $0.classification == .approvedProductionSource && $0.supportsFreshAcquisition
+            }) else {
+                throw DeveloperSupportProviderPolicyError.approvedProductionProviderRequired
+            }
+        }
+    }
 }
 
 public struct DeveloperSupportRequirements: Codable, Equatable, Sendable {
@@ -56,11 +161,66 @@ public struct DeveloperSupportRequirements: Codable, Equatable, Sendable {
     }
 }
 
+public struct DeveloperSupportProvenance: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public let schemaVersion: Int
+    public let provider: DeveloperSupportProviderDescriptor
+    public let sourceURL: String
+    public let sourceRevision: String
+    public let sourceAssetIdentity: String
+    public let downloadedAt: Date
+    public let expectedSHA256: [String: String]
+    public let actualSHA256: [String: String]
+    public let manifestIdentity: String
+    public let trustCacheIdentity: String
+    public let licensePolicyID: String
+    public let revocationPolicyID: String
+    public let cacheLocation: String
+    public let personalizationStatus: DeveloperSupportPersonalizationStatus
+
+    public init(
+        schemaVersion: Int = DeveloperSupportProvenance.currentSchemaVersion,
+        provider: DeveloperSupportProviderDescriptor,
+        sourceURL: String,
+        sourceRevision: String,
+        sourceAssetIdentity: String,
+        downloadedAt: Date,
+        expectedSHA256: [String: String],
+        actualSHA256: [String: String],
+        manifestIdentity: String,
+        trustCacheIdentity: String,
+        licensePolicyID: String,
+        revocationPolicyID: String,
+        cacheLocation: String,
+        personalizationStatus: DeveloperSupportPersonalizationStatus = .notStarted
+    ) {
+        self.schemaVersion = schemaVersion
+        self.provider = provider
+        self.sourceURL = sourceURL
+        self.sourceRevision = sourceRevision
+        self.sourceAssetIdentity = sourceAssetIdentity
+        self.downloadedAt = downloadedAt
+        self.expectedSHA256 = expectedSHA256
+        self.actualSHA256 = actualSHA256
+        self.manifestIdentity = manifestIdentity
+        self.trustCacheIdentity = trustCacheIdentity
+        self.licensePolicyID = licensePolicyID
+        self.revocationPolicyID = revocationPolicyID
+        self.cacheLocation = cacheLocation
+        self.personalizationStatus = personalizationStatus
+    }
+}
+
 public struct DeveloperSupportArtifact: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 2
+
     public let schemaVersion: Int
     public let provenanceID: String
+    public let productVersion: String
     public let buildVersion: String
     public let buildIdentity: String
+    public let developerSupportBuildVersion: String
     public let imageURL: URL
     public let imageSHA256: String
     public let imageSize: UInt64
@@ -70,12 +230,15 @@ public struct DeveloperSupportArtifact: Codable, Equatable, Sendable {
     public let buildManifestSHA256: String
     public let minimumBridgeABI: UInt32
     public let validatedAt: Date
+    public let provenance: DeveloperSupportProvenance
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = DeveloperSupportArtifact.currentSchemaVersion,
         provenanceID: String,
+        productVersion: String,
         buildVersion: String,
         buildIdentity: String,
+        developerSupportBuildVersion: String,
         imageURL: URL,
         imageSHA256: String,
         imageSize: UInt64,
@@ -83,13 +246,16 @@ public struct DeveloperSupportArtifact: Codable, Equatable, Sendable {
         trustCacheSHA256: String? = nil,
         buildManifestURL: URL,
         buildManifestSHA256: String,
-        minimumBridgeABI: UInt32 = 1,
-        validatedAt: Date = Date()
+        minimumBridgeABI: UInt32 = DynamicNativeDeviceTransport.requiredABIVersion,
+        validatedAt: Date = Date(),
+        provenance: DeveloperSupportProvenance
     ) {
         self.schemaVersion = schemaVersion
         self.provenanceID = provenanceID
+        self.productVersion = productVersion
         self.buildVersion = buildVersion
         self.buildIdentity = buildIdentity
+        self.developerSupportBuildVersion = developerSupportBuildVersion
         self.imageURL = imageURL
         self.imageSHA256 = imageSHA256.lowercased()
         self.imageSize = imageSize
@@ -99,11 +265,12 @@ public struct DeveloperSupportArtifact: Codable, Equatable, Sendable {
         self.buildManifestSHA256 = buildManifestSHA256.lowercased()
         self.minimumBridgeABI = minimumBridgeABI
         self.validatedAt = validatedAt
+        self.provenance = provenance
     }
 }
 
 public protocol DeveloperSupportProviding: Sendable {
-    var productionEligible: Bool { get }
+    var descriptor: DeveloperSupportProviderDescriptor { get }
     func artifact(matching requirements: DeveloperSupportRequirements) async throws -> DeveloperSupportArtifact?
 }
 
@@ -153,8 +320,10 @@ public enum DeveloperSupportIntegrity {
     }
 
     public static func validate(_ artifact: DeveloperSupportArtifact, for requirements: DeveloperSupportRequirements) throws {
-        guard artifact.schemaVersion == 1,
-              artifact.minimumBridgeABI <= 1,
+        guard artifact.schemaVersion == DeveloperSupportArtifact.currentSchemaVersion,
+              artifact.provenance.schemaVersion == DeveloperSupportProvenance.currentSchemaVersion,
+              artifact.minimumBridgeABI <= DynamicNativeDeviceTransport.requiredABIVersion,
+              artifact.productVersion == requirements.productVersion,
               artifact.buildVersion == requirements.buildVersion,
               artifact.buildIdentity == requirements.buildIdentity else {
             throw DeveloperSupportFailure.wrongBuildIdentity
@@ -170,13 +339,63 @@ public enum DeveloperSupportIntegrity {
            try sha256(url: trustCacheURL).digest != expected {
             throw DeveloperSupportFailure.corruptAsset
         }
+        try validateProvenance(artifact)
+    }
+
+    public static func validateFiles(
+        _ artifact: DeveloperSupportArtifact,
+        expectedBuildVersion: String
+    ) throws {
+        guard artifact.schemaVersion == DeveloperSupportArtifact.currentSchemaVersion,
+              artifact.provenance.schemaVersion == DeveloperSupportProvenance.currentSchemaVersion,
+              artifact.minimumBridgeABI <= DynamicNativeDeviceTransport.requiredABIVersion,
+              artifact.buildVersion == expectedBuildVersion,
+              !artifact.buildIdentity.isEmpty else {
+            throw DeveloperSupportFailure.wrongBuildIdentity
+        }
+        let image = try sha256(url: artifact.imageURL)
+        guard image.size == artifact.imageSize, image.digest == artifact.imageSHA256,
+              try sha256(url: artifact.buildManifestURL).digest == artifact.buildManifestSHA256 else {
+            throw DeveloperSupportFailure.corruptAsset
+        }
+        guard let trustCacheURL = artifact.trustCacheURL,
+              let expectedTrustCache = artifact.trustCacheSHA256,
+              try sha256(url: trustCacheURL).digest == expectedTrustCache else {
+            throw DeveloperSupportFailure.corruptAsset
+        }
+        try validateProvenance(artifact)
+    }
+
+    private static func validateProvenance(_ artifact: DeveloperSupportArtifact) throws {
+        let required = ["Image.dmg", "BuildManifest.plist", "Image.dmg.trustcache"]
+        guard !artifact.provenance.provider.providerID.isEmpty,
+              !artifact.provenance.sourceURL.isEmpty,
+              !artifact.provenance.sourceRevision.isEmpty,
+              !artifact.provenance.sourceAssetIdentity.isEmpty,
+              !artifact.provenance.licensePolicyID.isEmpty,
+              !artifact.provenance.revocationPolicyID.isEmpty,
+              !artifact.provenance.cacheLocation.isEmpty,
+              artifact.provenance.manifestIdentity == artifact.buildManifestSHA256,
+              artifact.provenance.trustCacheIdentity == artifact.trustCacheSHA256,
+              required.allSatisfy({ name in
+                  artifact.provenance.expectedSHA256[name] == artifact.provenance.actualSHA256[name]
+              }) else {
+            throw DeveloperSupportFailure.corruptAsset
+        }
     }
 }
 
-/// Reads pre-authorized Apple caches only. It never launches Xcode or xcrun.
+/// Reads only the Veya-owned validated cache. It never launches Xcode or xcrun
+/// and never treats developer-machine Xcode/CoreDevice caches as a consumer
+/// dependency.
 public struct ExistingAppleCacheProvider: DeveloperSupportProviding {
-    public let productionEligible = true
-    private let roots: [URL]
+    public let descriptor = DeveloperSupportProviderDescriptor(
+        providerID: "existingAppleValidatedCache",
+        classification: .existingValidatedCache,
+        supportsFreshAcquisition: false,
+        provenancePolicyID: "local-validated-cache-v1"
+    )
+    let roots: [URL]
 
     public init(roots: [URL] = ExistingAppleCacheProvider.defaultRoots()) {
         self.roots = roots
@@ -201,15 +420,21 @@ public struct ExistingAppleCacheProvider: DeveloperSupportProviding {
     public static func defaultRoots(fileManager: FileManager = .default) -> [URL] {
         let library = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library", isDirectory: true)
         return [
-            library.appendingPathComponent("Developer/DeveloperDiskImages", isDirectory: true),
-            library.appendingPathComponent("Developer/CoreDevice/Caches", isDirectory: true)
+            library.appendingPathComponent(
+                "Application Support/IOSSim/DeveloperSupport", isDirectory: true
+            )
         ]
     }
 }
 
 /// Test-only provider. Production coordinators reject it.
 public struct DevelopmentFixtureProvider: DeveloperSupportProviding {
-    public let productionEligible = false
+    public let descriptor = DeveloperSupportProviderDescriptor(
+        providerID: "developmentFixture",
+        classification: .testFixture,
+        supportsFreshAcquisition: false,
+        provenancePolicyID: "hermetic-test-fixture-v1"
+    )
     public let value: DeveloperSupportArtifact?
 
     public init(_ value: DeveloperSupportArtifact?) { self.value = value }
@@ -219,17 +444,17 @@ public struct DevelopmentFixtureProvider: DeveloperSupportProviding {
 public actor DeveloperSupportCoordinator {
     private let providers: [any DeveloperSupportProviding]
     private let service: any DeveloperSupportDeviceServicing
-    private let allowDevelopmentFixtures: Bool
+    private let providerPolicy: DeveloperSupportProviderPolicy
     public private(set) var status = DeveloperSupportStatus(.missing, safeDetail: "not checked")
 
     public init(
         providers: [any DeveloperSupportProviding],
         service: any DeveloperSupportDeviceServicing,
-        allowDevelopmentFixtures: Bool = false
+        providerPolicy: DeveloperSupportProviderPolicy = .publicProduction
     ) {
         self.providers = providers
         self.service = service
-        self.allowDevelopmentFixtures = allowDevelopmentFixtures
+        self.providerPolicy = providerPolicy
     }
 
     public func prepare(
@@ -249,8 +474,11 @@ public actor DeveloperSupportCoordinator {
             }
             status = DeveloperSupportStatus(.acquisitionNeeded, safeDetail: "exact developer-support asset required")
             var selected: DeveloperSupportArtifact?
-            for provider in providers where provider.productionEligible || allowDevelopmentFixtures {
+            for provider in providers where providerPolicy.permits(provider.descriptor) {
+                try providerPolicy.validate(provider.descriptor)
                 if let candidate = try await provider.artifact(matching: requirements) {
+                    guard providerPolicy.permits(candidate.provenance.provider) else { continue }
+                    try providerPolicy.validate(candidate.provenance.provider)
                     selected = candidate
                     break
                 }
@@ -265,6 +493,8 @@ public actor DeveloperSupportCoordinator {
             let manifest: Data
             do {
                 manifest = try await service.personalizationManifest(on: device, artifact: artifact, request: request)
+            } catch let failure as DeveloperSupportFailure {
+                throw failure
             } catch {
                 throw DeveloperSupportFailure.personalizationRejected
             }

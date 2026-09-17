@@ -138,9 +138,21 @@ public struct Gate3XCTestRunnerBundleIdentifierResolver: Sendable {
   public func resolvedInstalledRunnerBundleID(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     infoDictionary: [String: Any]? = Bundle.main.infoDictionary,
-    userDefaults: UserDefaults = .standard
+    userDefaults: UserDefaults = .standard,
+    runtimeMappingURL: URL? = Self.defaultRuntimeMappingURL()
   ) -> String {
     if let configured = Self.validConfiguredRunnerBundleID(environment[Self.environmentKey]) {
+      return configured
+    }
+    if let runtimeMappingURL,
+      let data = try? Data(contentsOf: runtimeMappingURL),
+      let mapping = try? JSONDecoder().decode(DeliveredRuntimeMapping.self, from: data),
+      mapping.isSemanticallyValid(
+        currentMainBundleIdentifier: infoDictionary?["CFBundleIdentifier"] as? String
+      ),
+      let configured = Self.validConfiguredRunnerBundleID(mapping.runnerBundleIdentifier)
+    {
+      userDefaults.set(configured, forKey: Self.userDefaultsKey)
       return configured
     }
     if let configured = Self.validConfiguredRunnerBundleID(
@@ -155,6 +167,13 @@ public struct Gate3XCTestRunnerBundleIdentifierResolver: Sendable {
       return configured
     }
     return Self.defaultInstalledRunnerBundleID
+  }
+
+  public static func defaultRuntimeMappingURL(
+    fileManager: FileManager = .default
+  ) -> URL? {
+    fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("IOSSim/runtime-mapping.json")
   }
 
   public static func validConfiguredRunnerBundleID(_ rawValue: String?) -> String? {
@@ -177,6 +196,29 @@ public struct Gate3XCTestRunnerBundleIdentifierResolver: Sendable {
       guard let first = component.first else { return false }
       return first.isLetter || first.isNumber
     }
+  }
+}
+
+private struct DeliveredRuntimeMapping: Decodable {
+  let schemaVersion: Int
+  let deviceUDIDHash: String
+  let teamIdentifier: String?
+  let mainBundleIdentifier: String
+  let runnerBundleIdentifier: String
+
+  func isSemanticallyValid(currentMainBundleIdentifier: String?) -> Bool {
+    let hex = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+    guard schemaVersion == 1,
+      deviceUDIDHash.count == 64,
+      deviceUDIDHash.unicodeScalars.allSatisfy({ hex.contains($0) }),
+      teamIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true,
+      Gate3XCTestRunnerBundleIdentifierResolver.validConfiguredRunnerBundleID(
+        runnerBundleIdentifier
+      ) != nil,
+      !mainBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return false }
+    guard let currentMainBundleIdentifier else { return true }
+    return mainBundleIdentifier == currentMainBundleIdentifier
   }
 }
 

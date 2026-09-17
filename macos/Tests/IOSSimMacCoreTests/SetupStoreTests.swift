@@ -3,16 +3,40 @@ import XCTest
 
 @MainActor
 final class SetupStoreTests: XCTestCase {
+    private var testDefaults: UserDefaults!
+    private var testDefaultsSuite: String!
+    private var testRoot: URL!
+
     override func setUp() {
-        UserDefaults.standard.removeObject(forKey: "IOSSimMac.onboardingCompleted")
-        UserDefaults.standard.removeObject(forKey: "IOSSimMac.selectedDeviceIdentifier")
-        UserDefaults.standard.removeObject(forKey: "IOSSimMac.selectedDeviceName")
-        UserDefaults.standard.removeObject(forKey: "IOSSimMac.selectedPersonalTeam")
+        super.setUp()
+        testDefaultsSuite = "IOSSimMacCoreTests.SetupStore.\(UUID().uuidString)"
+        testDefaults = UserDefaults(suiteName: testDefaultsSuite)!
+        testDefaults.removePersistentDomain(forName: testDefaultsSuite)
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        testRoot = repositoryRoot
+            .appendingPathComponent(".build/iossim/hermetic-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try! FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        testDefaults.removePersistentDomain(forName: testDefaultsSuite)
+        if let testRoot, testRoot.path.contains("/.build/iossim/hermetic-tests/") {
+            try? FileManager.default.removeItem(at: testRoot)
+        }
+        testDefaults = nil
+        testDefaultsSuite = nil
+        testRoot = nil
+        super.tearDown()
     }
 
     func testSuccessfulSetupFlowReachesRuntimeSetupWhenManualActionsRemain() async throws {
         let engine = MockIOSSimSetupEngine(scenario: .localDevVPNRequired)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.phase, .runtimeSetup)
@@ -21,16 +45,50 @@ final class SetupStoreTests: XCTestCase {
 
     func testNoDeviceFlowWaitsForDevice() async throws {
         let engine = MockIOSSimSetupEngine(scenario: .noDevice)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.phase, .waitingForDevice)
         XCTAssertNil(store.selectedDevice)
     }
 
+    func testComputerTrustActionRequestsNativePairOnceAndPreservesWaitingState() async throws {
+        let engine = TrustSetupEngine()
+        let store = makeStore(engine: engine)
+        store.getStarted()
+        try await waitUntilIdle(store)
+        XCTAssertEqual(store.phase, .deviceActionRequired)
+
+        store.continueDeviceSecurityAction()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.lockdownPairingReceipt?.state, .waitingForUserTrust)
+        XCTAssertEqual(store.phase, .deviceActionRequired)
+        XCTAssertNil(store.lastError)
+        let requested = await engine.requestedIdentifiers
+        XCTAssertEqual(requested, ["PHONE-0001"])
+    }
+
+    func testMissingPackagedHelperSurfacesIntegrityErrorWithoutDoctorConfusion() async throws {
+        let engine = BundledProvisioningEngine(
+            helperURL: testRoot.appendingPathComponent("missing-IOSSimProvisioner"),
+            resourcesURL: testRoot
+        )
+        let store = makeStore(engine: engine)
+
+        store.getStarted()
+        try await waitUntilIdle(store)
+
+        XCTAssertEqual(store.phase, .failed)
+        XCTAssertEqual(store.lastError?.headline, "Veya installation integrity check failed.")
+        XCTAssertTrue(store.lastError?.details.contains("VEYA-INTEGRITY-001") == true)
+        XCTAssertFalse(store.lastError?.headline.lowercased().contains("doctor") == true)
+        XCTAssertFalse(store.lastError?.recovery.lowercased().contains("doctor") == true)
+    }
+
     func testCheckSetupRefreshPerformsFreshDoctorCall() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: []))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         let firstCallCount = await engine.doctorCallCount
@@ -44,7 +102,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testOneDeviceAutoSelectsLiveDevice() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.selectedDeviceIdentifier, "A")
@@ -53,7 +111,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testMultipleDevicesWithoutRememberedSelectionRequiresExplicitChoice() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A"), Self.device("B")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertNil(store.selectedDeviceIdentifier)
@@ -61,10 +119,10 @@ final class SetupStoreTests: XCTestCase {
     }
 
     func testMultipleDevicesWithRememberedSelectionUsesRememberedDevice() async throws {
-        UserDefaults.standard.set("B", forKey: "IOSSimMac.selectedDeviceIdentifier")
-        UserDefaults.standard.set("Test iPhone", forKey: "IOSSimMac.selectedDeviceName")
+        testDefaults.set("B", forKey: "IOSSimMac.selectedDeviceIdentifier")
+        testDefaults.set("Test iPhone", forKey: "IOSSimMac.selectedDeviceName")
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A"), Self.device("B")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.selectedDeviceIdentifier, "B")
@@ -72,10 +130,10 @@ final class SetupStoreTests: XCTestCase {
     }
 
     func testRememberedDeviceAbsentDoesNotShowStaleDevice() async throws {
-        UserDefaults.standard.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
-        UserDefaults.standard.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
+        testDefaults.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
+        testDefaults.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
         let engine = SequenceSetupEngine(status: Self.status(devices: []))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertNil(store.selectedDeviceIdentifier)
@@ -84,10 +142,10 @@ final class SetupStoreTests: XCTestCase {
     }
 
     func testNewSingleDeviceReplacingOldRememberedDeviceAutoSelectsLivePhone() async throws {
-        UserDefaults.standard.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
-        UserDefaults.standard.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
+        testDefaults.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
+        testDefaults.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("B")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.selectedDeviceIdentifier, "B")
@@ -96,17 +154,17 @@ final class SetupStoreTests: XCTestCase {
 
     func testChangeDeviceActionPersistsExplicitSelection() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A"), Self.device("B")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.selectDevice(identifier: "B")
         XCTAssertEqual(store.selectedDeviceIdentifier, "B")
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "IOSSimMac.selectedDeviceIdentifier"), "B")
+        XCTAssertEqual(testDefaults.string(forKey: "IOSSimMac.selectedDeviceIdentifier"), "B")
     }
 
     func testOperationBoundToSelectedDevice() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.continueFromCurrentStatus()
@@ -117,7 +175,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testAmbiguousOperationRejected() async throws {
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A"), Self.device("B")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.runUpdateComponents()
@@ -134,7 +192,7 @@ final class SetupStoreTests: XCTestCase {
             failProvisionFor: "A",
             failureText: "IPHONE_DISCONNECTED: reconnect the selected iPhone or choose another device."
         )
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.continueFromCurrentStatus()
@@ -147,7 +205,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testConsumerDisconnectSurfacesWaitingStateInsteadOfAuthenticationFailure() async throws {
         let engine = ConsumerDisconnectEngine()
-        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        let store = makeStore(engine: engine, nativeProvisioningExperiment: false)
         store.getStarted()
         try await waitUntilIdle(store)
         store.continueFromCurrentStatus()
@@ -160,10 +218,10 @@ final class SetupStoreTests: XCTestCase {
     }
 
     func testReconnectSameDeviceRestoresSelection() async throws {
-        UserDefaults.standard.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
-        UserDefaults.standard.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
+        testDefaults.set("A", forKey: "IOSSimMac.selectedDeviceIdentifier")
+        testDefaults.set("GOPI's iPhone", forKey: "IOSSimMac.selectedDeviceName")
         let engine = SequenceSetupEngine(status: Self.status(devices: [Self.device("A")]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.selectedDeviceIdentifier, "A")
@@ -172,7 +230,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testDeveloperModeActionState() async throws {
         let engine = MockIOSSimSetupEngine(scenario: .developerModeRequired)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.phase, .deviceActionRequired)
@@ -200,7 +258,7 @@ final class SetupStoreTests: XCTestCase {
             requiredFor: "device"
         )
         let engine = SequenceSetupEngine(status: Self.status(devices: [locked], runtimeActions: [lockCheck]))
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.getStarted()
         try await waitUntilIdle(store)
@@ -211,7 +269,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testInstallFailureFlow() async throws {
         let engine = MockIOSSimSetupEngine(scenario: .installFailure)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.continueFromCurrentStatus()
@@ -222,7 +280,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testConsumerFlowRequiresTeamSelectionWhenMultipleTeamsExist() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1"), .team("TEAM2")])
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         XCTAssertEqual(store.phase, .appleAccount)
@@ -231,7 +289,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testConsumerInstallBindsExplicitDeviceAndTeam() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1"), .team("TEAM2")])
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.selectTeam(identifier: "TEAM2")
@@ -247,7 +305,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testConsumerRuntimeConfirmationReachesCompleteAndPersistsReadyState() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.continueFromCurrentStatus()
@@ -267,7 +325,7 @@ final class SetupStoreTests: XCTestCase {
             teams: [.team("TEAM1"), .team("TEAM2")],
             runtimeActionsWithoutManifest: true
         )
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.getStarted()
         try await waitUntilIdle(store)
@@ -280,12 +338,12 @@ final class SetupStoreTests: XCTestCase {
     }
 
     func testCompletedOnboardingWithoutManifestRoutesBackToProvisioning() async throws {
-        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        testDefaults.set(true, forKey: "IOSSimMac.onboardingCompleted")
         let engine = ConsumerSequenceEngine(
             teams: [.team("TEAM1"), .team("TEAM2")],
             runtimeActionsWithoutManifest: true
         )
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.bootstrap()
         try await waitUntilIdle(store)
@@ -301,7 +359,7 @@ final class SetupStoreTests: XCTestCase {
             teams: [.team("TEAM1")],
             initialManifest: invalidManifest
         )
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.getStarted()
         try await waitUntilIdle(store)
@@ -321,7 +379,7 @@ final class SetupStoreTests: XCTestCase {
     func testValidManifestAndRunnerMappingAllowsRuntimeSetup() async throws {
         let manifest = try Self.consumerManifest(runtimeSetupStatus: .userActionRequired)
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: manifest)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.getStarted()
         try await waitUntilIdle(store)
@@ -332,15 +390,15 @@ final class SetupStoreTests: XCTestCase {
         try await waitUntilIdle(store)
 
         XCTAssertEqual(store.phase, .complete)
-        let confirmations = await engine.runtimeConfirmationCount
-        XCTAssertEqual(confirmations, 1)
+        let resumeCount = await engine.resumeCount
+        XCTAssertEqual(resumeCount, 1)
     }
 
     func testFullyReadyConsumerUserStillRoutesToDashboard() async throws {
-        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        testDefaults.set(true, forKey: "IOSSimMac.onboardingCompleted")
         let manifest = try Self.consumerManifest(runtimeSetupStatus: .ready)
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: manifest)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.bootstrap()
         try await waitUntilIdle(store)
@@ -351,15 +409,15 @@ final class SetupStoreTests: XCTestCase {
 
     func testConsumerBootstrapResumesPendingRuntimeSetupAfterPriorOnboarding() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
-        let initialStore = SetupStore(engine: engine)
+        let initialStore = makeStore(engine: engine)
         initialStore.getStarted()
         try await waitUntilIdle(initialStore)
         initialStore.continueFromCurrentStatus()
         try await waitUntilIdle(initialStore)
         XCTAssertEqual(initialStore.phase, .runtimeSetup)
 
-        UserDefaults.standard.set(true, forKey: "IOSSimMac.onboardingCompleted")
-        let resumedStore = SetupStore(engine: engine)
+        testDefaults.set(true, forKey: "IOSSimMac.onboardingCompleted")
+        let resumedStore = makeStore(engine: engine)
         resumedStore.bootstrap()
         try await waitUntilIdle(resumedStore)
 
@@ -370,14 +428,14 @@ final class SetupStoreTests: XCTestCase {
         let pending = try Self.consumerManifest()
             .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: pending)
-        let first = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        let first = makeStore(engine: engine, nativeProvisioningExperiment: false)
 
         first.getStarted()
         try await waitUntilIdle(first)
         XCTAssertEqual(first.phase, .developerProfileTrust)
         XCTAssertEqual(first.consumerStage, .developerProfileTrustRequired)
 
-        let relaunched = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        let relaunched = makeStore(engine: engine, nativeProvisioningExperiment: false)
         relaunched.getStarted()
         try await waitUntilIdle(relaunched)
         XCTAssertEqual(relaunched.phase, .developerProfileTrust)
@@ -388,7 +446,7 @@ final class SetupStoreTests: XCTestCase {
         let pending = try Self.consumerManifest()
             .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")], initialManifest: pending)
-        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        let store = makeStore(engine: engine, nativeProvisioningExperiment: false)
         store.getStarted()
         try await waitUntilIdle(store)
 
@@ -411,7 +469,7 @@ final class SetupStoreTests: XCTestCase {
             initialManifest: pending,
             resumeRemainsTrustRequired: true
         )
-        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        let store = makeStore(engine: engine, nativeProvisioningExperiment: false)
         store.getStarted()
         try await waitUntilIdle(store)
 
@@ -430,7 +488,7 @@ final class SetupStoreTests: XCTestCase {
         let pending = try Self.consumerManifest()
             .updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
         let engine = RacingTrustResumeEngine(manifest: pending)
-        let store = SetupStore(engine: engine, nativeProvisioningExperiment: false)
+        let store = makeStore(engine: engine, nativeProvisioningExperiment: false)
         store.getStarted()
         try await waitUntilIdle(store)
 
@@ -448,7 +506,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testConsumerRefreshAndRepairUseTypedOperations() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
         store.continueFromCurrentStatus()
@@ -466,7 +524,7 @@ final class SetupStoreTests: XCTestCase {
 
     func testFreshInstallFlagRequiresExplicitConfirmedAction() async throws {
         let engine = ConsumerSequenceEngine(teams: [.team("TEAM1")])
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
         store.getStarted()
         try await waitUntilIdle(store)
 
@@ -482,7 +540,7 @@ final class SetupStoreTests: XCTestCase {
         let oldStatus = Self.status(devices: [Self.device("A")])
         let currentStatus = Self.status(devices: [])
         let engine = RacingDoctorEngine(oldResult: .success(oldStatus), currentStatus: currentStatus)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.getStarted()
         while await engine.callCount < 1 { await Task.yield() }
@@ -499,7 +557,7 @@ final class SetupStoreTests: XCTestCase {
     func testCanceledOlderFailureCannotOverwriteNewerSuccess() async throws {
         let currentStatus = Self.status(devices: [])
         let engine = RacingDoctorEngine(oldResult: .failure, currentStatus: currentStatus)
-        let store = SetupStore(engine: engine)
+        let store = makeStore(engine: engine)
 
         store.getStarted()
         while await engine.callCount < 1 { await Task.yield() }
@@ -521,6 +579,27 @@ final class SetupStoreTests: XCTestCase {
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
+    }
+
+    private func makeStore(
+        engine: any IOSSimSetupEngine,
+        nativeProvisioningExperiment: Bool = false
+    ) -> SetupStore {
+        SetupStore(
+            engine: engine,
+            authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator(
+                backend: UnavailableExperimentalPersonalTeamBackend()
+            ),
+            nativeProvisioningExperiment: nativeProvisioningExperiment,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(
+                url: testRoot.appendingPathComponent("apple-diagnostics.json")
+            ),
+            nativeArtifactStore: NativeProvisioningArtifactStore(
+                directoryURL: testRoot.appendingPathComponent("native-artifacts", isDirectory: true)
+            ),
+            userDefaults: testDefaults,
+            temporaryRoot: testRoot.appendingPathComponent("temporary", isDirectory: true)
+        )
     }
 
     private static func device(_ selectionIdentifier: String) -> DetectedDevice {
@@ -567,6 +646,19 @@ final class SetupStoreTests: XCTestCase {
             profileFingerprint: nil,
             refreshRecommended: false
         )
+        let inventory = InstallationInventoryResult(
+            selectedDeviceMatches: true,
+            inventoryAvailable: true,
+            mainPresent: true,
+            runnerPresent: validRunnerMapping,
+            mainBundleIDMatches: true,
+            runnerBundleIDMatches: validRunnerMapping,
+            expectedTeamContext: true,
+            staleIOSSimArtifactsPresent: false,
+            retryCount: 0,
+            elapsedMilliseconds: 1,
+            safeReason: validRunnerMapping ? "fixture inventory verified" : "fixture runner mapping missing"
+        )
         return ConsumerProvisioningManifest(
             deviceIdentifierSafe: "A",
             deviceIdentifierHash: "hash",
@@ -582,7 +674,10 @@ final class SetupStoreTests: XCTestCase {
             lastInstallDate: Date(),
             runtimeSetupStatus: runtimeSetupStatus,
             appVersion: "1",
-            provisionerVersion: "1"
+            provisionerVersion: "1",
+            setupCheckpoint: .setupReadyForRuntime,
+            installationInventory: inventory,
+            developerProfileTrustStatus: .trusted
         )
     }
 
@@ -857,9 +952,22 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
                 developerDetail: "Test checkpoint missing."
             )
         }
-        let updated = resumeRemainsTrustRequired
-            ? manifest.updatingSetupCheckpoint(.developerProfileTrustRequired, developerProfileTrustStatus: .required)
-            : manifest.updatingSetupCheckpoint(.runtimeConfigurationVerified, developerProfileTrustStatus: .trusted)
+        let updated: ConsumerProvisioningManifest
+        if resumeRemainsTrustRequired {
+            updated = manifest.updatingSetupCheckpoint(
+                .developerProfileTrustRequired,
+                developerProfileTrustStatus: .required
+            )
+        } else if manifest.effectiveSetupCheckpoint == .developerProfileTrustRequired {
+            updated = manifest.updatingSetupCheckpoint(
+                .setupReadyForRuntime,
+                developerProfileTrustStatus: .trusted
+            )
+        } else {
+            updated = manifest
+                .updatingSetupCheckpoint(.setupReadyForRuntime, developerProfileTrustStatus: .trusted)
+                .updatingRuntimeSetupStatus(.ready)
+        }
         self.manifest = updated
         return ConsumerProvisioningResult(
             operation: request.operation,
@@ -884,6 +992,40 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
         let updated = manifest.updatingRuntimeSetupStatus(.ready)
         self.manifest = updated
         return updated
+    }
+
+    func reconcileConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerSetupReconciliationResult {
+        guard let manifest else {
+            throw ConsumerProvisioningFailure(
+                code: .installVerificationFailed,
+                stage: .physicalReconciliationStarted,
+                userMessage: "Missing setup state.",
+                remediation: "Install the fixture artifacts.",
+                developerDetail: "Test manifest missing."
+            )
+        }
+        let expected = try PersonalTeamBundleIdentifierSet(teamIdentifier: request.selectedTeamIdentifier)
+        let inventory = manifest.installationInventory ?? InstallationInventoryResult(
+            selectedDeviceMatches: manifest.deviceIdentifierSafe == request.selectedDeviceIdentifier,
+            inventoryAvailable: true,
+            mainPresent: manifest.installedMainBundleID == expected.main,
+            runnerPresent: manifest.installedRunnerBundleID == expected.runner,
+            mainBundleIDMatches: manifest.installedMainBundleID == expected.main,
+            runnerBundleIDMatches: manifest.installedRunnerBundleID == expected.runner,
+            expectedTeamContext: manifest.teamID == request.selectedTeamIdentifier,
+            staleIOSSimArtifactsPresent: false,
+            retryCount: 0,
+            elapsedMilliseconds: 1,
+            safeReason: "fixture physical reconciliation"
+        )
+        return ConsumerSetupReconciliationResult(
+            trigger: request.reconciliationTrigger ?? .setupStart,
+            persistedCheckpoint: manifest.effectiveSetupCheckpoint,
+            derivedCheckpoint: inventory.verified ? manifest.effectiveSetupCheckpoint : nil,
+            inventory: inventory,
+            mainInstallRequired: !inventory.mainPresent,
+            runnerInstallRequired: !inventory.runnerPresent
+        )
     }
 
     func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
@@ -915,6 +1057,19 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
             profileFingerprint: nil,
             refreshRecommended: false
         )
+        let inventory = InstallationInventoryResult(
+            selectedDeviceMatches: true,
+            inventoryAvailable: true,
+            mainPresent: true,
+            runnerPresent: true,
+            mainBundleIDMatches: true,
+            runnerBundleIDMatches: true,
+            expectedTeamContext: true,
+            staleIOSSimArtifactsPresent: false,
+            retryCount: 0,
+            elapsedMilliseconds: 1,
+            safeReason: "fixture inventory verified"
+        )
         let manifest = ConsumerProvisioningManifest(
             deviceIdentifierSafe: "A",
             deviceIdentifierHash: "hash",
@@ -929,7 +1084,10 @@ private actor ConsumerSequenceEngine: IOSSimSetupEngine {
             runnerProfile: runnerProfile,
             lastInstallDate: Date(),
             appVersion: "1",
-            provisionerVersion: "1"
+            provisionerVersion: "1",
+            setupCheckpoint: .setupReadyForRuntime,
+            installationInventory: inventory,
+            developerProfileTrustStatus: .trusted
         )
         self.manifest = manifest
         return ConsumerProvisioningResult(
@@ -957,7 +1115,7 @@ private actor SequenceSetupEngine: IOSSimSetupEngine {
 
     func doctor() async throws -> DoctorStatus {
         doctorCallCount += 1
-        status
+        return status
     }
 
     func setup() async throws -> ProcessResult {
@@ -983,5 +1141,61 @@ private actor SequenceSetupEngine: IOSSimSetupEngine {
             )
         }
         return ProcessResult(exitCode: 0, stdout: "Installed artifacts", stderr: "")
+    }
+}
+
+private actor TrustSetupEngine: IOSSimSetupEngine {
+    private(set) var requestedIdentifiers: [String] = []
+
+    func doctor() async throws -> DoctorStatus {
+        let device = DetectedDevice(
+            name: "Trust Fixture iPhone",
+            identifier: "PHONE-…0001",
+            selectionIdentifier: "PHONE-0001",
+            developerModeStatus: "unknown",
+            pairingState: "missing",
+            tunnelState: "not-checked",
+            isLocked: false
+        )
+        return DoctorStatus(
+            ready: false,
+            mac: MacSummary(ready: true),
+            device: DeviceSummary(ready: false, connected: true, devices: [device]),
+            actionsRequired: ["Tap Trust on your iPhone."],
+            checks: [
+                .init(
+                    state: .action,
+                    component: "Device",
+                    name: "device trusted",
+                    detail: "Lockdown pair record is missing",
+                    action: "Unlock your iPhone and tap Trust.",
+                    requiredFor: "device"
+                )
+            ]
+        )
+    }
+
+    func setup() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func build() async throws -> ProcessResult { .init(exitCode: 0, stdout: "", stderr: "") }
+    func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult {
+        .init(exitCode: 0, stdout: "", stderr: "")
+    }
+
+    func requestComputerTrust(
+        selectedDeviceIdentifier: String
+    ) async throws -> LockdownPairingReceipt {
+        requestedIdentifiers.append(selectedDeviceIdentifier)
+        return LockdownPairingReceipt(
+            state: .waitingForUserTrust,
+            identity: try IOSSimDeviceIdentity(
+                udid: selectedDeviceIdentifier,
+                usbmuxIdentifier: 7,
+                connection: .usb,
+                connectionGeneration: 1
+            ),
+            pairRecordCreated: false,
+            pairRecordPersisted: false,
+            sessionValidated: false
+        )
     }
 }

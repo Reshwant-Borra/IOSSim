@@ -6,17 +6,37 @@ public protocol IOSSimSetupEngine: Sendable {
     func setup() async throws -> ProcessResult
     func build() async throws -> ProcessResult
     func provisionDevice(selectedDeviceIdentifier: String?) async throws -> ProcessResult
+    func requestComputerTrust(selectedDeviceIdentifier: String) async throws -> LockdownPairingReceipt
     func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate]
     func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult
     func resumeConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult
+    func reconcileConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerSetupReconciliationResult
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest?
+    func consumerProvisioningStatus(
+        selectedDeviceIdentifier: String?,
+        selectedTeamIdentifier: String?
+    ) async throws -> ConsumerProvisioningManifest?
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest
+    func confirmRuntimeSetup(
+        selectedDeviceIdentifier: String,
+        selectedTeamIdentifier: String
+    ) async throws -> ConsumerProvisioningManifest
     func exportSupportBundle() async throws -> URL
 }
 
 public extension IOSSimSetupEngine {
     var consumerProvisioningEnabled: Bool { false }
     func discoverPersonalTeams(selectedDeviceIdentifier: String?) async throws -> [PersonalTeamCandidate] { [] }
+
+    func requestComputerTrust(selectedDeviceIdentifier: String) async throws -> LockdownPairingReceipt {
+        throw ConsumerProvisioningFailure(
+            code: .unsupported,
+            stage: .checkingDevice,
+            userMessage: "This IOSSim build cannot request computer trust.",
+            remediation: "Use the packaged IOSSim app.",
+            developerDetail: "The selected setup engine does not implement native Lockdown pairing."
+        )
+    }
 
     func consumerProvision(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
         throw ConsumerProvisioningFailure(
@@ -38,7 +58,24 @@ public extension IOSSimSetupEngine {
         )
     }
 
+    func reconcileConsumerSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerSetupReconciliationResult {
+        throw ConsumerProvisioningFailure(
+            code: .unsupported,
+            stage: .physicalReconciliationStarted,
+            userMessage: "This IOSSim build cannot inspect the current installation.",
+            remediation: "Use the packaged IOSSim Mac app.",
+            developerDetail: "The selected setup engine does not implement physical reconciliation."
+        )
+    }
+
     func consumerProvisioningStatus() async throws -> ConsumerProvisioningManifest? { nil }
+
+    func consumerProvisioningStatus(
+        selectedDeviceIdentifier: String?,
+        selectedTeamIdentifier: String?
+    ) async throws -> ConsumerProvisioningManifest? {
+        try await consumerProvisioningStatus()
+    }
 
     func confirmRuntimeSetup() async throws -> ConsumerProvisioningManifest {
         throw ConsumerProvisioningFailure(
@@ -48,6 +85,13 @@ public extension IOSSimSetupEngine {
             remediation: "Use the packaged production IOSSim Mac app.",
             developerDetail: "The selected setup engine does not implement runtime confirmation."
         )
+    }
+
+    func confirmRuntimeSetup(
+        selectedDeviceIdentifier: String,
+        selectedTeamIdentifier: String
+    ) async throws -> ConsumerProvisioningManifest {
+        try await confirmRuntimeSetup()
     }
 
     func exportSupportBundle() async throws -> URL {

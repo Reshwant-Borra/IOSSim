@@ -12,15 +12,17 @@ public enum ConsumerProvisioningBackendPreference: String, Codable, CaseIterable
     case xcodeFallback = "XCODE_FALLBACK"
 
     public static func selected(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+        #if IOSSIM_BUNDLED_ENGINE
+        // The packaged consumer has one backend. Environment selection exists
+        // only in developer builds for parity comparisons and migration tests.
+        return .nativePersonalTeam
+        #else
         guard let raw = environment["IOSSIM_PROVISIONING_BACKEND"]?.uppercased(),
               let value = Self(rawValue: raw) else {
-#if IOSSIM_LOCAL_TEST_ONLY
             return .nativePersonalTeam
-#else
-            return .automatic
-#endif
         }
         return value
+        #endif
     }
 }
 
@@ -142,9 +144,6 @@ public enum ConsumerProvisioningBackendSelector {
             if capabilities.nativeZeroXcodeReady {
                 return selection(.nativePersonalTeam, preference, capabilities, zeroXcode: true)
             }
-            if capabilities.xcodeInvisibleReady {
-                return selection(.xcodeInvisible, preference, capabilities, zeroXcode: false)
-            }
             return unavailable(
                 preference,
                 capabilities,
@@ -231,11 +230,7 @@ public enum ConsumerProvisioningBackendSelector {
 
 public enum ZeroXcodeCapabilityPolicy {
     public static var livePersonalTeamExperimentEnabled: Bool {
-#if IOSSIM_LOCAL_TEST_ONLY
         true
-#else
-        false
-#endif
     }
     /// Source-backed classification as of 2026-09-07. Paid-team provisioning
     /// uses App Store Connect API keys, not Apple Account passwords.
@@ -261,10 +256,10 @@ public enum ZeroXcodeCapabilityPolicy {
         fileManager: FileManager = .default
     ) -> ConsumerProvisioningCapabilities {
         let bridge = resourcesURL
-            .appendingPathComponent("BundledTools", isDirectory: true)
-            .appendingPathComponent("IOSSimIdeviceHost")
+            .appendingPathComponent("NativeDeviceBridge", isDirectory: true)
+            .appendingPathComponent("libiossim_device_bridge.dylib")
         return ConsumerProvisioningCapabilities(
-            bundledDeviceBridgeReady: fileManager.isExecutableFile(atPath: bridge.path),
+            bundledDeviceBridgeReady: fileManager.fileExists(atPath: bridge.path),
             nativeAppleAuthenticationReady: livePersonalTeamExperimentEnabled,
             nativePersonalTeamProvisioningReady: livePersonalTeamExperimentEnabled,
             directSigningReady: livePersonalTeamExperimentEnabled,

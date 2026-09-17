@@ -11,7 +11,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 12) {
                 DashboardStatusRow(title: "Mac", detail: "Ready", ready: store.status?.mac.ready == true)
                 DashboardStatusRow(title: "Device", detail: "Selected and trusted", ready: store.selectedDeviceProvisioningReady)
-                DashboardStatusRow(title: "IOSSim", detail: "Installed on your iPhone", ready: store.provisioningManifest != nil)
+                DashboardStatusRow(title: "Veya", detail: "Installed on your iPhone", ready: store.provisioningManifest != nil)
                 DashboardStatusRow(title: "Provisioning", detail: profileDetail, ready: !profileNeedsAttention)
                 DashboardStatusRow(title: "Runtime", detail: "LocalDevVPN and pairing", ready: store.selectedDeviceProvisioningReady && store.status?.runtimeActionChecks.isEmpty == true)
             }
@@ -86,7 +86,7 @@ struct DashboardView: View {
                     Text(device.osVersion.map { "iOS \($0)" } ?? "iOS version unavailable")
                         .foregroundStyle(.secondary)
                     if let eligibility = device.provisioningEligibilityStatus, eligibility != .installable {
-                        Text("This iPhone is not yet authorized for this IOSSim build.")
+                        Text("This iPhone is not yet authorized for this Veya build.")
                             .foregroundStyle(.orange)
                     }
                 } else if store.status?.device.devices.isEmpty == true {
@@ -94,7 +94,7 @@ struct DashboardView: View {
                         .font(.title3.weight(.semibold))
                     Text(deviceDiscoveryFailure == nil
                         ? "Connect and unlock an iPhone to continue."
-                        : "IOSSim could not query its native device bridge. Open Diagnostics for details.")
+                        : "Veya could not query its native device bridge. Open Diagnostics for details.")
                         .foregroundStyle(.secondary)
                 } else if let name = store.disconnectedDeviceName {
                     Text("iPhone Disconnected")
@@ -104,7 +104,7 @@ struct DashboardView: View {
                 } else {
                     Text("Choose an iPhone")
                         .font(.title3.weight(.semibold))
-                    Text("Select the iPhone IOSSim should set up.")
+                    Text("Select the iPhone Veya should set up.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -158,7 +158,7 @@ struct FailureView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(store.lastError?.headline ?? "IOSSim could not complete setup.")
+            Text(store.lastError?.headline ?? "Veya could not complete setup.")
                 .font(.title2.weight(.semibold))
             Text(store.lastError?.recovery ?? "Try again after addressing the issue.")
                 .foregroundStyle(.secondary)
@@ -207,19 +207,19 @@ struct FailureView: View {
                 .environmentObject(store)
         }
         .confirmationDialog(
-            "Fresh install removes IOSSim data from this iPhone",
+            "Fresh install removes Veya data from this iPhone",
             isPresented: $confirmingFreshInstall,
             titleVisibility: .visible
         ) {
-            Button("Remove IOSSim Data and Install", role: .destructive) {
+            Button("Remove Veya Data and Install", role: .destructive) {
                 store.runConfirmedFreshInstall()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
 #if IOSSIM_BUNDLED_ENGINE
-            Text("Only IOSSim and its installed support component will be removed. LocalDevVPN and unrelated apps are not changed.")
+            Text("Only Veya and its installed support component will be removed. LocalDevVPN and unrelated apps are not changed. Compatibility identifiers retained from IOSSim are included.")
 #else
-            Text("Only the IOSSim app and its XCTest runner will be removed. LocalDevVPN and unrelated apps are not changed.")
+            Text("Only the Veya app and its XCTest runner will be removed. LocalDevVPN and unrelated apps are not changed. Compatibility identifiers retained from IOSSim are included.")
 #endif
         }
     }

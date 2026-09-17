@@ -3,6 +3,7 @@ import Foundation
 public actor ConsumerProvisioningStateStore {
     public static let manifestFileName = "provisioning-state.json"
     public static let logFileName = "provisioning-events.jsonl"
+    public static let runtimeProofReceiptFileName = "rich-runtime-proof-receipt.json"
 
     private let directoryURL: URL
     private let fileManager: FileManager
@@ -26,11 +27,18 @@ public actor ConsumerProvisioningStateStore {
         directoryURL.appendingPathComponent(Self.logFileName)
     }
 
+    public var runtimeProofReceiptURL: URL {
+        directoryURL.appendingPathComponent(Self.runtimeProofReceiptFileName)
+    }
+
     public func loadManifest() throws -> ConsumerProvisioningManifest? {
         guard fileManager.fileExists(atPath: manifestURL.path) else { return nil }
         do {
             let manifest = try JSONDecoder.iossim.decode(ConsumerProvisioningManifest.self, from: Data(contentsOf: manifestURL))
-            guard manifest.schemaVersion == ConsumerProvisioningManifest.currentSchemaVersion else {
+            guard manifest.schemaVersion == ConsumerProvisioningManifest.currentSchemaVersion
+                    || manifest.schemaVersion == 1
+                    || manifest.schemaVersion == 2
+                    || manifest.schemaVersion == 3 else {
                 throw ConsumerProvisioningFailure(
                     code: .manifestCorrupt,
                     stage: .checkingProfileExpiration,
@@ -38,6 +46,19 @@ public actor ConsumerProvisioningStateStore {
                     remediation: "Choose Repair to rebuild the local setup record without removing iPhone data.",
                     developerDetail: "Unsupported manifest schema \(manifest.schemaVersion)."
                 )
+            }
+            if manifest.schemaVersion < ConsumerProvisioningManifest.currentSchemaVersion {
+                let migrated = manifest.migratedToCurrentSchema()
+                try saveManifest(migrated)
+                return migrated
+            }
+            if manifest.runtimeSetupStatus == .ready {
+                guard let receipt = try? loadRuntimeProofReceipt(),
+                      receipt.validates(manifest: manifest) else {
+                    let invalidated = manifest.updatingRuntimeSetupStatus(.needsAttention)
+                    try saveManifest(invalidated)
+                    return invalidated
+                }
             }
             return manifest
         } catch let failure as ConsumerProvisioningFailure {
@@ -66,6 +87,44 @@ public actor ConsumerProvisioningStateStore {
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifestURL.path)
     }
 
+    public func markRuntimeSetupReady(
+        receipt: RichRuntimeProofReceipt,
+        request: RichRuntimeProofRequest,
+        checkedAt: Date = Date()
+    ) throws -> ConsumerProvisioningManifest {
+        guard let manifest = try loadManifest() else {
+            throw ConsumerProvisioningFailure(
+                code: .runnerMappingMissing,
+                stage: .verifyingRuntimeReadiness,
+                userMessage: "IOSSim installation information is missing.",
+                remediation: "Choose Repair before completing iPhone setup.",
+                developerDetail: "Runtime setup cannot be confirmed without a provisioning manifest."
+            )
+        }
+        guard manifest.effectiveSetupCheckpoint.localDevVPNIsVerified else {
+            throw ConsumerProvisioningFailure(
+                code: .localDevVPNReadinessFailed,
+                stage: .localDevVPNReadinessStarted,
+                userMessage: "LocalDevVPN is not ready yet.",
+                remediation: "Install LocalDevVPN if needed, approve Apple's VPN prompt, and enable its connection, then run setup again.",
+                developerDetail: "Runtime readiness cannot be confirmed before LOCALDEVVPN_READY."
+            )
+        }
+        guard receipt.validates(request), receipt.validates(manifest: manifest) else {
+            throw ConsumerProvisioningFailure(
+                code: .runtimeProofFailed,
+                stage: .verifyingRuntimeReadiness,
+                userMessage: "IOSSim could not verify the Rich location runtime.",
+                remediation: "Keep the same iPhone unlocked with LocalDevVPN running, then click Try Again.",
+                developerDetail: "VEYA-RUNTIME-003: Bound Rich runtime receipt was missing, stale, or incompatible."
+            )
+        }
+        try saveRuntimeProofReceipt(receipt)
+        let updated = manifest.updatingRuntimeSetupStatus(.ready, checkedAt: checkedAt)
+        try saveManifest(updated)
+        return updated
+    }
+
     public func markRuntimeSetupReady(checkedAt: Date = Date()) throws -> ConsumerProvisioningManifest {
         guard let manifest = try loadManifest() else {
             throw ConsumerProvisioningFailure(
@@ -76,9 +135,38 @@ public actor ConsumerProvisioningStateStore {
                 developerDetail: "Runtime setup cannot be confirmed without a provisioning manifest."
             )
         }
-        let updated = manifest.updatingRuntimeSetupStatus(.ready, checkedAt: checkedAt)
-        try saveManifest(updated)
-        return updated
+        guard manifest.effectiveSetupCheckpoint.localDevVPNIsVerified else {
+            throw ConsumerProvisioningFailure(
+                code: .localDevVPNReadinessFailed,
+                stage: .localDevVPNReadinessStarted,
+                userMessage: "LocalDevVPN is not ready yet.",
+                remediation: "Install LocalDevVPN if needed, approve Apple's VPN prompt, and enable its connection, then run setup again.",
+                developerDetail: "Runtime readiness cannot be confirmed before LOCALDEVVPN_READY."
+            )
+        }
+        throw ConsumerProvisioningFailure(
+            code: .runtimeProofFailed,
+            stage: .verifyingRuntimeReadiness,
+            userMessage: "IOSSim must run its bounded Rich runtime check before setup is complete.",
+            remediation: "Keep the same iPhone unlocked with LocalDevVPN running, then click Try Again.",
+            developerDetail: "VEYA-RUNTIME-001: Stored setup state cannot self-assert READY."
+        )
+    }
+
+    public func loadRuntimeProofReceipt() throws -> RichRuntimeProofReceipt? {
+        guard fileManager.fileExists(atPath: runtimeProofReceiptURL.path) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(RichRuntimeProofReceipt.self, from: Data(contentsOf: runtimeProofReceiptURL))
+    }
+
+    private func saveRuntimeProofReceipt(_ receipt: RichRuntimeProofReceipt) throws {
+        try ensureDirectory()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(receipt)
+        try data.write(to: runtimeProofReceiptURL, options: [.atomic])
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: runtimeProofReceiptURL.path)
     }
 
     public func append(_ event: ProvisioningLogEvent) throws {

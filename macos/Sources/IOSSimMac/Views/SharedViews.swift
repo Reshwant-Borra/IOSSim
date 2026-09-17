@@ -144,7 +144,7 @@ struct DiagnosticsView: View {
     private var versionText: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-        return "IOSSim \(version) (\(build))"
+        return "\(ProductBrand.migrationDisplayName) \(version) (\(build))"
     }
 
     private var bundleAuditText: String {

@@ -26,7 +26,7 @@ public struct RuntimeProvisioningContext: Sendable {
 }
 
 public enum RuntimeProvisioning {
-    public static let helperSchemaVersion = 1
+    public static let helperSchemaVersion = 2
     public static let minimumMacOS = OperatingSystemVersion(majorVersion: 13, minorVersion: 0, patchVersion: 0)
 
     public static func deterministicEnvironment() -> [String: String] {
@@ -37,9 +37,6 @@ public enum RuntimeProvisioning {
         ]
         if !NSHomeDirectory().isEmpty {
             env["HOME"] = NSHomeDirectory()
-        }
-        if let developerDir = ProcessInfo.processInfo.environment["DEVELOPER_DIR"], !developerDir.isEmpty {
-            env["DEVELOPER_DIR"] = developerDir
         }
         return env
     }
@@ -89,6 +86,12 @@ public enum ProvisioningBackendKind: String, Sendable {
     public static func selected(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> ProvisioningBackendKind {
+        #if IOSSIM_BUNDLED_ENGINE
+        // Packaged apps cannot opt into devicectl through environment state.
+        // The legacy backend remains compiled only for explicit developer
+        // comparisons until physical rollback parity has been qualified.
+        return .idevice
+        #else
         let raw = environment["IOSSIM_DEVICE_BACKEND"]?.lowercased()
         if raw == "idevice" {
             return .idevice
@@ -99,6 +102,7 @@ public enum ProvisioningBackendKind: String, Sendable {
         // The shipping consumer path is always the bundled native bridge.
         // devicectl is an explicit development-comparison backend only.
         return .idevice
+        #endif
     }
 }
 
@@ -153,12 +157,34 @@ public protocol DeviceProvisioningBackend: Sendable {
     func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice]
     func rawDeviceIdentifier(matching selector: String?, context: RuntimeProvisioningContext) async -> String?
     func signingDeviceIdentifier(matching selector: String, context: RuntimeProvisioningContext) async -> String?
+    func nativeDeviceIdentity(matching rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> IOSSimDeviceIdentity?
     func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool?
     func installedAppCount(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Int?
     func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult
+    func uninstall(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult
+    func uninstall(
+        bundleIdentifier: String,
+        expectedTeamIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult
+    func launch(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult
+    func readContainerFile(
+        bundleIdentifier: String,
+        relativePath: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> Data
 }
 
 public extension DeviceProvisioningBackend {
+    func nativeDeviceIdentity(
+        matching rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async -> IOSSimDeviceIdentity? {
+        try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier)
+    }
+
     func installedAppCount(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Int? {
         guard let installed = await isAppInstalled(
             bundleIdentifier: bundleIdentifier,
@@ -166,6 +192,33 @@ public extension DeviceProvisioningBackend {
             context: context
         ) else { return nil }
         return installed ? 1 : 0
+    }
+
+    func uninstall(
+        bundleIdentifier: String,
+        expectedTeamIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult {
+        try await uninstall(
+            bundleIdentifier: bundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
+        )
+    }
+}
+
+public enum DeviceProvisioningBackendError: Error, Equatable, Sendable, CustomStringConvertible {
+    case invalidDeviceIdentity
+    case operationFailed(String)
+
+    public var description: String {
+        switch self {
+        case .invalidDeviceIdentity:
+            return "NATIVE_DEVICE_IDENTITY_INVALID"
+        case .operationFailed(let detail):
+            return detail
+        }
     }
 }
 
@@ -180,9 +233,22 @@ public enum DeviceProvisioningBackendFactory {
     }
 }
 
+private actor NativeDeviceSelectionBindings {
+    private var identitiesByUDID: [String: IOSSimDeviceIdentity] = [:]
+
+    func bind(_ identity: IOSSimDeviceIdentity) {
+        identitiesByUDID[identity.udid] = identity
+    }
+
+    func identity(forUDID udid: String) -> IOSSimDeviceIdentity? {
+        identitiesByUDID[udid]
+    }
+}
+
 public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     private let bridge: IOSSimDeviceBridge
     private let applicationService: any NativeApplicationServicing
+    private let bindings: NativeDeviceSelectionBindings
 
     public init(
         bridge: IOSSimDeviceBridge = IOSSimDeviceBridge(),
@@ -190,6 +256,7 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
     ) {
         self.bridge = bridge
         self.applicationService = applicationService
+        bindings = NativeDeviceSelectionBindings()
     }
 
     public func discoverDevices(context: RuntimeProvisioningContext) async -> [DetectedDevice] {
@@ -225,6 +292,7 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
                 diagnostics.append(Self.diagnostic(for: error, operation: .inspection))
             }
             let identity = inspection?.identity ?? descriptor.identity
+            await bindings.bind(identity)
             values.append(DetectedDevice(
                 name: inspection?.name ?? "iPhone",
                 identifier: RuntimeProvisioning.shortIdentifier(identity.udid),
@@ -313,26 +381,191 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
         await rawDeviceIdentifier(matching: selector, context: context)
     }
 
+    public func nativeDeviceIdentity(
+        matching rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async -> IOSSimDeviceIdentity? {
+        await resolvedIdentity(forUDID: rawDeviceIdentifier)
+    }
+
     public func isAppInstalled(bundleIdentifier: String, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {
-        guard let identity = try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier),
+        guard let identity = await resolvedIdentity(forUDID: rawDeviceIdentifier),
               let inventory = try? await applicationService.inventory(on: identity) else { return nil }
         return inventory.contains { $0.bundleIdentifier == bundleIdentifier }
     }
 
     public func install(component: DeviceArtifactComponent, rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async throws -> ProcessResult {
-        guard let identity = try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier) else {
+        guard let identity = await resolvedIdentity(forUDID: rawDeviceIdentifier) else {
             return ProcessResult(exitCode: 64, stdout: "", stderr: "NATIVE_DEVICE_IDENTITY_INVALID")
+        }
+        guard let expectedTeamIdentifier = component.expectedTeamIdentifier, !expectedTeamIdentifier.isEmpty else {
+            return ProcessResult(exitCode: 64, stdout: "", stderr: "NATIVE_OWNERSHIP_CONTEXT_REQUIRED")
         }
         let appURL = context.resourcesURL.appendingPathComponent(component.relativePath)
         do {
-            let inventory = try await applicationService.inventory(on: identity)
-            let mode: NativeApplicationInstallMode = inventory.contains { $0.bundleIdentifier == component.bundleIdentifier }
-                ? .upgrade : .fresh
-            try await applicationService.install(appURL: appURL, mode: mode, on: identity)
-            return ProcessResult(exitCode: 0, stdout: "native \(mode.rawValue) completed", stderr: "")
+            let receipt = try await NativeApplicationManager(service: applicationService).installOrUpgradeReceipt(
+                appURL: appURL,
+                expectedBundleIdentifier: component.bundleIdentifier,
+                expectedTeamIdentifier: expectedTeamIdentifier,
+                on: identity
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let output = String(data: try encoder.encode(receipt), encoding: .utf8) ?? "native install verified"
+            return ProcessResult(exitCode: 0, stdout: output, stderr: "")
         } catch {
-            return ProcessResult(exitCode: 70, stdout: "", stderr: "NATIVE_INSTALL_FAILED: \(Redactor.redact(String(describing: error)))")
+            let code = (error as? NativeApplicationManagementError) == .ownershipConflict
+                ? "NATIVE_OWNERSHIP_CONFLICT" : "NATIVE_INSTALL_FAILED"
+            return ProcessResult(exitCode: 70, stdout: "", stderr: "\(code): \(Redactor.redact(String(describing: error)))")
         }
+    }
+
+    public func uninstall(
+        bundleIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult {
+        ProcessResult(exitCode: 64, stdout: "", stderr: "NATIVE_OWNERSHIP_CONTEXT_REQUIRED")
+    }
+
+    public func uninstall(
+        bundleIdentifier: String,
+        expectedTeamIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult {
+        guard let identity = await resolvedIdentity(forUDID: rawDeviceIdentifier),
+              !expectedTeamIdentifier.isEmpty else {
+            return ProcessResult(exitCode: 64, stdout: "", stderr: "NATIVE_DEVICE_IDENTITY_INVALID")
+        }
+        do {
+            let inventory = try await applicationService.inventory(on: identity)
+            guard let installed = inventory.first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
+                return ProcessResult(exitCode: 0, stdout: "native app already absent", stderr: "")
+            }
+            guard installed.teamIdentifier == expectedTeamIdentifier else {
+                return ProcessResult(exitCode: 77, stdout: "", stderr: "NATIVE_OWNERSHIP_CONFLICT")
+            }
+            try await applicationService.uninstall(bundleIdentifier: bundleIdentifier, on: identity)
+            let after = try await applicationService.inventory(on: identity)
+            guard !after.contains(where: { $0.bundleIdentifier == bundleIdentifier }) else {
+                return ProcessResult(exitCode: 70, stdout: "", stderr: "NATIVE_UNINSTALL_INVENTORY_MISMATCH")
+            }
+            return ProcessResult(exitCode: 0, stdout: "native uninstall verified", stderr: "")
+        } catch {
+            return ProcessResult(
+                exitCode: 70,
+                stdout: "",
+                stderr: "NATIVE_UNINSTALL_FAILED: \(Redactor.redact(String(describing: error)))"
+            )
+        }
+    }
+
+    public func launch(
+        bundleIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult {
+        guard let identity = await resolvedIdentity(forUDID: rawDeviceIdentifier) else {
+            return ProcessResult(exitCode: 64, stdout: "", stderr: "NATIVE_DEVICE_IDENTITY_INVALID")
+        }
+        do {
+            try await applicationService.launch(bundleIdentifier: bundleIdentifier, on: identity)
+            return ProcessResult(exitCode: 0, stdout: "native launch completed", stderr: "")
+        } catch {
+            let failure = Self.nativeLaunchFailure(error)
+            return ProcessResult(
+                exitCode: 69,
+                stdout: "",
+                stderr: "\(failure.code): \(failure.detail)"
+            )
+        }
+    }
+
+    public func readContainerFile(
+        bundleIdentifier: String,
+        relativePath: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> Data {
+        guard let identity = await resolvedIdentity(forUDID: rawDeviceIdentifier) else {
+            throw DeviceProvisioningBackendError.invalidDeviceIdentity
+        }
+        do {
+            return try await applicationService.readContainer(
+                bundleIdentifier: bundleIdentifier,
+                relativePath: relativePath,
+                on: identity
+            )
+        } catch {
+            throw DeviceProvisioningBackendError.operationFailed(
+                "NATIVE_CONTAINER_READ_FAILED: \(Redactor.redact(String(describing: error)))"
+            )
+        }
+    }
+
+    private static func nativeLaunchFailure(_ error: Error) -> (code: String, detail: String) {
+        let detail = Redactor.redact(String(describing: error))
+        guard let error = error as? NativeDeviceBridgeError else {
+            return ("PROTOCOL_ERROR", detail)
+        }
+        switch error {
+        case .deviceNotFound, .deviceResolutionFailed:
+            return ("DEVICE_RESOLUTION_FAILED", detail)
+        case .deviceDisconnected:
+            return ("DEVICE_DISCONNECTED", detail)
+        case .deviceLocked:
+            return ("DEVICE_LOCKED", detail)
+        case .trustRequired, .trustPromptPending:
+            return ("COMPUTER_TRUST_REQUIRED", detail)
+        case .trustDenied:
+            return ("COMPUTER_TRUST_DENIED", detail)
+        case .developerModeRequired:
+            return ("DEVELOPER_MODE_REQUIRED", detail)
+        case .coreDeviceProxyFailed:
+            return ("COREDEVICE_PROXY_FAILED", detail)
+        case .softwareTunnelFailed:
+            return ("SOFTWARE_TUNNEL_FAILED", detail)
+        case .rsdUnavailable:
+            return ("RSD_UNAVAILABLE", detail)
+        case .remoteXPCFailed:
+            return ("REMOTEXPC_FAILED", detail)
+        case .appServiceUnavailable:
+            return ("APPSERVICE_UNAVAILABLE", detail)
+        case .featureUnavailable:
+            return ("FEATURE_UNAVAILABLE", detail)
+        case .applicationNotFound:
+            return ("APPLICATION_NOT_FOUND", detail)
+        case .ddiRequired:
+            return ("DDI_REQUIRED", detail)
+        case .developerServicesNotReady:
+            return ("DEVELOPER_SERVICES_NOT_READY", detail)
+        case .launchRejected:
+            return ("LAUNCH_REJECTED", detail)
+        case .libraryUnavailable, .libraryLoadFailure, .incompatibleABI:
+            return ("APPSERVICE_UNAVAILABLE", detail)
+        case .cancelled:
+            return ("LAUNCH_CANCELLED", detail)
+        case .timedOut:
+            return ("RSD_UNAVAILABLE", detail)
+        case .invalidIdentity, .decodingFailure, .protocolFailure, .internalFailure,
+             .containerUnavailable, .pairingRejected:
+            return ("PROTOCOL_ERROR", detail)
+        }
+    }
+
+    static func nativeLaunchFailureDescription(_ error: Error) -> String {
+        let failure = nativeLaunchFailure(error)
+        return "\(failure.code): \(failure.detail)"
+    }
+
+    private func resolvedIdentity(forUDID udid: String) async -> IOSSimDeviceIdentity? {
+        if let bound = await bindings.identity(forUDID: udid) { return bound }
+        guard let descriptors = try? await bridge.listDevices(),
+              let descriptor = descriptors.first(where: { $0.identity.udid == udid }) else { return nil }
+        await bindings.bind(descriptor.identity)
+        return descriptor.identity
     }
 
 }
@@ -636,6 +869,90 @@ public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
             workingDirectory: context.resourcesURL,
             environment: RuntimeProvisioning.deterministicEnvironment()
         )
+    }
+
+    public func uninstall(
+        bundleIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult {
+        guard !RuntimeProvisioning.devicectlForbidden(), let xcrun = RuntimeProvisioning.xcrunURL() else {
+            return ProcessResult(exitCode: 78, stdout: "", stderr: "DEVICETCTL_FORBIDDEN: devicectl backend is disabled for this run.")
+        }
+        return try await context.runner.run(
+            executableURL: xcrun,
+            arguments: [
+                "devicectl", "device", "uninstall", "app",
+                "--device", rawDeviceIdentifier,
+                bundleIdentifier,
+                "--timeout", "30", "--quiet"
+            ],
+            workingDirectory: context.resourcesURL,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+    }
+
+    public func launch(
+        bundleIdentifier: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> ProcessResult {
+        guard !RuntimeProvisioning.devicectlForbidden(), let xcrun = RuntimeProvisioning.xcrunURL() else {
+            return ProcessResult(exitCode: 78, stdout: "", stderr: "DEVICETCTL_FORBIDDEN: devicectl backend is disabled for this run.")
+        }
+        return try await context.runner.run(
+            executableURL: xcrun,
+            arguments: [
+                "devicectl", "device", "process", "launch",
+                "--device", rawDeviceIdentifier,
+                bundleIdentifier,
+                "--timeout", "15", "--quiet"
+            ],
+            workingDirectory: context.resourcesURL,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+    }
+
+    public func readContainerFile(
+        bundleIdentifier: String,
+        relativePath: String,
+        rawDeviceIdentifier: String,
+        context: RuntimeProvisioningContext
+    ) async throws -> Data {
+        guard !RuntimeProvisioning.devicectlForbidden(), let xcrun = RuntimeProvisioning.xcrunURL() else {
+            throw DeviceProvisioningBackendError.operationFailed("DEVICETCTL_FORBIDDEN")
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-container-read-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("readback", isDirectory: true)
+        let sourceDirectory = (relativePath as NSString).deletingLastPathComponent
+        let expectedName = (relativePath as NSString).lastPathComponent
+        let result = try await context.runner.run(
+            executableURL: xcrun,
+            arguments: [
+                "devicectl", "device", "copy", "from",
+                "--device", rawDeviceIdentifier,
+                "--domain-type", "appDataContainer",
+                "--domain-identifier", bundleIdentifier,
+                "--source", sourceDirectory,
+                "--destination", destination.path,
+                "--timeout", "30", "--quiet"
+            ],
+            workingDirectory: root,
+            environment: RuntimeProvisioning.deterministicEnvironment()
+        )
+        guard result.exitCode == 0 else {
+            throw DeviceProvisioningBackendError.operationFailed(result.combinedOutput)
+        }
+        guard let enumerator = FileManager.default.enumerator(at: destination, includingPropertiesForKeys: nil),
+              let fileURL = enumerator.compactMap({ $0 as? URL }).first(where: {
+                  $0.lastPathComponent == expectedName || $0.pathExtension == "plist"
+              }) else {
+            throw DeviceProvisioningBackendError.operationFailed("container file was not returned")
+        }
+        return try Data(contentsOf: fileURL)
     }
 
     private func deviceLockState(rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> Bool? {

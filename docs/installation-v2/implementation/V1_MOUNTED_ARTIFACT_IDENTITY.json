@@ -1,0 +1,173 @@
+{
+  "actualArchitectures": [
+    "arm64"
+  ],
+  "appTreeSHA256": "8eb9cf4f8a73c8df2aa288b9916194f13759dd2f8b7e388c876c152c0ccbde4a",
+  "artifact": {
+    "fileName": "IOSSim-0.1.0-build1-1259da5-v1-artifact-test.dmg",
+    "mountedAppTreeSHA256": "8eb9cf4f8a73c8df2aa288b9916194f13759dd2f8b7e388c876c152c0ccbde4a",
+    "sha256": "9ae3a2316d8ab4930dbac5303810a68ba15dca9df8506916d27c37cd74c88cc7",
+    "sizeBytes": 9073343
+  },
+  "build": "1",
+  "buildProvenance": {
+    "artifactManifestSchema": 2,
+    "bridgeVersion": "iossim-device-bridge/0.1.0+idevice-1838db10",
+    "buildTimestamp": "2026-09-16T02:46:32.483409Z",
+    "buildVariant": "PRODUCTION",
+    "consumerBuildAttempted": false,
+    "ddiBackend": "NATIVE_PERSONALIZED_DEVELOPER_SUPPORT",
+    "developerServicesBackend": "NATIVE_COREDEVICE_RSD_REMOTEXPC",
+    "discoveryBackend": "NATIVE_IDEVICE_USBMUX",
+    "guiSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+    "guiSourceDirty": true,
+    "guiSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+    "helperSchemaVersion": 1,
+    "helperSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+    "helperSourceDirty": true,
+    "helperSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+    "houseArrestBackend": "NATIVE_HOUSE_ARREST_AFC",
+    "ideviceRevision": "1838db107d38701b4044361163aac049006c2627",
+    "installationBackend": "NATIVE_AFC_INSTALLATION_PROXY",
+    "launchBackend": "NATIVE_APPSERVICE_RSD",
+    "legacyFallbackUsed": false,
+    "nativeBridgeABI": 1,
+    "pairingBackend": "AUTOMATIC_REMOTE_PAIRING_HOUSE_ARREST",
+    "payloadBuildTimestamp": "2026-09-16T02:46:32.483409Z",
+    "payloadBuildVariant": "DEVICE_PAYLOAD_RELEASE",
+    "payloadManifestVersion": "2",
+    "payloadSource": "BUNDLED_PREBUILT_MANIFEST",
+    "payloadSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+    "payloadSourceDirty": true,
+    "payloadSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+    "payloadSourceTreeSHA256": "5668a29add1a3966c4514115523b1a21e69ff6585bdbc76c3e89dcb0aae64a5a",
+    "setupEngine": "BUNDLED_PROVISIONING_ENGINE",
+    "setupStateSchema": 4,
+    "sourceDirty": true
+  },
+  "bundleIdentifier": "com.iossim.mac-provisioner",
+  "components": [
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "relativePath": "Contents/MacOS/IOSSim",
+      "role": "macApp",
+      "sha256": "c1d870046b9f28afb173db86351682f84952f26844fd952afd1161f0a9663dbe",
+      "signing": {
+        "cdhash": "54c8b138fd3e9e96ea1ea17877f3fe5fd63db1f4",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 4042192
+    },
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "relativePath": "Contents/MacOS/IOSSimProvisioner",
+      "role": "provisioner",
+      "sha256": "aebd5e0620a2f59e8ffe479d7915ccd3b1d60060addea7560ff4a2a4c2ea3808",
+      "signing": {
+        "cdhash": "f8037573bfc249a4a82ef9df3b51f653b5be02bd",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 3975136
+    },
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "relativePath": "Contents/Resources/NativeDeviceBridge/libiossim_device_bridge.dylib",
+      "role": "nativeDeviceBridge",
+      "sha256": "92dff10a77c908dfe0e99c7c18071ede006c5a537750acc4b07e08cba1ff9843",
+      "signing": {
+        "cdhash": "adb1371d001b12c29d120ba3f2bd8656ca2eeb75",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 2759296
+    }
+  ],
+  "distribution": {},
+  "minimumMacOS": "13.0",
+  "mountedVolumeContents": [
+    "Applications",
+    "IOSSim.app"
+  ],
+  "payloadManifest": {
+    "capabilities": {
+      "automaticPairingInbox": 1,
+      "localDevVPNSetupGate": 1,
+      "pairingReceiptSchema": 1,
+      "runtimeMappingSchema": 1
+    },
+    "release": {
+      "buildNumber": "1",
+      "buildTimestamp": "2026-09-16T02:46:32.483409Z",
+      "helperSchemaVersion": 1,
+      "macVersion": "0.1.0",
+      "payloadBuildTimestamp": "2026-09-16T02:46:32.483409Z",
+      "payloadBuildVariant": "DEVICE_PAYLOAD_RELEASE",
+      "payloadSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+      "payloadSourceDirty": true,
+      "payloadSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+      "payloadSourceTreeSHA256": "5668a29add1a3966c4514115523b1a21e69ff6585bdbc76c3e89dcb0aae64a5a",
+      "sourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+      "sourceDirty": true,
+      "variant": "PRODUCTION"
+    },
+    "schemaVersion": 2,
+    "sha256": "b84fc5bd147eec6b294796e32b73d4985a2ef1a827bc92f12a33a7149979fab3"
+  },
+  "payloads": [
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "build": "1",
+      "bundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "declaredBundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "declaredSHA256": "8c60fe20198307ba57550f7230c33b9361ab1ca57bcd1880db0ddb9f639b0081",
+      "declaredVersion": "0.1",
+      "relativePath": "Contents/Resources/DeviceArtifacts/IOSSim DVT POC.app",
+      "role": "iosMain",
+      "sha256": "8c60fe20198307ba57550f7230c33b9361ab1ca57bcd1880db0ddb9f639b0081",
+      "signingMode": "personalTeamResign",
+      "sizeBytes": null,
+      "version": "0.1"
+    },
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "build": "1",
+      "bundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "declaredBundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "declaredSHA256": "c1e42038a763889b6dd23d175058a6c1d077b962caa61e50f456f8c4d7b5fb9c",
+      "declaredVersion": "1.0",
+      "relativePath": "Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app",
+      "role": "locationControlRunner",
+      "sha256": "c1e42038a763889b6dd23d175058a6c1d077b962caa61e50f456f8c4d7b5fb9c",
+      "signingMode": "personalTeamResign",
+      "sizeBytes": null,
+      "version": "1.0"
+    }
+  ],
+  "productName": "IOSSim",
+  "schemaVersion": 2,
+  "schemas": {
+    "artifactManifest": 2,
+    "helperProtocol": 1,
+    "nativeBridgeABI": 1,
+    "nativeBridgeABIExpected": 1,
+    "setupState": 4
+  },
+  "signing": {
+    "cdhash": "54c8b138fd3e9e96ea1ea17877f3fe5fd63db1f4",
+    "classification": "AD_HOC",
+    "teamID": null
+  },
+  "version": "0.1.0"
+}

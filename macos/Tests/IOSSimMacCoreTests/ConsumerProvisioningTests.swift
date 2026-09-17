@@ -5,6 +5,19 @@ import XCTest
 @testable import IOSSimMacCore
 
 final class ConsumerProvisioningTests: XCTestCase {
+    func testSetupReadyForRuntimeRequiresPairingBeyondRuntimeConfiguration() {
+        XCTAssertTrue(ConsumerSetupCheckpoint.runtimeConfigurationVerified.runtimeConfigurationIsVerified)
+        XCTAssertFalse(ConsumerSetupCheckpoint.runtimeConfigurationVerified.remotePairingIsVerified)
+        XCTAssertFalse(ConsumerSetupCheckpoint.runtimeConfigurationVerified.setupIsReadyForRuntime)
+        XCTAssertTrue(ConsumerSetupCheckpoint.remotePairingVerified.remotePairingIsVerified)
+        XCTAssertFalse(ConsumerSetupCheckpoint.remotePairingVerified.setupIsReadyForRuntime)
+        XCTAssertFalse(ConsumerSetupCheckpoint.remotePairingVerified.localDevVPNIsVerified)
+        XCTAssertTrue(ConsumerSetupCheckpoint.localDevVPNReady.localDevVPNIsVerified)
+        XCTAssertFalse(ConsumerSetupCheckpoint.localDevVPNReady.setupIsReadyForRuntime)
+        XCTAssertTrue(ConsumerSetupCheckpoint.setupReadyForRuntime.setupIsReadyForRuntime)
+        XCTAssertFalse(ConsumerSetupCheckpoint.complete.setupIsReadyForRuntime)
+    }
+
     func testCertificateSubjectOUWinsOverDisplayNameSuffix() {
         let output = """
         subject= /UID=3WY4BJMTP5/CN=Apple Development: user@example.com (DISPLAY123)/OU=ACTUALTEAM/O=Example/C=US
@@ -66,10 +79,45 @@ final class ConsumerProvisioningTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = ConsumerProvisioningStateStore(directoryURL: directory)
         let original = try makeManifest(team: "TEAM1", device: "raw-device")
+            .updatingSetupCheckpoint(.localDevVPNReady)
         let checkedAt = Date(timeIntervalSince1970: 42_000)
         try await store.saveManifest(original)
-
-        let updated = try await store.markRuntimeSetupReady(checkedAt: checkedAt)
+        let request = RichRuntimeProofRequest(
+            deviceUDID: "raw-device",
+            teamIdentifier: original.teamID,
+            releaseIdentity: "\(original.appVersion):\(original.provisionerVersion)",
+            artifactSetIdentity: RichRuntimeProofIdentity.artifactSet(manifest: original),
+            profileSetIdentity: RichRuntimeProofIdentity.profiles(manifest: original),
+            pairingGeneration: 3,
+            developerServicesSession: UUID().uuidString,
+            developerSupportIdentity: "23A1:fixture",
+            runnerBundleIdentifier: original.installedRunnerBundleID
+        )
+        let updated = try await store.markRuntimeSetupReady(
+            receipt: RichRuntimeProofReceipt(
+                schemaVersion: 1,
+                requestID: request.requestID,
+                deviceUDIDHash: RichRuntimeProofReceipt.hash(request.deviceUDID),
+                teamIdentifier: request.teamIdentifier,
+                releaseIdentity: request.releaseIdentity,
+                artifactSetIdentity: request.artifactSetIdentity,
+                profileSetIdentity: request.profileSetIdentity,
+                pairingGeneration: request.pairingGeneration,
+                developerServicesSession: request.developerServicesSession,
+                developerSupportIdentity: request.developerSupportIdentity,
+                runnerBundleIdentifier: request.runnerBundleIdentifier,
+                testManagerControlReady: true,
+                runnerLaunched: true,
+                xctestHandshakeReady: true,
+                testPlanStarted: true,
+                richLocationProbeCompleted: true,
+                locationCleared: true,
+                sessionCleanedUp: true,
+                completedAt: Date()
+            ),
+            request: request,
+            checkedAt: checkedAt
+        )
 
         XCTAssertEqual(updated.runtimeSetupStatus, .ready)
         XCTAssertEqual(updated.lastRuntimeHealthCheck, checkedAt)
@@ -78,6 +126,22 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertEqual(updated.installedRunnerBundleID, original.installedRunnerBundleID)
         let persisted = try await store.loadManifest()
         XCTAssertEqual(persisted, updated)
+    }
+
+    func testStoredStateAloneCannotAssertRuntimeReady() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-runtime-no-proof-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConsumerProvisioningStateStore(directoryURL: directory)
+        let manifest = try makeManifest(team: "TEAM1", device: "raw-device")
+            .updatingSetupCheckpoint(.localDevVPNReady)
+        try await store.saveManifest(manifest)
+        do {
+            _ = try await store.markRuntimeSetupReady()
+            XCTFail("Expected bounded Rich proof requirement")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .runtimeProofFailed)
+        }
     }
 
     func testRuntimeSetupConfirmationRequiresInstalledManifest() async throws {
@@ -91,6 +155,24 @@ final class ConsumerProvisioningTests: XCTestCase {
             XCTFail("Expected missing manifest failure")
         } catch let failure as ConsumerProvisioningFailure {
             XCTAssertEqual(failure.code, .runnerMappingMissing)
+        }
+    }
+
+    func testRuntimeSetupConfirmationRejectsMissingLocalDevVPNProof() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-consumer-runtime-vpn-missing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConsumerProvisioningStateStore(directoryURL: directory)
+        let manifest = try makeManifest(team: "TEAM1", device: "raw-device")
+            .updatingSetupCheckpoint(.remotePairingVerified)
+        try await store.saveManifest(manifest)
+
+        do {
+            _ = try await store.markRuntimeSetupReady()
+            XCTFail("Expected LocalDevVPN readiness failure")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .localDevVPNReadinessFailed)
+            XCTAssertEqual(failure.stage, .localDevVPNReadinessStarted)
         }
     }
 
@@ -175,7 +257,15 @@ final class ConsumerProvisioningTests: XCTestCase {
             stage: .installingMain,
             selectedDevice: rawDevice,
             result: .failed,
-            detail: "password=do-not-export user@example.com"
+            errorCode: .mainInstallFailure,
+            detail: """
+            password=sentinel-password user@example.com
+            2fa-code=654321 x-apple-gs-token=sentinel-token
+            cookie=sentinel-cookie pairing-psk=sentinel-pairing
+            -----BEGIN PRIVATE KEY-----
+            sentinel-private-key
+            -----END PRIVATE KEY-----
+            """
         ))
 
         _ = try await SupportBundleExporter.export(
@@ -205,11 +295,24 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertTrue(text.contains("release-commit"))
         XCTAssertTrue(text.contains("0.1.0"))
         XCTAssertTrue(text.contains("PRODUCTION"))
-        XCTAssertTrue(text.contains("Physical Personal Team provisioning, signing, main installation, runner installation"))
-        XCTAssertTrue(text.contains("does not claim clean-Mac, no-Xcode, runtime-location, or public-release qualification"))
+        XCTAssertTrue(text.contains("No-Xcode physical device discovery has been observed"))
+        XCTAssertTrue(text.contains("Native installation, native app launch"))
+        XCTAssertTrue(text.contains("require separate physical evidence"))
+        XCTAssertTrue(text.contains("\"includedFiles\""))
+        XCTAssertTrue(text.contains("support.json"))
+        XCTAssertTrue(text.contains("VEYA-INSTALL-001"))
         XCTAssertFalse(text.contains(rawDevice))
-        XCTAssertFalse(text.contains("do-not-export"))
+        XCTAssertFalse(text.contains("sentinel-password"))
+        XCTAssertFalse(text.contains("654321"))
+        XCTAssertFalse(text.contains("sentinel-token"))
+        XCTAssertFalse(text.contains("sentinel-cookie"))
+        XCTAssertFalse(text.contains("sentinel-pairing"))
+        XCTAssertFalse(text.contains("sentinel-private-key"))
         XCTAssertFalse(text.contains("user@example.com"))
+        let files = FileManager.default.enumerator(at: expandedDirectory, includingPropertiesForKeys: [.isRegularFileKey])?
+            .compactMap { $0 as? URL }
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+        XCTAssertEqual(files?.map(\.lastPathComponent), ["support.json"])
     }
 
     func testRefreshCoordinatorRejectsConcurrentOperationAndRecovers() async throws {
@@ -297,13 +400,16 @@ final class ConsumerProvisioningTests: XCTestCase {
     }
 
     func testCrossTeamInstallErrorIsFirstClass() {
-        XCTAssertEqual(
-            ConsumerProvisioningErrorClassifier.installErrorCode(
-                output: "CoreDeviceError MismatchedApplicationIdentifierEntitlement",
-                artifact: "main"
-            ),
-            .crossTeamUpgradeBlocked
-        )
+        for output in [
+            "CoreDeviceError MismatchedApplicationIdentifierEntitlement",
+            "NATIVE_OWNERSHIP_CONFLICT: ownershipConflict",
+        ] {
+            XCTAssertEqual(
+                ConsumerProvisioningErrorClassifier.installErrorCode(output: output, artifact: "main"),
+                .crossTeamUpgradeBlocked,
+                output
+            )
+        }
     }
 
     func testDeviceDisconnectInstallErrorsAreRetryableDeviceUnavailability() {
@@ -419,7 +525,9 @@ final class ConsumerProvisioningTests: XCTestCase {
             stateStore: ConsumerProvisioningStateStore(directoryURL: state),
             nativeArtifactStore: nativeStore,
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
-            workspaceRootURL: workspaces
+            workspaceRootURL: workspaces,
+            inventoryReader: DevicectlApplicationInventoryReader(),
+            deviceBackend: DevicectlProvisioningBackend()
         )
 
         let result = try await provisioner.provision(ConsumerProvisioningRequest(
@@ -480,15 +588,38 @@ final class ConsumerProvisioningTests: XCTestCase {
         try await store.save(preparation, selectedDeviceIdentifier: udid)
         _ = try await store.load(teamIdentifier: team, selectedDeviceIdentifier: udid)
         _ = try await store.load(teamIdentifier: team)
+        do {
+            _ = try await store.loadActive(teamIdentifier: team, selectedDeviceIdentifier: udid)
+            XCTFail("A staged candidate must not be visible as active")
+        } catch let failure as ConsumerProvisioningFailure {
+            XCTAssertEqual(failure.code, .profileUnavailable)
+        }
         let directoryMode = try XCTUnwrap(
             FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber
         ).intValue & 0o777
-        let artifactURL = await store.artifactURL
+        let candidateURL = await store.candidateArtifactURL
         let artifactMode = try XCTUnwrap(
-            FileManager.default.attributesOfItem(atPath: artifactURL.path)[.posixPermissions] as? NSNumber
+            FileManager.default.attributesOfItem(atPath: candidateURL.path)[.posixPermissions] as? NSNumber
         ).intValue & 0o777
         XCTAssertEqual(directoryMode, 0o700)
         XCTAssertEqual(artifactMode, 0o600)
+        try await store.promoteCandidate(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: candidateURL.path))
+        let artifactURL = await store.artifactURL
+        let priorActive = try await store.loadActive(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        let replacementDate = priorActive.preparedAt.addingTimeInterval(1)
+        try await store.save(
+            preparation,
+            selectedDeviceIdentifier: udid,
+            preparedAt: replacementDate
+        )
+        let stillActive = try await store.loadActive(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        XCTAssertEqual(stillActive.preparedAt, priorActive.preparedAt, "Staging a replacement must not overwrite the active profiles")
+        let stagedReplacement = try await store.load(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        XCTAssertEqual(stagedReplacement.preparedAt, replacementDate)
+        try await store.promoteCandidate(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        let promotedReplacement = try await store.loadActive(teamIdentifier: team, selectedDeviceIdentifier: udid)
+        XCTAssertEqual(promotedReplacement.preparedAt, replacementDate)
         let serializedArtifacts = try String(contentsOf: artifactURL, encoding: .utf8)
         XCTAssertTrue(serializedArtifacts.contains("keyApplicationTagIdentifier"))
         XCTAssertFalse(serializedArtifacts.contains("privateKeyPersistentReference"))
@@ -561,7 +692,9 @@ final class ConsumerProvisioningTests: XCTestCase {
             }),
             stateStore: ConsumerProvisioningStateStore(directoryURL: root.appendingPathComponent("State")),
             nativeArtifactStore: nativeStore,
-            workspaceRootURL: root.appendingPathComponent("Workspaces")
+            workspaceRootURL: root.appendingPathComponent("Workspaces"),
+            inventoryReader: DevicectlApplicationInventoryReader(),
+            deviceBackend: DevicectlProvisioningBackend()
         )
 
         do {
@@ -666,7 +799,9 @@ final class ConsumerProvisioningTests: XCTestCase {
                 stateStore: harness.stateStore,
                 nativeArtifactStore: harness.nativeStore,
                 nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
-                workspaceRootURL: harness.workspaces
+                workspaceRootURL: harness.workspaces,
+                inventoryReader: DevicectlApplicationInventoryReader(),
+                deviceBackend: DevicectlProvisioningBackend()
             )
             let retried = try await retry.provision(harness.request)
             XCTAssertEqual(retried.finalStage, .complete, point.rawValue)
@@ -695,7 +830,9 @@ final class ConsumerProvisioningTests: XCTestCase {
             stateStore: stateStore,
             nativeArtifactStore: harness.nativeStore,
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
-            workspaceRootURL: harness.workspaces
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: DevicectlApplicationInventoryReader(),
+            deviceBackend: DevicectlProvisioningBackend()
         )
 
         do {
@@ -737,6 +874,26 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
     }
 
+    func testNativeAppServiceLayersRemainDistinct() {
+        let cases: [(String, ConsumerProvisioningErrorCode)] = [
+            ("DEVICE_RESOLUTION_FAILED: selected UDID absent", .deviceResolutionFailed),
+            ("COREDEVICE_PROXY_FAILED: proxy connect", .coreDeviceProxyFailed),
+            ("SOFTWARE_TUNNEL_FAILED: adapter", .softwareTunnelFailed),
+            ("RSD_UNAVAILABLE: handshake", .rsdUnavailable),
+            ("REMOTEXPC_FAILED: handshake", .remoteXPCFailed),
+            ("APPSERVICE_UNAVAILABLE: service map", .appServiceUnavailable),
+            ("FEATURE_UNAVAILABLE: launchapplication", .featureUnavailable),
+            ("APPLICATION_NOT_FOUND: exact bundle", .applicationNotFound),
+            ("DDI_REQUIRED: ImageNotMounted", .ddiRequired),
+            ("DEVELOPER_SERVICES_NOT_READY: readiness", .developerServicesNotReady),
+            ("LAUNCH_REJECTED: policy", .launchRejected),
+            ("PROTOCOL_ERROR: malformed reply", .nativeProtocolError),
+        ]
+        for (wire, expected) in cases {
+            XCTAssertEqual(ConsumerProvisioningErrorClassifier.launchErrorCode(output: wire), expected)
+        }
+    }
+
     func testPostInstallInventoryRetriesMissingMainThenSucceedsWithoutUserFailure() async throws {
         let harness = try await makeNativeHarness(faultPoint: nil)
         defer { try? FileManager.default.removeItem(at: harness.root) }
@@ -753,6 +910,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -781,6 +939,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -809,6 +968,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -830,6 +990,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .init(backoffNanoseconds: [0, 0]),
             profileWriteOptions: .atomic
         )
@@ -861,6 +1022,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -886,6 +1048,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .init(backoffNanoseconds: [0]),
             profileWriteOptions: .atomic
         )
@@ -913,6 +1076,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -946,6 +1110,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
             inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -963,6 +1128,112 @@ final class ConsumerProvisioningTests: XCTestCase {
         XCTAssertEqual(result.manifest.installationInventory?.retryCount, 0)
         let inventoryReadCount = await reader.readCount
         XCTAssertEqual(inventoryReadCount, 2)
+    }
+
+    func testResumeReconcilesManualMainDeletionAndRepairsOnlyMain() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        try await harness.stateStore.saveManifest(
+            try makeManifest(team: harness.team, device: harness.physicalUDID)
+                .updatingSetupCheckpoint(.installationVerified)
+        )
+        let reader = SequenceApplicationInventoryReader([
+            .available([ids.runner]),
+            .available([ids.runner]),
+            .available([ids.main, ids.runner]),
+        ])
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: reader,
+            deviceBackend: DevicectlProvisioningBackend(),
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
+        )
+        let request = ConsumerProvisioningRequest(
+            operation: .repair,
+            selectedDeviceIdentifier: harness.physicalUDID,
+            selectedTeamIdentifier: harness.team,
+            backend: .nativePersonalTeam,
+            reconciliationTrigger: .tryAgain
+        )
+
+        let result = try await provisioner.resumeSetup(request)
+
+        XCTAssertEqual(result.finalStage, .complete)
+        let evidence = await harness.recorder.evidence()
+        XCTAssertEqual(evidence.installedBundleIdentifiers, [ids.main])
+        let events = await harness.stateStore.loadEvents()
+        XCTAssertTrue(events.contains { $0.stage == .tryAgainRequested })
+        XCTAssertTrue(events.contains {
+            $0.stage == .physicalReconciliationResult
+                && $0.detail?.contains("mainPresent=false runnerPresent=true") == true
+        })
+        XCTAssertTrue(events.contains {
+            $0.stage == .componentInstallSkipped && $0.artifact == "locationControlRunner"
+        })
+    }
+
+    func testReconciliationSelectsRenewalForProfileInsideRefreshWindow() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        try await harness.stateStore.saveManifest(
+            try makeManifest(
+                team: harness.team,
+                device: harness.physicalUDID,
+                expiration: Date().addingTimeInterval(60 * 60)
+            ).updatingSetupCheckpoint(.setupReadyForRuntime)
+        )
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: SequenceApplicationInventoryReader([.available([ids.main, ids.runner])]),
+            deviceBackend: DevicectlProvisioningBackend(),
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
+        )
+
+        let result = try await provisioner.reconcileSetup(harness.request)
+
+        XCTAssertTrue(result.renewalRequired)
+        XCTAssertEqual(result.repairScope, .renewSigning)
+    }
+
+    func testReconciliationSelectsOwnedUpgradeForStaleReleaseIdentity() async throws {
+        let harness = try await makeNativeHarness(faultPoint: nil)
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: harness.team)
+        try await harness.stateStore.saveManifest(
+            try makeManifest(
+                team: harness.team,
+                device: harness.physicalUDID,
+                appVersion: "0.0.0"
+            ).updatingSetupCheckpoint(.setupReadyForRuntime)
+        )
+        let provisioner = ConsumerArtifactProvisioner(
+            context: .init(resourcesURL: harness.resources, runner: harness.runner),
+            stateStore: harness.stateStore,
+            nativeArtifactStore: harness.nativeStore,
+            nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
+            workspaceRootURL: harness.workspaces,
+            inventoryReader: SequenceApplicationInventoryReader([.available([ids.main, ids.runner])]),
+            deviceBackend: DevicectlProvisioningBackend(),
+            inventoryRetryPolicy: .immediateTesting,
+            profileWriteOptions: .atomic
+        )
+
+        let result = try await provisioner.reconcileSetup(harness.request)
+
+        XCTAssertTrue(result.releaseUpgradeRequired)
+        XCTAssertEqual(result.repairScope, .reinstallOwnedArtifacts)
     }
 
     func testDeveloperTrustPendingPersistsAndResumeNeverReinstalls() async throws {
@@ -987,6 +1258,7 @@ final class ConsumerProvisioningTests: XCTestCase {
                 nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
                 workspaceRootURL: harness.workspaces,
                 inventoryReader: inventory,
+                deviceBackend: DevicectlProvisioningBackend(),
                 inventoryRetryPolicy: .immediateTesting,
                 profileWriteOptions: .atomic
             )
@@ -1032,6 +1304,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeArtifactStore: harness.nativeStore,
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             workspaceRootURL: harness.workspaces,
+            inventoryReader: DevicectlApplicationInventoryReader(),
+            deviceBackend: DevicectlProvisioningBackend(),
             inventoryRetryPolicy: .immediateTesting,
             profileWriteOptions: .atomic
         )
@@ -1086,23 +1360,7 @@ final class ConsumerProvisioningTests: XCTestCase {
             profiles: profiles
         )
         let nativeStore = NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("Native"))
-        // This harness exercises the downstream signing/install state machine,
-        // not NativeProvisioningArtifactStore.save (which has its own protected-
-        // data tests). Materialize the valid envelope directly so these state
-        // tests remain runnable while macOS protected data is unavailable.
-        let artifactURL = await nativeStore.artifactURL
-        try FileManager.default.createDirectory(
-            at: artifactURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let artifactEncoder = JSONEncoder()
-        artifactEncoder.dateEncodingStrategy = .iso8601
-        artifactEncoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        try artifactEncoder.encode(NativeProvisioningArtifacts(
-            preparation: preparation,
-            selectedDeviceIdentifier: physicalUDID
-        )).write(to: artifactURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: artifactURL.path)
+        try await nativeStore.save(preparation, selectedDeviceIdentifier: physicalUDID)
         try makeConsumerArtifactFixture(at: resources)
         let recorder = NativePipelineRecorder(
             team: team,
@@ -1127,6 +1385,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             nativeIdentityResolver: FixtureNativeSigningIdentityResolver(),
             faultInjector: faultInjector,
             workspaceRootURL: workspaces,
+            inventoryReader: DevicectlApplicationInventoryReader(),
+            deviceBackend: DevicectlProvisioningBackend(),
             profileWriteOptions: .atomic
         )
         return (
@@ -1142,9 +1402,13 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
     }
 
-    private func makeManifest(team: String, device: String) throws -> ConsumerProvisioningManifest {
+    private func makeManifest(
+        team: String,
+        device: String,
+        expiration: Date = Date().addingTimeInterval(7 * 24 * 60 * 60),
+        appVersion: String = "1.0"
+    ) throws -> ConsumerProvisioningManifest {
         let ids = try PersonalTeamBundleIdentifierSet(teamIdentifier: team)
-        let expiration = Date().addingTimeInterval(7 * 24 * 60 * 60)
         let mainProfile = profile(artifact: "main", team: team, bundle: ids.main, expiration: expiration)
         let runnerProfile = profile(artifact: "runner", team: team, bundle: ids.runner, expiration: expiration)
         return ConsumerProvisioningManifest(
@@ -1160,8 +1424,8 @@ final class ConsumerProvisioningTests: XCTestCase {
             mainProfile: mainProfile,
             runnerProfile: runnerProfile,
             lastInstallDate: Date(),
-            appVersion: "1",
-            provisionerVersion: "1"
+            appVersion: appVersion,
+            provisionerVersion: ConsumerArtifactProvisioner.provisionerVersion
         )
     }
 
@@ -1246,12 +1510,12 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
         let relativeMain = "DeviceArtifacts/IOSSim.app"
         let relativeRunner = "DeviceArtifacts/IOSSimUITests-Runner.app"
-        var manifest = ArtifactManifest(schemaVersion: 1, release: release, components: [
+        var manifest = ArtifactManifest(schemaVersion: ArtifactManifest.currentSchemaVersion, release: release, components: [
             .init(role: "iosMain", bundleIdentifier: ProtectedSourceBundleIdentifiers.default.main, version: "1", relativePath: relativeMain, sha256: "pending", signingMode: "personalTeamResign"),
             .init(role: "locationControlRunner", bundleIdentifier: ProtectedSourceBundleIdentifiers.default.runner, version: "1", relativePath: relativeRunner, sha256: "pending", signingMode: "personalTeamResign")
         ])
         let verification = ArtifactManifestLoader.verify(resourcesURL: resources, manifest: manifest)
-        manifest = ArtifactManifest(schemaVersion: 1, release: release, components: zip(manifest.components, verification).map { component, result in
+        manifest = ArtifactManifest(schemaVersion: ArtifactManifest.currentSchemaVersion, release: release, components: zip(manifest.components, verification).map { component, result in
             DeviceArtifactComponent(
                 role: component.role,
                 bundleIdentifier: component.bundleIdentifier,
@@ -1523,10 +1787,10 @@ private actor NativePipelineRecorder {
             if arguments.starts(with: ["devicectl", "device", "info", "apps"]) {
                 let bundle = option("--bundle-id", arguments: arguments)
                 let apps: [[String: Any]]
-                if let bundle, [identifiers.main, identifiers.runner].contains(bundle) {
+                if let bundle, installedBundleIdentifiers.contains(bundle) {
                     apps = [["bundleIdentifier": bundle]]
                 } else if bundle == nil {
-                    apps = [identifiers.main, identifiers.runner].map { ["bundleIdentifier": $0] }
+                    apps = installedBundleIdentifiers.map { ["bundleIdentifier": $0] }
                 } else {
                     apps = []
                 }

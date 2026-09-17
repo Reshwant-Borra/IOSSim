@@ -3,7 +3,10 @@ import Security
 
 public protocol RPPairingStore: Sendable {
     func importPairingData(_ data: Data) throws -> RPPairingSummary
+    func importCandidatePairingData(_ data: Data) throws -> RPPairingSummary
     func loadPairingData() throws -> Data
+    func loadCandidatePairingData() throws -> Data
+    func promoteCandidatePairingData() throws
     func pairingSummary() throws -> RPPairingSummary?
     func deletePairingData() throws
 }
@@ -24,8 +27,16 @@ public final class KeychainRPPairingStore: RPPairingStore, @unchecked Sendable {
     }
 
     public func importPairingData(_ data: Data) throws -> RPPairingSummary {
+        try importPairingData(data, account: account)
+    }
+
+    public func importCandidatePairingData(_ data: Data) throws -> RPPairingSummary {
+        try importPairingData(data, account: "\(account).candidate")
+    }
+
+    private func importPairingData(_ data: Data, account: String) throws -> RPPairingSummary {
         let summary = try RPPairingValidator.validate(data)
-        let query = baseQuery()
+        let query = baseQuery(account: account)
         let replacement: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: accessible
@@ -43,7 +54,15 @@ public final class KeychainRPPairingStore: RPPairingStore, @unchecked Sendable {
     }
 
     public func loadPairingData() throws -> Data {
-        var query = baseQuery()
+        try loadPairingData(account: account)
+    }
+
+    public func loadCandidatePairingData() throws -> Data {
+        try loadPairingData(account: "\(account).candidate")
+    }
+
+    private func loadPairingData(account: String) throws -> Data {
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -67,13 +86,22 @@ public final class KeychainRPPairingStore: RPPairingStore, @unchecked Sendable {
     }
 
     public func deletePairingData() throws {
-        let status = SecItemDelete(baseQuery() as CFDictionary)
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw POCError(.pairingStorageFailed, "Keychain delete failed with OSStatus \(status).", stage: .pairingImported)
         }
     }
 
-    private func baseQuery() -> [String: Any] {
+    public func promoteCandidatePairingData() throws {
+        let candidate = try loadCandidatePairingData()
+        _ = try importPairingData(candidate)
+        let status = SecItemDelete(baseQuery(account: "\(account).candidate") as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw POCError(.pairingStorageFailed, "Candidate Keychain cleanup failed with OSStatus \(status).", stage: .pairingImported)
+        }
+    }
+
+    private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -111,12 +139,30 @@ public final class InMemoryRPPairingStore: RPPairingStore, @unchecked Sendable {
         self.data = data
         return summary
     }
+    private var candidateData: Data?
+
+    public func importCandidatePairingData(_ data: Data) throws -> RPPairingSummary {
+        let summary = try RPPairingValidator.validate(data)
+        candidateData = data
+        return summary
+    }
 
     public func loadPairingData() throws -> Data {
         guard let data else {
             throw POCError(.pairingCredentialMissing, "No RPPairing file has been imported.", stage: .pairingImported)
         }
         return data
+    }
+    public func loadCandidatePairingData() throws -> Data {
+        guard let candidateData else {
+            throw POCError(.pairingCredentialMissing, "No candidate RPPairing file has been imported.", stage: .pairingImported)
+        }
+        return candidateData
+    }
+
+    public func promoteCandidatePairingData() throws {
+        data = try loadCandidatePairingData()
+        candidateData = nil
     }
 
     public func pairingSummary() throws -> RPPairingSummary? {

@@ -1,4 +1,5 @@
 import CoreLocation
+import CryptoKit
 import Foundation
 import IOSSimOnDeviceDVTPOC
 
@@ -12,9 +13,15 @@ struct POCUnitChecks {
     try inMemoryStoreValidatesBeforeSaving()
     try deleteRemovesPairing()
     try updatedPairingStatePersistsOnlyWhenChangedAndValid()
+    try automaticPairingEnvelopeImportsAndAcknowledges()
+    try automaticPairingInboxControllerProcessesAndCleansUp()
+    try automaticPairingInboxControllerStopsOnExpiredRequest()
     try localDevVPNRouteDetection()
     await routeProbeSurfacesEndpointAndTCPResult()
     await localDevVPNReadinessUsesDeveloperEndpointReachability()
+    try await localDevVPNSetupInboxWritesFunctionalReadyReceipt()
+    try await localDevVPNSetupInboxReturnsExplicitUserAction()
+    try richRuntimeProofReceiptSchemaBindsCleanupAndContext()
     try await diagnosticSetupPrerequisitesRequirePairingAndFunctionalRoute()
     try await runDiagnosticsKeepsInterfaceVisibilityDiagnosticOnly()
     try await diagnosticStateRecordsStatusAndTiming()
@@ -69,6 +76,8 @@ struct POCUnitChecks {
     try gate3RunnerBundleIdentifierResolverUsesConfiguredInstalledID()
     try gate3RunnerBundleIdentifierResolverSurvivesRefreshWithoutBundledConfig()
     try gate3RunnerBundleIdentifierResolverRejectsMalformedConfig()
+    try gate3RunnerBundleIdentifierResolverUsesDeliveredMapping()
+    try gate3RunnerBundleIdentifierResolverRejectsMismatchedDeliveredMapping()
     try locationWitnessMetricsCalculations()
     try locationWitnessMetricsSimulatedOnlyFiltering()
     try locationWitnessMetricsEmptyRecordingExport()
@@ -100,6 +109,41 @@ struct POCUnitChecks {
     try require(summary.privateKeyPresent, "private key present")
     try require(summary.altIRKPresent, "alt_irk present")
     try require(summary.identifierRedacted == "1234...9abc (36 chars)", "identifier redacted")
+  }
+
+  static func richRuntimeProofReceiptSchemaBindsCleanupAndContext() throws {
+    let json = """
+      {
+        "schemaVersion":1,
+        "requestID":"00000000-0000-0000-0000-000000000001",
+        "deviceUDIDHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "teamIdentifier":"TEAM1",
+        "releaseIdentity":"0.1.0:4",
+        "artifactSetIdentity":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "profileSetIdentity":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "pairingGeneration":4,
+        "developerServicesSession":"00000000-0000-0000-0000-000000000002",
+        "developerSupportIdentity":"23A1:fixture",
+        "runnerBundleIdentifier":"com.example.runner",
+        "testManagerControlReady":true,
+        "runnerLaunched":true,
+        "xctestHandshakeReady":true,
+        "testPlanStarted":true,
+        "richLocationProbeCompleted":true,
+        "locationCleared":true,
+        "sessionCleanedUp":true,
+        "completedAt":"2026-09-16T00:00:00Z"
+      }
+      """
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let receipt = try decoder.decode(
+      RichRuntimeProofInboxReceipt.self, from: Data(json.utf8))
+    try require(receipt.schemaVersion == 1, "Rich proof schema version")
+    try require(receipt.pairingGeneration == 4, "Rich proof pairing generation")
+    try require(receipt.testManagerControlReady, "Rich proof TestManager control")
+    try require(receipt.richLocationProbeCompleted, "Rich proof location completion")
+    try require(receipt.locationCleared && receipt.sessionCleanedUp, "Rich proof cleanup")
   }
 
   static func missingPrivateKeyFailsWithoutLeakingValues() throws {
@@ -190,6 +234,184 @@ struct POCUnitChecks {
     try require(afterInvalidUpdate == updated, "invalid update cannot replace usable pairing state")
   }
 
+  static func automaticPairingEnvelopeImportsAndAcknowledges() throws {
+    let pairing = try makePairingPlist(identifier: "automatic-pairing-id")
+    let bootstrap = RemotePairingBootstrap(
+      nonce: "bootstrap-nonce", importKey: Data(repeating: 9, count: 32),
+      requestID: "request-direct", pairingGeneration: 1, releaseIdentity: "test:1")
+    let box = try AES.GCM.seal(pairing, using: SymmetricKey(data: bootstrap.importKey))
+    let envelope = AutomaticPairingEnvelope(
+      schemaVersion: 2,
+      deviceUDID: "PHONE-0001",
+      teamIdentifier: "TEAM1",
+      nonce: bootstrap.nonce,
+      sealedPayload: try requireValue(box.combined, "sealed pairing envelope"),
+      requestID: bootstrap.requestID, pairingGeneration: bootstrap.pairingGeneration,
+      releaseIdentity: bootstrap.releaseIdentity)
+    let priorPairing = try makePairingPlist(identifier: "prior-active-pairing")
+    let store = InMemoryRPPairingStore(data: priorPairing)
+    let processor = AutomaticPairingInboxProcessor()
+    let receipt = try processor.process(
+      envelopeData: try JSONEncoder().encode(envelope),
+      bootstrap: bootstrap,
+      expectedDeviceUDID: "PHONE-0001",
+      expectedTeamIdentifier: "TEAM1",
+      store: store)
+
+    try require(receipt.status == "candidate-stored", "automatic pairing receipt should acknowledge candidate storage")
+    try require(receipt.deviceUDID == "PHONE-0001", "receipt should retain device binding")
+    try require(receipt.identifier == "automatic-pairing-id", "receipt should bind pairing identifier")
+    let candidatePairing = try store.loadCandidatePairingData()
+    try require(candidatePairing == pairing, "automatic pairing should enter the candidate store")
+    let activeBeforePromotion = try store.loadPairingData()
+    try require(activeBeforePromotion == priorPairing, "candidate import must preserve active pairing")
+    let challenge = AutomaticPairingPossessionChallenge(
+      deviceUDID: "PHONE-0001", teamIdentifier: "TEAM1", requestID: "request-direct",
+      pairingGeneration: 1, releaseIdentity: "test:1", nonce: "challenge-direct")
+    let response = try processor.respond(
+      challengeData: try JSONEncoder().encode(challenge),
+      expectedDeviceUDID: "PHONE-0001", expectedTeamIdentifier: "TEAM1", store: store)
+    try require(!response.proof.isEmpty, "candidate possession proof must be present")
+    let promotion = AutomaticPairingPromotionRequest(
+      deviceUDID: "PHONE-0001", teamIdentifier: "TEAM1", requestID: "request-direct",
+      pairingGeneration: 1, releaseIdentity: "test:1")
+    let promoted = try processor.promote(
+      requestData: try JSONEncoder().encode(promotion), bootstrap: bootstrap,
+      expectedDeviceUDID: "PHONE-0001", expectedTeamIdentifier: "TEAM1", store: store)
+    try require(promoted.status == "operational", "candidate promotion must produce operational receipt")
+    let activeAfterPromotion = try store.loadPairingData()
+    try require(activeAfterPromotion == pairing, "promotion must atomically replace active pairing")
+  }
+
+  static func automaticPairingInboxControllerProcessesAndCleansUp() throws {
+    let support = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "iossim-automatic-pairing-inbox-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+    let inbox = support.appendingPathComponent(AutomaticPairingInboxController.directory)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    let request = AutomaticPairingBootstrapRequest(
+      schemaVersion: 2,
+      deviceUDID: "PHONE-0001",
+      teamIdentifier: "TEAM1",
+      appBundleIdentifier: "com.iossim.on-device-dvt-poc",
+      requestID: "request-1",
+      createdAt: .now,
+      pairingGeneration: 1,
+      releaseIdentity: "test:1")
+    try JSONEncoder().encode(request).write(
+      to: inbox.appendingPathComponent(AutomaticPairingInboxController.requestFile))
+    let store = InMemoryRPPairingStore()
+    let controller = AutomaticPairingInboxController(
+      store: store,
+      applicationSupportDirectory: support)
+
+    let firstPass = try controller.reconcile(appBundleIdentifier: request.appBundleIdentifier)
+    try require(
+      firstPass == nil,
+      "first inbox pass should create bootstrap and await an envelope")
+    let bootstrapURL = inbox.appendingPathComponent(AutomaticPairingInboxController.bootstrapFile)
+    let bootstrap = try JSONDecoder().decode(
+      RemotePairingBootstrap.self, from: Data(contentsOf: bootstrapURL))
+    try require(bootstrap.importKey.count == 32, "bootstrap import key must be 32 bytes")
+
+    let pairing = try makePairingPlist(identifier: "controller-pairing-id")
+    let box = try AES.GCM.seal(pairing, using: SymmetricKey(data: bootstrap.importKey))
+    let envelope = AutomaticPairingEnvelope(
+      schemaVersion: 2,
+      deviceUDID: request.deviceUDID,
+      teamIdentifier: request.teamIdentifier,
+      nonce: bootstrap.nonce,
+      sealedPayload: try requireValue(box.combined, "sealed controller envelope"),
+      requestID: request.requestID,
+      pairingGeneration: request.pairingGeneration,
+      releaseIdentity: request.releaseIdentity)
+    try JSONEncoder().encode(envelope).write(
+      to: inbox.appendingPathComponent(AutomaticPairingInboxController.envelopeFile))
+
+    let receipt = try requireValue(
+      controller.reconcile(appBundleIdentifier: request.appBundleIdentifier),
+      "controller receipt")
+    try require(receipt.status == "candidate-stored", "controller should write a candidate receipt")
+    let challenge = AutomaticPairingPossessionChallenge(
+      schemaVersion: 1,
+      deviceUDID: request.deviceUDID,
+      teamIdentifier: request.teamIdentifier,
+      requestID: request.requestID,
+      pairingGeneration: try requireValue(request.pairingGeneration, "generation"),
+      releaseIdentity: try requireValue(request.releaseIdentity, "release"),
+      nonce: "challenge-1")
+    try JSONEncoder().encode(challenge).write(
+      to: inbox.appendingPathComponent(AutomaticPairingInboxController.challengeFile))
+    _ = try controller.reconcile(appBundleIdentifier: request.appBundleIdentifier)
+    let response = try JSONDecoder().decode(
+      AutomaticPairingPossessionResponse.self,
+      from: Data(contentsOf: inbox.appendingPathComponent(AutomaticPairingInboxController.challengeResponseFile)))
+    try require(!response.proof.isEmpty, "candidate possession must produce a proof")
+
+    let promotion = AutomaticPairingPromotionRequest(
+      schemaVersion: 1,
+      deviceUDID: request.deviceUDID,
+      teamIdentifier: request.teamIdentifier,
+      requestID: request.requestID,
+      pairingGeneration: try requireValue(request.pairingGeneration, "generation"),
+      releaseIdentity: try requireValue(request.releaseIdentity, "release"))
+    try JSONEncoder().encode(promotion).write(
+      to: inbox.appendingPathComponent(AutomaticPairingInboxController.promotionFile))
+    let promoted = try requireValue(
+      controller.reconcile(appBundleIdentifier: request.appBundleIdentifier),
+      "promotion receipt")
+    try require(promoted.status == "operational", "promotion must be explicit")
+    for transient in [
+      AutomaticPairingInboxController.requestFile,
+      AutomaticPairingInboxController.bootstrapFile,
+      AutomaticPairingInboxController.envelopeFile,
+      AutomaticPairingInboxController.promotionFile,
+    ] {
+      try require(
+        !FileManager.default.fileExists(atPath: inbox.appendingPathComponent(transient).path),
+        "successful inbox processing must delete \(transient)")
+    }
+    let receiptData = try Data(
+      contentsOf: inbox.appendingPathComponent(AutomaticPairingInboxController.receiptFile))
+    try require(
+      receiptData.range(of: bootstrap.importKey) == nil,
+      "pairing receipt must not contain the bootstrap key")
+    let storedPairing = try store.loadPairingData()
+    try require(storedPairing == pairing, "controller must persist through runtime store")
+  }
+
+  static func automaticPairingInboxControllerStopsOnExpiredRequest() throws {
+    let support = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "iossim-expired-pairing-inbox-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+    let inbox = support.appendingPathComponent(AutomaticPairingInboxController.directory)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    let request = AutomaticPairingBootstrapRequest(
+      schemaVersion: 2,
+      deviceUDID: "PHONE-0001",
+      teamIdentifier: "TEAM1",
+      appBundleIdentifier: "com.iossim.on-device-dvt-poc",
+      requestID: "expired-request",
+      createdAt: Date(timeIntervalSinceNow: -601),
+      pairingGeneration: 1,
+      releaseIdentity: "test:1")
+    try JSONEncoder().encode(request).write(
+      to: inbox.appendingPathComponent(AutomaticPairingInboxController.requestFile))
+    let controller = AutomaticPairingInboxController(
+      store: InMemoryRPPairingStore(),
+      applicationSupportDirectory: support)
+    do {
+      _ = try controller.reconcile(appBundleIdentifier: request.appBundleIdentifier)
+      throw CheckError("expired request should be rejected")
+    } catch AutomaticPairingInboxError.requestExpired {
+      // Expected. The Mac may atomically replace the request and reactivate.
+    }
+    try require(
+      !FileManager.default.fileExists(
+        atPath: inbox.appendingPathComponent(AutomaticPairingInboxController.bootstrapFile).path),
+      "expired request must not create secret bootstrap material")
+  }
+
   static func localDevVPNRouteDetection() throws {
     try require(
       DeveloperRouteProbe.localDevVPNAppearsActive(in: [
@@ -262,6 +484,62 @@ struct POCUnitChecks {
     ).run(endpoint: endpoint)
     precondition(caseD.localDevVPNInterfaceVisible)
     precondition(!caseD.localDevVPNFunctionalReady)
+  }
+
+  static func localDevVPNSetupInboxWritesFunctionalReadyReceipt() async throws {
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("iossim-localdevvpn-ready-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+    let inbox = support.appendingPathComponent(AutomaticPairingInboxController.directory, isDirectory: true)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    let appID = "com.example.iossim"
+    let request = LocalDevVPNSetupRequest(requestID: "ready-request", appBundleIdentifier: appID)
+    try JSONEncoder().encode(request).write(
+      to: inbox.appendingPathComponent(LocalDevVPNSetupInboxController.requestFile), options: .atomic)
+    let controller = LocalDevVPNSetupInboxController(
+      applicationSupportDirectory: support,
+      routeProbe: DeveloperRouteProbe(
+        interfaceProvider: FakeInterfaces(values: []),
+        tcpProber: FakeTCPProber(result: TCPProbeResult(
+          endpoint: request.endpoint, connected: true, latencyMs: 1, error: nil))))
+
+    let receipt = try await controller.reconcileIfRequested(
+      appBundleIdentifier: appID, maxAttempts: 1, delayNanoseconds: 0)
+    try require(receipt?.status == "ready", "LocalDevVPN setup writes ready receipt")
+    try require(receipt?.lifecycleState == .runtimeEndpointReachable, "ready receipt has explicit lifecycle state")
+    try require(receipt?.endpointReachable == true, "functional endpoint is required")
+    try require(
+      !FileManager.default.fileExists(
+        atPath: inbox.appendingPathComponent(LocalDevVPNSetupInboxController.requestFile).path),
+      "successful LocalDevVPN request is consumed")
+  }
+
+  static func localDevVPNSetupInboxReturnsExplicitUserAction() async throws {
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("iossim-localdevvpn-action-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+    let inbox = support.appendingPathComponent(AutomaticPairingInboxController.directory, isDirectory: true)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    let appID = "com.example.iossim"
+    let request = LocalDevVPNSetupRequest(requestID: "action-request", appBundleIdentifier: appID)
+    try JSONEncoder().encode(request).write(
+      to: inbox.appendingPathComponent(LocalDevVPNSetupInboxController.requestFile), options: .atomic)
+    let controller = LocalDevVPNSetupInboxController(
+      applicationSupportDirectory: support,
+      routeProbe: DeveloperRouteProbe(
+        interfaceProvider: FakeInterfaces(values: [
+          NetworkInterfaceSnapshot(name: "utun7", address: "10.7.0.0", family: "IPv4")
+        ]),
+        tcpProber: FakeTCPProber(result: TCPProbeResult(
+          endpoint: request.endpoint, connected: false, latencyMs: nil, error: "timeout"))))
+
+    let receipt = try await controller.reconcileIfRequested(
+      appBundleIdentifier: appID, maxAttempts: 1, delayNanoseconds: 0)
+    try require(receipt?.status == "action_required", "unready VPN is an explicit user action")
+    try require(receipt?.errorCode == "LOCALDEVVPN_ENDPOINT_UNAVAILABLE", "typed endpoint state retained")
+    try require(receipt?.lifecycleState == .running, "visible interface is distinguished from endpoint readiness")
+    try require(receipt?.interfaceVisible == true, "interface visibility remains diagnostic")
+    try require(receipt?.endpointReachable == false, "interface alone cannot prove readiness")
   }
 
   static func diagnosticSetupPrerequisitesRequirePairingAndFunctionalRoute() async throws {
@@ -1582,6 +1860,56 @@ struct POCUnitChecks {
         resolved == Gate3XCTestRunnerBundleIdentifierResolver.defaultInstalledRunnerBundleID,
         "malformed Gate 3 runner config should fall back to source runner ID")
     }
+  }
+
+  static func gate3RunnerBundleIdentifierResolverUsesDeliveredMapping() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "iossim-runtime-mapping-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let mappingURL = root.appendingPathComponent("runtime-mapping.json")
+    let runner = "com.personalteam.iossim.t0123456789ab.location-control-uitests.xctrunner"
+    let mapping: [String: Any] = [
+      "schemaVersion": 1,
+      "deviceUDIDHash": String(repeating: "a", count: 64),
+      "teamIdentifier": "TEAM1",
+      "mainBundleIdentifier": "com.personalteam.iossim.t0123456789ab.on-device-dvt-poc",
+      "runnerBundleIdentifier": runner,
+    ]
+    try JSONSerialization.data(withJSONObject: mapping).write(to: mappingURL)
+    let resolved = Gate3XCTestRunnerBundleIdentifierResolver().resolvedInstalledRunnerBundleID(
+      environment: [:],
+      infoDictionary: ["CFBundleIdentifier": mapping["mainBundleIdentifier"]!],
+      userDefaults: try isolatedDefaults(),
+      runtimeMappingURL: mappingURL)
+    try require(resolved == runner, "native House Arrest mapping should be authoritative")
+  }
+
+  static func gate3RunnerBundleIdentifierResolverRejectsMismatchedDeliveredMapping() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "iossim-invalid-runtime-mapping-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let mappingURL = root.appendingPathComponent("runtime-mapping.json")
+    let deliveredRunner = "com.personalteam.iossim.t0123456789ab.location-control-uitests.xctrunner"
+    let fallbackRunner = "com.personalteam.iossim.t111111111111.location-control-uitests.xctrunner"
+    let mapping: [String: Any] = [
+      "schemaVersion": 1,
+      "deviceUDIDHash": String(repeating: "a", count: 64),
+      "teamIdentifier": "TEAM1",
+      "mainBundleIdentifier": "com.personalteam.iossim.wrong.on-device-dvt-poc",
+      "runnerBundleIdentifier": deliveredRunner,
+    ]
+    try JSONSerialization.data(withJSONObject: mapping).write(to: mappingURL)
+    let resolved = Gate3XCTestRunnerBundleIdentifierResolver().resolvedInstalledRunnerBundleID(
+      environment: [:],
+      infoDictionary: [
+        "CFBundleIdentifier": "com.personalteam.iossim.current.on-device-dvt-poc",
+        Gate3XCTestRunnerBundleIdentifierResolver.infoDictionaryKey: fallbackRunner,
+      ],
+      userDefaults: try isolatedDefaults(),
+      runtimeMappingURL: mappingURL)
+    try require(resolved == fallbackRunner, "mismatched delivered mapping must use compatibility fallback")
   }
 
   static func locationWitnessMetricsCalculations() throws {

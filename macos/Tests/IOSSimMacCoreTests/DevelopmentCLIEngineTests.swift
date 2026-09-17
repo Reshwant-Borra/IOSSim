@@ -1,6 +1,7 @@
 import XCTest
 @testable import IOSSimMacCore
 
+#if !IOSSIM_BUNDLED_ENGINE
 final class DevelopmentCLIEngineTests: XCTestCase {
     func testDevelopmentEngineLaunchTargetUsesExecutableInterpreter() throws {
         let root = repositoryRoot()
@@ -46,3 +47,4 @@ final class DevelopmentCLIEngineTests: XCTestCase {
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     }
 }
+#endif

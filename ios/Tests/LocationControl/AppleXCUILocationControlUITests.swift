@@ -345,6 +345,7 @@ final class AppleXCUILocationControlUITests: XCTestCase {
         "Gate 1 proof runs only when \(Self.gate1RichLocationOnlyEnvironmentKey)=1 is set.")
     }
     try requireXCUILocationSupport()
+    defer { XCUIDevice.shared.location = nil }
 
     let witness = launchWitnessApp()
     resetAndStartWitnessRecorder(in: witness)

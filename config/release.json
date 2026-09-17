@@ -3,10 +3,11 @@
     "arm64",
     "x86_64"
   ],
-  "buildNumber": "1",
+  "buildNumber": "2",
   "bundleIdentifier": "com.iossim.mac-provisioner",
+  "developerSupportProviderClassification": "UNRESOLVED_PRODUCTION_PROVIDER",
   "minimumMacOS": "13.0",
-  "productName": "IOSSim",
+  "productName": "Veya",
   "schemaVersion": 1,
   "shortVersion": "0.1.0",
   "variant": "PRODUCTION"

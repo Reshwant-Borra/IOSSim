@@ -82,6 +82,40 @@ final class NativeSigningIdentityIntegrationTests: XCTestCase {
         XCTAssertEqual(duplicateStatus, errSecDuplicateItem)
     }
 
+    func testCleanConsumerMacIOSSimOwnedKeyIsUsableFromPackagedHelperWithoutInteraction() async throws {
+        try requireIntegrationTests()
+        let helper = Bundle(for: Self.self).bundleURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("IOSSimSigningKeyTestHelper", isDirectory: false)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path), "The separate helper process must be built for this regression")
+        let policy = IOSSimSigningKeyAccessPolicy(trustedExecutablePaths: [
+            IOSSimSigningKeyAccessPolicy.codesignPath,
+            helper.path,
+        ])
+        let fixture = try KeychainSigningFixture(signingAccessPolicy: policy)
+        defer { fixture.cleanup() }
+
+        let resolution = try await fixture.resolver.resolve(
+            certificateDER: fixture.certificateDER,
+            expectedSHA256: fixture.certificateSHA256,
+            expectedKeyApplicationTagIdentifier: fixture.applicationTagIdentifier,
+            teamIdentifier: fixture.teamIdentifier,
+            workingDirectory: fixture.root
+        )
+        let helperResult = try await ProcessRunner().run(
+            executableURL: helper,
+            arguments: [resolution.certificateSHA1, fixture.root.path],
+            workingDirectory: fixture.root,
+            environment: RuntimeProvisioning.deterministicEnvironment(),
+            redactOutput: false
+        )
+
+        XCTAssertEqual(helperResult.exitCode, 0, helperResult.combinedOutput)
+        XCTAssertFalse(helperResult.combinedOutput.lowercased().contains("errsecinternalcomponent"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.root
+            .appendingPathComponent("CleanConsumerSigningProbe.app/_CodeSignature/CodeResources").path))
+    }
+
     func testCertificateKeyMismatchIsPreciselyClassified() async throws {
         try requireIntegrationTests()
         let certificateFixture = try KeychainSigningFixture()
@@ -182,7 +216,9 @@ final class NativeSigningIdentityIntegrationTests: XCTestCase {
             stateStore: stateStore,
             nativeArtifactStore: NativeProvisioningArtifactStore(directoryURL: artifactDirectory),
             nativeIdentityResolver: NativeSigningIdentityResolver(runner: processRunner),
-            workspaceRootURL: root.appendingPathComponent("Workspaces", isDirectory: true)
+            workspaceRootURL: root.appendingPathComponent("Workspaces", isDirectory: true),
+            inventoryReader: DevicectlApplicationInventoryReader(),
+            deviceBackend: DevicectlProvisioningBackend()
         )
         let result = try await provisioner.provision(.init(
             operation: .install,
@@ -498,7 +534,10 @@ private final class KeychainSigningFixture {
     let certificateSHA256: String
     let resolver: NativeSigningIdentityResolver
 
-    init(teamIdentifier requestedTeamIdentifier: String? = nil) throws {
+    init(
+        teamIdentifier requestedTeamIdentifier: String? = nil,
+        signingAccessPolicy: IOSSimSigningKeyAccessPolicy? = nil
+    ) throws {
         Self.cleanupAbandonedMaterialOnce()
         let identifier = UUID().uuidString.uppercased()
         root = FileManager.default.temporaryDirectory
@@ -509,7 +548,16 @@ private final class KeychainSigningFixture {
         teamIdentifier = requestedTeamIdentifier
             ?? "IT\(identifier.replacingOccurrences(of: "-", with: "").prefix(8))"
         applicationTagIdentifier = "com.iossim.personal-team.\(teamIdentifier).\(identifier)"
-        let store = IOSSimIdentityMetadataStore(service: service, keyLabel: keyLabel)
+        let store: IOSSimIdentityMetadataStore
+        if let signingAccessPolicy {
+            store = IOSSimIdentityMetadataStore(
+                service: service,
+                keyLabel: keyLabel,
+                signingAccessPolicy: signingAccessPolicy
+            )
+        } else {
+            store = IOSSimIdentityMetadataStore(service: service, keyLabel: keyLabel)
+        }
         let tag = Data(applicationTagIdentifier.utf8)
         let key = try store.createPrivateKey(applicationTag: tag)
         try store.save(IOSSimIdentityMetadata(

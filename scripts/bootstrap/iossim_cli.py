@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
 import hashlib
 import json
@@ -10,12 +11,31 @@ import platform
 import plistlib
 import re
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+BOOTSTRAP_MODULE_DIR = Path(__file__).resolve().parent
+if str(BOOTSTRAP_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_MODULE_DIR))
+
+from artifact_identity import (
+    ArtifactIdentityError,
+    assert_identity,
+    expected_release_identity,
+    inspect_app,
+    inspect_dmg,
+    protocol_versions,
+    sha256_file,
+    sha256_path,
+    sha256_tree,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +43,7 @@ IOS_DIR = ROOT / "ios"
 MAC_DIR = ROOT / "macos"
 HOST_BRIDGE_DIR = ROOT / "native" / "iossim-device-bridge"
 HOST_BRIDGE_LIB = HOST_BRIDGE_DIR / "target" / "release" / "libiossim_device_bridge.dylib"
+HOST_BRIDGE_MANIFEST = HOST_BRIDGE_DIR / "Cargo.toml"
 RELEASE_CONFIG_PATH = ROOT / "config" / "release.json"
 RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "release"
 LOCAL_RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "local-release"
@@ -32,6 +53,7 @@ MAC_HELPER_LOCAL_ENTITLEMENTS = MAC_DIR / "Release" / "IOSSimProvisionerLocal.en
 MAC_ICON_SOURCE = MAC_DIR / "Resources" / "IOSSimIcon.png"
 IDEVICE_LICENSE_SOURCE = IOS_DIR / "Vendor" / "idevice" / "LICENSE.txt"
 BIGINT_LICENSE_SOURCE = MAC_DIR / "ThirdPartyNotices" / "BigInt-LICENSE.txt"
+SBOM_FILE_NAME = "SBOM.spdx.json"
 IOS_PROJECT = IOS_DIR / "IOSSimOnDevicePOC.xcodeproj"
 DERIVED_DATA = IOS_DIR / ".build" / "DerivedData"
 MAC_APP_PATH = ROOT / ".build" / "iossim" / "mac" / "IOSSim.app"
@@ -40,12 +62,20 @@ LOG_DIR = ROOT / ".build" / "iossim" / "logs"
 STATE_DIR = ROOT / ".build" / "iossim" / "state"
 LOCAL_ENV = ROOT / ".iossim.local.env"
 PINNED_IDEVICE_COMMIT = "c442bd235bd14d6d5c8f28f85c9e6179e3a4c3d5"
-REQUIRED_SCHEMES = {"IOSSimOnDevicePOC", "AppleXCUILocationControl"}
+REQUIRED_SCHEMES = {"IOSSimOnDevicePOC", "IOSSimPayloadRunner"}
 MIN_MACOS = (13, 0, 0)
 MIN_XCODE = (15, 0, 0)
 MIN_NODE = (20, 0, 0)
 MIN_PYTHON = (3, 11, 0)
-HELPER_SCHEMA_VERSION = 1
+PAYLOAD_BUILD_VARIANT = "DEVICE_PAYLOAD_RELEASE"
+LOCAL_TEST_DDI_PROVIDER = "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030"
+PAYLOAD_CAPABILITIES = {
+    "automaticPairingInbox": 2,
+    "localDevVPNSetupGate": 2,
+    "pairingReceiptSchema": 2,
+    "richRuntimeProofInbox": 1,
+    "runtimeMappingSchema": 1,
+}
 
 
 @dataclass(frozen=True)
@@ -57,6 +87,7 @@ class ReleaseConfig:
     minimum_macos: str
     variant: str
     architectures: tuple[str, ...]
+    developer_support_provider_classification: str
 
 
 def load_release_config() -> ReleaseConfig:
@@ -66,7 +97,7 @@ def load_release_config() -> ReleaseConfig:
         raise RuntimeError(f"invalid release configuration: {exc}") from exc
     required = {
         "productName", "bundleIdentifier", "shortVersion", "buildNumber",
-        "minimumMacOS", "variant", "architectures",
+        "minimumMacOS", "variant", "architectures", "developerSupportProviderClassification",
     }
     missing = sorted(required - raw.keys())
     if missing:
@@ -90,6 +121,7 @@ def load_release_config() -> ReleaseConfig:
         minimum_macos=str(raw["minimumMacOS"]),
         variant=str(raw["variant"]),
         architectures=architectures,
+        developer_support_provider_classification=str(raw["developerSupportProviderClassification"]),
     )
 
 
@@ -143,43 +175,6 @@ def short_identifier(value: str | None) -> str:
     if len(value) <= 10:
         return value
     return f"{value[:6]}...{value[-4:]}"
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def sha256_tree(path: Path) -> str:
-    h = hashlib.sha256()
-    files: list[Path] = []
-    for root, dirs, names in os.walk(path):
-        dirs[:] = [name for name in dirs if not name.startswith(".")]
-        for name in names:
-            if name.startswith("."):
-                continue
-            files.append(Path(root) / name)
-    for file in sorted(files):
-        relative = file.relative_to(path).as_posix()
-        h.update(relative.encode("utf-8"))
-        h.update(b"\0")
-        if file.is_symlink():
-            h.update(b"symlink")
-            h.update(b"\0")
-            h.update(os.readlink(file).encode("utf-8"))
-        else:
-            with file.open("rb") as fh:
-                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                    h.update(chunk)
-        h.update(b"\0")
-    return h.hexdigest()
-
-
-def sha256_path(path: Path) -> str:
-    return sha256_tree(path) if path.is_dir() else sha256_file(path)
 
 
 def load_local_env() -> dict[str, str]:
@@ -312,11 +307,11 @@ def hint_for_failure(name: str, result: CommandResult) -> None:
     text = f"{result.stdout}\n{result.stderr}"
     lower = text.lower()
     if "license" in lower and "xcode" in lower:
-        print_step("ACTION", "Accept the Xcode license", "open Xcode once or run sudo xcodebuild -license")
+        print_step("ACTION", "BUILD_ONLY Xcode license", "required only on a machine rebuilding iPhone payloads")
     elif "requires a development team" in lower or "development team" in lower:
-        print_step("ACTION", "Configure Apple signing", "open Xcode Settings > Accounts or set IOSSIM_DEVELOPMENT_TEAM")
+        print_step("ACTION", "BUILD_ONLY Apple signing", "configure an Apple Development identity on the payload build machine")
     elif "iphoneos sdk unavailable" in lower:
-        print_step("ACTION", "Install/select full Xcode", "xcode-select must point at Xcode.app")
+        print_step("ACTION", "BUILD_ONLY iPhoneOS SDK", "full Xcode is required only to rebuild iPhone payloads")
     elif "cargo is required" in lower or "rustc" in lower:
         print_step("ACTION", "Install Rust", "install rustup, then rerun ./iossim setup")
     else:
@@ -362,7 +357,9 @@ class DoctorReport:
 
     @property
     def mac_ready(self) -> bool:
-        return not any(c.state in {"FAIL", "ACTION"} and c.required_for in {"mac", "build"} for c in self.checks)
+        # Build-only requirements are useful to source developers, but they are
+        # not consumer runtime readiness gates.
+        return not any(c.state in {"FAIL", "ACTION"} and c.required_for == "mac" for c in self.checks)
 
     @property
     def device_ready(self) -> bool:
@@ -391,6 +388,22 @@ class DoctorReport:
             "actionsRequired": [c.action or c.name for c in self.actions],
             "checks": [c.to_json() for c in self.checks],
         }
+
+
+@dataclass(frozen=True)
+class NativeDiscoveryResult:
+    devices: list[dict[str, Any]]
+    raw_count: int
+    returned_count: int
+    diagnostics: list[dict[str, str]]
+    helper_path: Path | None
+    bridge_path: Path | None
+    error_code: str | None = None
+    error_detail: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.error_code is None
 
 
 def command_exists(name: str) -> str | None:
@@ -497,26 +510,29 @@ def check_platform(report: DoctorReport) -> None:
 
 def check_xcode(report: DoctorReport, runner: Runner) -> None:
     if not command_exists("xcodebuild"):
-        report.add("ACTION", "Xcode", "xcodebuild", "missing", "Install Xcode from Apple and launch it once.", "build")
+        report.add(
+            "WARN", "Build Only · Xcode", "BUILD_ONLY xcodebuild", "missing",
+            "Full Xcode is needed only to rebuild iPhone payloads; it is not required for consumer device discovery.", "build"
+        )
         return
     selected = runner.run("xcode-select", ["xcode-select", "-p"], check=False)
     if selected.code == 0:
-        report.add("PASS", "Xcode", "xcode-select path", selected.stdout.strip())
+        report.add("PASS", "Build Only · Xcode", "BUILD_ONLY xcode-select path", selected.stdout.strip(), "", "build")
     else:
-        report.add("ACTION", "Xcode", "xcode-select path", "not configured", "Run sudo xcode-select -s /Applications/Xcode.app.", "build")
+        report.add("WARN", "Build Only · Xcode", "BUILD_ONLY xcode-select path", "not configured", "Select full Xcode only on a payload build machine.", "build")
     version = runner.run("xcodebuild-version", ["xcodebuild", "-version"], check=False)
     parsed = parse_version(version.stdout)
     if version.code == 0 and version_at_least(parsed, MIN_XCODE):
-        report.add("PASS", "Xcode", "Xcode version", version.stdout.splitlines()[0])
+        report.add("PASS", "Build Only · Xcode", "BUILD_ONLY Xcode version", version.stdout.splitlines()[0], "", "build")
     elif version.code == 0:
-        report.add("FAIL", "Xcode", "Xcode version", version.stdout.splitlines()[0], "Install Xcode 15 or newer.", "build")
+        report.add("WARN", "Build Only · Xcode", "BUILD_ONLY Xcode version", version.stdout.splitlines()[0], "Use Xcode 15 or newer only when rebuilding iPhone payloads.", "build")
     else:
-        report.add("ACTION", "Xcode", "Xcode license/tools", "xcodebuild failed", "Open Xcode once and accept required prompts.", "build")
+        report.add("WARN", "Build Only · Xcode", "BUILD_ONLY Xcode tools", "xcodebuild failed", "Resolve this only on a payload build machine.", "build")
     sdk = runner.run("iphoneos-sdk", ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], check=False)
     if sdk.code == 0 and sdk.stdout.strip():
-        report.add("PASS", "Xcode", "iphoneos SDK", sdk.stdout.strip())
+        report.add("PASS", "Build Only · Xcode", "BUILD_ONLY iphoneos SDK", sdk.stdout.strip(), "", "build")
     else:
-        report.add("ACTION", "Xcode", "iphoneos SDK", "unavailable", "Install/select full Xcode and accept the license.", "build")
+        report.add("WARN", "Build Only · Xcode", "BUILD_ONLY iphoneos SDK", "unavailable", "Required only to rebuild iPhone payloads.", "build")
 
 
 def check_swift_and_git(report: DoctorReport, runner: Runner) -> None:
@@ -621,7 +637,7 @@ def check_signing(report: DoctorReport, runner: Runner) -> None:
     if count:
         report.add("PASS", "Signing", "Apple Development identity", f"{count} available")
     else:
-        report.add("ACTION", "Signing", "Apple Development identity", "none found", "Open Xcode Settings > Accounts and sign in with your Apple ID.", "build")
+        report.add("WARN", "Build Only · Signing", "BUILD_ONLY Apple Development identity", "none found", "Configure an Apple Development identity only on a payload build machine.", "build")
     configured_team = os.environ.get("IOSSIM_DEVELOPMENT_TEAM") or load_local_env().get("IOSSIM_DEVELOPMENT_TEAM")
     if configured_team:
         report.add("PASS", "Signing", "IOSSIM_DEVELOPMENT_TEAM override", short_identifier(configured_team))
@@ -668,10 +684,30 @@ def check_idevice_artifacts(report: DoctorReport, runner: Runner) -> None:
 
 
 def check_devices(report: DoctorReport, runner: Runner) -> None:
-    devices = discover_devices(runner)
+    discovery = discover_native_devices(runner)
+    devices = discovery.devices
     report.devices = devices
+    if not discovery.available:
+        report.add(
+            "ACTION",
+            "Device Bridge",
+            discovery.error_code or "DEVICE_DISCOVERY_UNAVAILABLE",
+            discovery.error_detail or "native device discovery failed",
+            "Run ./iossim device-debug and include its sanitized output when reporting this failure.",
+            "diagnostics",
+        )
+        report.add(
+            "ACTION",
+            "Device",
+            "connected iPhone",
+            "DEVICE_DISCOVERY_UNAVAILABLE",
+            "IOSSim could not query its native device bridge. Run ./iossim device-debug.",
+            "device",
+        )
+        return
     if not devices:
-        report.add("ACTION", "Device", "connected iPhone", "not detected", "Connect and unlock an iPhone, trust this Mac, then run ./iossim device.", "device")
+        report.add("PASS", "Device Bridge", "native discovery", "ZERO_DEVICES_RETURNED", "", "diagnostics")
+        report.add("ACTION", "Device", "connected iPhone", "not detected", "Connect and unlock an iPhone, then run ./iossim device-debug.", "device")
         return
     has_ready_device = any(
         device.get("pairingState") == "paired" and device.get("developerModeStatus") == "enabled"
@@ -702,46 +738,135 @@ def check_devices(report: DoctorReport, runner: Runner) -> None:
             report.add("WARN", "Device", "CoreDevice tunnel", tunnel or "unknown", "", "device")
 
 
-def discover_devices(runner: Runner) -> list[dict[str, Any]]:
-    if not command_exists("xcrun"):
-        return []
-    with tempfile.TemporaryDirectory(prefix="iossim-devices-") as tmp:
-        json_path = Path(tmp) / "devices.json"
-        result = runner.run(
-            "devicectl-list-devices",
-            ["xcrun", "devicectl", "list", "devices", "--timeout", "8", "--json-output", str(json_path), "--quiet"],
-            check=False,
+def native_discovery_candidates() -> list[tuple[Path, Path]]:
+    executable_name = "IOSSimProvisioner"
+    bridge_name = "libiossim_device_bridge.dylib"
+    final_payload_retest_app = ROOT / ".build" / "iossim" / "final-setup-payload-retest" / "IOSSim.app"
+    final_setup_retest_app = ROOT / ".build" / "iossim" / "final-setup-retest" / "IOSSim.app"
+    physical_retest_app = ROOT / ".build" / "iossim" / "physical-retest" / "IOSSim.app"
+    candidates = [
+        (
+            final_payload_retest_app / "Contents" / "MacOS" / executable_name,
+            final_payload_retest_app / "Contents" / "Resources" / "NativeDeviceBridge" / bridge_name,
+        ),
+        (
+            final_setup_retest_app / "Contents" / "MacOS" / executable_name,
+            final_setup_retest_app / "Contents" / "Resources" / "NativeDeviceBridge" / bridge_name,
+        ),
+        (
+            physical_retest_app / "Contents" / "MacOS" / executable_name,
+            physical_retest_app / "Contents" / "Resources" / "NativeDeviceBridge" / bridge_name,
+        ),
+        (
+            MAC_APP_PATH / "Contents" / "MacOS" / executable_name,
+            MAC_APP_PATH / "Contents" / "Resources" / "NativeDeviceBridge" / bridge_name,
+        ),
+        (MAC_DIR / ".build" / f"{platform.machine()}-apple-macosx" / "release" / executable_name, HOST_BRIDGE_LIB),
+        (MAC_DIR / ".build" / f"{platform.machine()}-apple-macosx" / "debug" / executable_name, HOST_BRIDGE_LIB),
+        (
+            SELF_CONTAINED_APP_PATH / "Contents" / "MacOS" / executable_name,
+            SELF_CONTAINED_APP_PATH / "Contents" / "Resources" / "NativeDeviceBridge" / bridge_name,
+        ),
+        (
+            Path("/Applications/IOSSim.app/Contents/MacOS") / executable_name,
+            Path("/Applications/IOSSim.app/Contents/Resources/NativeDeviceBridge") / bridge_name,
+        ),
+    ]
+    seen: set[tuple[Path, Path]] = set()
+    return [item for item in candidates if not (item in seen or seen.add(item))]
+
+
+def parse_native_discovery_payload(
+    payload: str,
+    helper_path: Path,
+    bridge_path: Path,
+) -> NativeDiscoveryResult:
+    try:
+        envelope = json.loads(payload)
+        data = envelope["data"]
+        diagnostics = data.get("diagnostics", [])
+        raw_devices = data.get("devices", [])
+        raw_count = int(data["rawDeviceCount"])
+        returned_count = int(data["returnedDeviceCount"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return NativeDiscoveryResult(
+            [], 0, 0, [], helper_path, bridge_path,
+            "FFI_DECODING_FAILURE", f"native helper diagnostic payload was invalid: {type(exc).__name__}",
         )
-        if result.code != 0 or not json_path.exists():
-            return []
-        try:
-            raw = json.loads(json_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
-    devices = []
-    for item in raw.get("result", {}).get("devices", []):
-        props = item.get("deviceProperties", {})
-        hardware = item.get("hardwareProperties", {})
-        connection = item.get("connectionProperties", {})
-        if hardware.get("deviceType") != "iPhone" and hardware.get("platform") != "iOS":
+
+    devices: list[dict[str, Any]] = []
+    for item in raw_devices:
+        if not isinstance(item, dict):
             continue
-        devices.append(
-            {
-                "name": props.get("name") or hardware.get("marketingName") or "iPhone",
-                "identifier": short_identifier(item.get("identifier") or hardware.get("udid")),
-                "_deviceIdentifier": item.get("identifier") or hardware.get("udid"),
-                "udidRedacted": short_identifier(hardware.get("udid")),
-                "osVersion": props.get("osVersionNumber"),
-                "developerModeStatus": props.get("developerModeStatus"),
-                "pairingState": connection.get("pairingState"),
-                "tunnelState": connection.get("tunnelState"),
-            }
+        selection_identifier = item.get("selectionIdentifier")
+        devices.append({
+            "name": item.get("name") or "iPhone",
+            "identifier": item.get("identifier") or short_identifier(selection_identifier),
+            "_deviceIdentifier": selection_identifier,
+            "udidRedacted": item.get("udidRedacted") or short_identifier(selection_identifier),
+            "osVersion": item.get("osVersion"),
+            "model": item.get("model"),
+            "developerModeStatus": item.get("developerModeStatus"),
+            "pairingState": item.get("pairingState"),
+            "tunnelState": item.get("tunnelState"),
+            "isLocked": item.get("isLocked"),
+        })
+
+    unavailable_codes = {
+        "BRIDGE_UNAVAILABLE", "BRIDGE_INITIALIZATION_FAILED", "USBMUX_UNAVAILABLE",
+        "ENUMERATION_FAILED", "HELPER_LIBRARY_MISSING", "FFI_DECODING_FAILURE",
+    }
+    primary = next(
+        (item for item in diagnostics if isinstance(item, dict) and item.get("code") in unavailable_codes),
+        None,
+    )
+    if envelope.get("ok") is False or primary is not None:
+        primary = primary or {"code": "DEVICE_DISCOVERY_UNAVAILABLE", "detail": "native helper rejected discovery"}
+        return NativeDiscoveryResult(
+            devices, raw_count, returned_count, diagnostics, helper_path, bridge_path,
+            str(primary.get("code")), str(primary.get("detail") or "native device discovery failed"),
         )
-    return devices
+    return NativeDiscoveryResult(devices, raw_count, returned_count, diagnostics, helper_path, bridge_path)
+
+
+def discover_native_devices(runner: Runner) -> NativeDiscoveryResult:
+    pair = next(
+        ((helper, bridge) for helper, bridge in native_discovery_candidates() if helper.is_file() and bridge.is_file()),
+        None,
+    )
+    if pair is None:
+        return NativeDiscoveryResult(
+            [], 0, 0, [], None, None, "HELPER_LIBRARY_MISSING",
+            "Build the native Mac bridge and IOSSimProvisioner before running discovery.",
+        )
+    helper, bridge = pair
+    environment = merged_env()
+    environment.update({
+        "IOSSIM_DEVICE_BACKEND": "idevice",
+        "IOSSIM_DEVICE_BRIDGE_PATH": str(bridge.resolve()),
+        "IOSSIM_FORBID_DEVICETCTL": "1",
+    })
+    result = runner.run(
+        "native-device-diagnostics",
+        [str(helper.resolve()), "device-diagnostics"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+    )
+    if result.code != 0:
+        detail = (result.stderr or result.stdout or "native helper exited unsuccessfully").strip().splitlines()[-1]
+        return NativeDiscoveryResult(
+            [], 0, 0, [], helper, bridge, "HELPER_EXECUTION_FAILED", detail,
+        )
+    return parse_native_discovery_payload(result.stdout, helper, bridge)
+
+
+def discover_devices(runner: Runner) -> list[dict[str, Any]]:
+    """Compatibility accessor; doctor must use discover_native_devices to retain errors."""
+    return discover_native_devices(runner).devices
 
 
 def check_manual_runtime_actions(report: DoctorReport) -> None:
-    report.add("ACTION", "Runtime", "PAIRING MATERIAL", "cannot be inspected from Mac CLI", "Import RPPairing inside IOSSim on the iPhone. Contents must never be logged or committed.", "device")
     report.add("ACTION", "Runtime", "LocalDevVPN", "external iPhone app required", "Install/launch LocalDevVPN on the iPhone and approve Apple's VPN prompt.", "device")
 
 
@@ -842,12 +967,47 @@ def build_host_device_bridge(runner: Runner) -> bool:
     if not cargo:
         print_step("FAIL", "Native Mac device bridge", "cargo is unavailable")
         return False
-    return run_step(
-        runner,
-        "Build native Mac device bridge",
-        "build-host-device-bridge",
-        [cargo, "build", "--manifest-path", str(HOST_BRIDGE_DIR / "Cargo.toml"), "--release"],
-    ) and HOST_BRIDGE_LIB.is_file()
+    built: list[Path] = []
+    for architecture in RELEASE_CONFIG.architectures:
+        rust_architecture = "aarch64" if architecture == "arm64" else architecture
+        target = f"{rust_architecture}-apple-darwin"
+        if not run_step(
+            runner,
+            f"Build native Mac device bridge ({architecture})",
+            f"build-host-device-bridge-{architecture}",
+            [
+                cargo, "build", "--manifest-path", str(HOST_BRIDGE_DIR / "Cargo.toml"),
+                "--release", "--target", target,
+            ],
+        ):
+            return False
+        artifact = HOST_BRIDGE_DIR / "target" / target / "release" / HOST_BRIDGE_LIB.name
+        if not artifact.is_file():
+            print_step("FAIL", "Native Mac device bridge", f"missing {artifact}")
+            return False
+        built.append(artifact)
+    HOST_BRIDGE_LIB.parent.mkdir(parents=True, exist_ok=True)
+    if len(built) == 1:
+        shutil.copy2(built[0], HOST_BRIDGE_LIB)
+    else:
+        result = runner.run(
+            "lipo-native-device-bridge",
+            ["/usr/bin/lipo", "-create", *(str(path) for path in built), "-output", str(HOST_BRIDGE_LIB)],
+            check=False,
+        )
+        if result.code != 0:
+            print_step("FAIL", "Universal native Mac device bridge", f"see {result.log_path}")
+            return False
+    actual = subprocess.run(
+        ["/usr/bin/lipo", "-archs", str(HOST_BRIDGE_LIB)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    expected = set(RELEASE_CONFIG.architectures)
+    if actual.returncode != 0 or set(actual.stdout.split()) != expected:
+        print_step("FAIL", "Native Mac device bridge architectures", actual.stderr or actual.stdout)
+        return False
+    print_step("PASS", "Native Mac device bridge architectures", " ".join(sorted(expected)))
+    return True
 
 
 def verify_idevice(runner: Runner) -> bool:
@@ -898,7 +1058,7 @@ def build_ios(
         f"xcodebuild-xcuilocation-runner-{configuration.lower()}",
         xcodebuild_args(
             "-scheme",
-            "AppleXCUILocationControl",
+            "IOSSimPayloadRunner",
             "-configuration",
             configuration,
             "-destination",
@@ -948,13 +1108,11 @@ def command_setup(args: argparse.Namespace) -> int:
     ok &= verify_idevice(runner)
     ok &= build_ios(runner)
     print("")
-    print("Manual Apple/device actions that remain:")
-    print("1. Install Xcode from Apple, launch it once, and accept any license prompts.")
-    print("2. Sign in to Xcode and ensure an Apple Development signing identity is available.")
-    print("3. Connect and unlock the iPhone, then trust this Mac.")
-    print("4. Enable Developer Mode on the iPhone.")
-    print("5. Install and approve LocalDevVPN on the iPhone.")
-    print("6. Import RPPairing inside IOSSim. Pairing contents are never printed by this CLI.")
+    print("Runtime device actions that remain:")
+    print("1. Connect and unlock the iPhone, then trust this Mac if prompted.")
+    print("2. Enable Developer Mode on the iPhone if the runtime requests it.")
+    print("3. Install and approve LocalDevVPN on the iPhone.")
+    print("BUILD_ONLY: Full Xcode and an Apple Development identity are needed only when rebuilding iPhone payloads.")
     print("")
     print("Final doctor:")
     run_doctor(json_output=False, verbose=args.verbose)
@@ -995,6 +1153,12 @@ def command_test(args: argparse.Namespace) -> int:
     print("")
     ok = True
     ok &= check_bundle_identifiers(runner)
+    ok &= run_step(
+        runner,
+        "No-Xcode device discovery CLI tests",
+        "device-discovery-cli-tests",
+        [sys.executable, str(ROOT / "scripts" / "checks" / "test_device_discovery_cli.py")],
+    )
     ok &= run_step(runner, "POCUnitChecks", "swift-run-pocunitchecks", ["swift", "run", "--package-path", str(IOS_DIR), "POCUnitChecks"])
     ok &= test_mac_app(runner)
     ok &= build_mac_app(runner)
@@ -1041,6 +1205,70 @@ def bundled_artifact_specs(configuration: str = "Release") -> list[tuple[str, st
         ("iosMain", PROTECTED_BUNDLE_IDS["iosMain"], apps[0]),
         ("locationControlRunner", PROTECTED_BUNDLE_IDS["locationControlRunner"], apps[2]),
     ]
+
+
+def assert_iphone_payload_capability_sources() -> None:
+    project = (IOS_PROJECT / "project.pbxproj").read_text(encoding="utf-8", errors="replace")
+    runner_scheme = (IOS_PROJECT / "xcshareddata" / "xcschemes" / "IOSSimPayloadRunner.xcscheme").read_text(encoding="utf-8")
+    app_source = (IOS_DIR / "App" / "IOSSimOnDeviceDVTPOCApp.swift").read_text(encoding="utf-8")
+    inbox_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "AutomaticPairingInbox.swift").read_text(encoding="utf-8")
+    pairing_store_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "PairingStore.swift").read_text(encoding="utf-8")
+    vpn_setup_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "LocalDevVPNSetupInbox.swift").read_text(encoding="utf-8")
+    rich_runtime_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "RichRuntimeProofInbox.swift").read_text(encoding="utf-8")
+    mapping_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "DvtLocationClient.swift").read_text(encoding="utf-8")
+    required = {
+        "AutomaticPairingInbox target membership": project.count("AutomaticPairingInbox.swift in Sources") >= 2,
+        "automatic pairing startup hook": "AutomaticPairingInboxController()" in app_source and "inbox.reconcile()" in app_source,
+        "LocalDevVPN setup target membership": project.count("LocalDevVPNSetupInbox.swift in Sources") >= 2,
+        "LocalDevVPN setup startup hook": "LocalDevVPNSetupInboxController()" in app_source and "reconcileIfRequested()" in app_source,
+        "LocalDevVPN functional readiness": "localDevVPNFunctionalReady" in vpn_setup_source and "10.7.0.1" in vpn_setup_source,
+        "Rich runtime proof target membership": project.count("RichRuntimeProofInbox.swift in Sources") >= 2,
+        "Rich runtime proof bounded inbox": (
+            "RichRuntimeProofInboxController" in rich_runtime_source
+            and "rich-runtime-proof.request" in rich_runtime_source
+            and "rich-runtime-proof.receipt" in rich_runtime_source
+        ),
+        "automatic pairing receipt": "AutomaticPairingReceipt" in inbox_source and "remote-pairing.receipt" in inbox_source,
+        "pairing Keychain candidate import": (
+            "KeychainRPPairingStore()" in inbox_source
+            and "importCandidatePairingData" in inbox_source
+            and "kSecClassGenericPassword" in pairing_store_source
+            and "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly" in pairing_store_source
+        ),
+        "runtime mapping consumer": "runtime-mapping.json" in mapping_source and "DeliveredRuntimeMapping" in mapping_source,
+        "payload-only runner scheme": "IOSSimLocationControlUITests" in runner_scheme and "IOSSimLocationWitness" not in runner_scheme,
+    }
+    missing = [name for name, present in required.items() if not present]
+    if missing:
+        raise RuntimeError("PAYLOAD_CAPABILITY_SOURCE_MISMATCH: " + ", ".join(missing))
+
+
+def assert_iphone_main_binary_capabilities(app: Path) -> None:
+    info = read_bundle_info(app)
+    executable_name = info.get("CFBundleExecutable")
+    if not isinstance(executable_name, str) or not executable_name:
+        raise RuntimeError("PAYLOAD_CAPABILITY_BINARY_MISMATCH: main CFBundleExecutable is missing")
+    executable = app / executable_name
+    try:
+        binary = executable.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"PAYLOAD_CAPABILITY_BINARY_MISMATCH: cannot read main executable: {exc}") from exc
+    markers = [
+        b"AutomaticPairingInboxController",
+        b"remote-pairing.bootstrap",
+        b"remote-pairing.receipt",
+        b"com.iossim.on-device-dvt-poc.rppairing",
+        b"runtime-mapping.json",
+        b"LocalDevVPNSetupInboxController",
+        b"localdevvpn.request",
+        b"localdevvpn.receipt",
+        b"RichRuntimeProofInboxController",
+        b"rich-runtime-proof.request",
+        b"rich-runtime-proof.receipt",
+    ]
+    missing = [marker.decode("utf-8") for marker in markers if marker not in binary]
+    if missing:
+        raise RuntimeError("PAYLOAD_CAPABILITY_BINARY_MISMATCH: " + ", ".join(missing))
 
 
 def read_bundle_info(app: Path) -> dict[str, Any]:
@@ -1127,6 +1355,52 @@ def source_commit() -> str:
 def source_dirty() -> bool:
     result = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     return bool(result.stdout.strip()) if result.returncode == 0 else True
+
+
+def payload_source_dirty() -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--", "ios"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return bool(result.stdout.strip()) if result.returncode == 0 else True
+
+
+def payload_source_tree_sha256() -> str:
+    """Fingerprint the checked-in and generated inputs that define iPhone payload bytes."""
+    inputs = [
+        IOS_DIR / "Package.swift",
+        IOS_DIR / "App",
+        IOS_DIR / "Sources",
+        IOS_DIR / "Tests",
+        IOS_DIR / "LocationWitness",
+        IOS_PROJECT / "project.pbxproj",
+        IOS_PROJECT / "xcshareddata" / "xcschemes",
+        IOS_DIR / "Vendor" / "idevice" / "include",
+        IOS_DIR / "Vendor" / "idevice" / "lib" / "libidevice_ffi.a",
+    ]
+    hasher = hashlib.sha256()
+    files: list[Path] = []
+    for item in inputs:
+        if item.is_file() or item.is_symlink():
+            files.append(item)
+        elif item.is_dir():
+            files.extend(path for path in item.rglob("*") if path.is_file() or path.is_symlink())
+    for file in sorted(set(files), key=lambda path: path.relative_to(ROOT).as_posix()):
+        relative = file.relative_to(ROOT).as_posix()
+        hasher.update(relative.encode("utf-8"))
+        hasher.update(b"\0")
+        if file.is_symlink():
+            hasher.update(b"symlink\0")
+            hasher.update(os.readlink(file).encode("utf-8"))
+        else:
+            with file.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def build_self_contained_macos_products(runner: Runner) -> bool:
@@ -1243,7 +1517,9 @@ def write_app_info_plist(contents_dir: Path) -> None:
     plist = {
         "CFBundleDevelopmentRegion": "en",
         "CFBundleDisplayName": RELEASE_CONFIG.product_name,
-        "CFBundleExecutable": RELEASE_CONFIG.product_name,
+        # The executable name is an internal bundle detail and stays stable
+        # through the IOSSim -> Veya display-name migration.
+        "CFBundleExecutable": "IOSSim",
         "CFBundleIconFile": "IOSSim.icns",
         "CFBundleIdentifier": RELEASE_CONFIG.bundle_identifier,
         "CFBundleInfoDictionaryVersion": "6.0",
@@ -1257,6 +1533,99 @@ def write_app_info_plist(contents_dir: Path) -> None:
     }
     with (contents_dir / "Info.plist").open("wb") as fh:
         plistlib.dump(plist, fh)
+
+
+def write_dependency_sbom(resources_dir: Path) -> Path:
+    cargo_lock_path = HOST_BRIDGE_DIR / "Cargo.lock"
+    swift_lock_path = MAC_DIR / "Package.resolved"
+    cargo_lock = tomllib.loads(cargo_lock_path.read_text(encoding="utf-8"))
+    swift_lock = json.loads(swift_lock_path.read_text(encoding="utf-8"))
+    packages: list[dict[str, Any]] = []
+
+    def spdx_id(name: str, version: str) -> str:
+        token = re.sub(r"[^A-Za-z0-9.-]", "-", f"{name}-{version}")
+        return f"SPDXRef-Package-{token}"
+
+    for package in cargo_lock.get("package", []):
+        name = str(package.get("name") or "unknown")
+        version = str(package.get("version") or "unknown")
+        external_refs = []
+        if package.get("source"):
+            external_refs.append({
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": f"pkg:cargo/{name}@{version}",
+            })
+        item: dict[str, Any] = {
+            "SPDXID": spdx_id(name, version),
+            "name": name,
+            "versionInfo": version,
+            "downloadLocation": str(package.get("source") or "NOASSERTION"),
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "externalRefs": external_refs,
+        }
+        if package.get("checksum"):
+            item["checksums"] = [{"algorithm": "SHA256", "checksumValue": package["checksum"]}]
+        packages.append(item)
+
+    for pin in swift_lock.get("pins", []):
+        state = pin.get("state", {})
+        name = str(pin.get("identity") or "unknown")
+        version = str(state.get("version") or state.get("revision") or "unknown")
+        packages.append({
+            "SPDXID": spdx_id(name, version),
+            "name": name,
+            "versionInfo": version,
+            "downloadLocation": str(pin.get("location") or "NOASSERTION"),
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "externalRefs": [{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": f"pkg:swift/{name}@{version}",
+            }],
+        })
+
+    packages.sort(key=lambda package: (package["name"], package["versionInfo"]))
+    created = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    product_id = f"SPDXRef-Product-{re.sub(r'[^A-Za-z0-9.-]', '-', RELEASE_CONFIG.product_name)}"
+    document = {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": f"{RELEASE_CONFIG.product_name}-{MAC_VERSION}-build{MAC_BUILD_NUMBER}",
+        "documentNamespace": (
+            f"https://github.com/Reshwant-Borra/IOSSim/releases/sbom/"
+            f"{source_commit()}/{payload_source_tree_sha256()[:16]}"
+        ),
+        "creationInfo": {"created": created, "creators": [f"Tool: {RELEASE_CONFIG.product_name} canonical release pipeline"]},
+        "packages": [{
+            "SPDXID": product_id,
+            "name": RELEASE_CONFIG.product_name,
+            "versionInfo": MAC_VERSION,
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+        }, *packages],
+        "relationships": [
+            {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": product_id},
+            *[
+                {"spdxElementId": product_id, "relationshipType": "DEPENDS_ON", "relatedSpdxElement": package["SPDXID"]}
+                for package in packages
+            ],
+        ],
+        "buildInputs": {
+            "cargoLockSHA256": sha256_file(cargo_lock_path),
+            "swiftPackageResolvedSHA256": sha256_file(swift_lock_path),
+        },
+    }
+    destination = resources_dir / SBOM_FILE_NAME
+    destination.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return destination
 
 
 def assemble_self_contained_app(
@@ -1285,15 +1654,24 @@ def assemble_self_contained_app(
     notices.mkdir()
     shutil.copy2(IDEVICE_LICENSE_SOURCE, notices / "idevice-LICENSE.txt")
     shutil.copy2(BIGINT_LICENSE_SOURCE, notices / "BigInt-LICENSE.txt")
+    write_dependency_sbom(resources)
     if not HOST_BRIDGE_LIB.is_file():
         raise RuntimeError("native Mac device bridge dylib is missing; run the host bridge build first")
     bridge_resources = resources / "NativeDeviceBridge"
     bridge_resources.mkdir()
     shutil.copy2(HOST_BRIDGE_LIB, bridge_resources / HOST_BRIDGE_LIB.name)
     os.chmod(bridge_resources / HOST_BRIDGE_LIB.name, 0o755)
+    built_protocols = protocol_versions(
+        macos_dir / "IOSSimProvisioner",
+        bridge_resources / HOST_BRIDGE_LIB.name,
+    )
     sanitized_bridge = sanitize_packaged_artifact_paths(bridge_resources)
     if sanitized_bridge:
         print_step("PASS", "Sanitized source paths in native bridge", f"{sanitized_bridge} file(s)")
+
+    assert_iphone_payload_capability_sources()
+    main_source = bundled_artifact_specs(ios_configuration)[0][2]
+    assert_iphone_main_binary_capabilities(main_source)
 
     components: list[dict[str, Any]] = []
     for role, expected_bundle_id, source in bundled_artifact_specs(ios_configuration):
@@ -1329,29 +1707,126 @@ def assemble_self_contained_app(
             }
         )
 
+    payload_timestamp = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    payload_head = source_commit()
+    payload_dirty = payload_source_dirty()
+    payload_tree_sha256 = payload_source_tree_sha256()
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": built_protocols["artifactManifest"],
         "release": {
-            "sourceCommit": source_commit(),
-            "sourceDirty": source_dirty(),
-            "buildTimestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "sourceCommit": payload_head,
+            "payloadSourceCommit": payload_head,
+            "sourceDirty": payload_dirty,
+            "buildTimestamp": payload_timestamp,
             "macVersion": MAC_VERSION,
             "buildNumber": MAC_BUILD_NUMBER,
             "variant": RELEASE_CONFIG.variant,
-            "helperSchemaVersion": HELPER_SCHEMA_VERSION,
+            "helperSchemaVersion": built_protocols["helperProtocol"],
+            "payloadSourceHead": payload_head,
+            "payloadSourceDirty": payload_dirty,
+            "payloadSourceTreeSHA256": payload_tree_sha256,
+            "payloadBuildTimestamp": payload_timestamp,
+            "payloadBuildVariant": PAYLOAD_BUILD_VARIANT,
+            "localDevVPN": {
+                "bundleIdentifier": "com.jkcoxson.LocalDevVPN",
+                "appStoreIdentifier": "6755608044",
+                "minimumVersion": "1.0.0",
+                "observedAppStoreVersion": "1.3.0",
+                "physicallyTestedVersions": [],
+                "setupProtocolSchema": 2,
+            },
         },
+        "payloadCapabilities": PAYLOAD_CAPABILITIES,
         "components": components,
     }
     (device_artifacts / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    cargo_text = HOST_BRIDGE_MANIFEST.read_text(encoding="utf-8", errors="replace")
+    revision_match = re.search(r'idevice.*?rev\s*=\s*"([0-9a-f]+)"', cargo_text, re.DOTALL)
+    idevice_revision = revision_match.group(1) if revision_match else "unknown"
+    build_provenance = {
+        "guiSourceCommit": source_commit(),
+        "guiSourceHead": source_commit(),
+        "guiSourceDirty": source_dirty(),
+        "helperSourceCommit": source_commit(),
+        "helperSourceHead": source_commit(),
+        "helperSourceDirty": source_dirty(),
+        "payloadSourceCommit": manifest["release"]["payloadSourceCommit"],
+        "payloadSourceHead": manifest["release"]["payloadSourceHead"],
+        "payloadSourceDirty": manifest["release"]["payloadSourceDirty"],
+        "payloadSourceTreeSHA256": manifest["release"]["payloadSourceTreeSHA256"],
+        "payloadBuildTimestamp": manifest["release"]["payloadBuildTimestamp"],
+        "payloadBuildVariant": manifest["release"]["payloadBuildVariant"],
+        "payloadManifestVersion": str(manifest["schemaVersion"]),
+        "payloadSource": "BUNDLED_PREBUILT_MANIFEST",
+        "sourceDirty": source_dirty(),
+        "bridgeVersion": f"iossim-device-bridge/0.1.0+idevice-{idevice_revision[:8]}",
+        "ideviceRevision": idevice_revision,
+        "buildVariant": RELEASE_CONFIG.variant,
+        "setupEngine": "BUNDLED_PROVISIONING_ENGINE",
+        "setupStateSchema": built_protocols["setupState"],
+        "provisioningManifestSchema": built_protocols["provisioningManifest"],
+        "helperSchemaVersion": built_protocols["helperProtocol"],
+        "artifactManifestSchema": built_protocols["artifactManifest"],
+        "nativeBridgeABI": built_protocols["nativeBridgeABI"],
+        "discoveryBackend": "NATIVE_IDEVICE_USBMUX",
+        "installationBackend": "NATIVE_AFC_INSTALLATION_PROXY",
+        "launchBackend": "NATIVE_APPSERVICE_RSD",
+        "developerServicesBackend": "NATIVE_COREDEVICE_RSD_REMOTEXPC",
+        "developerServicesReceiptSchema": 2,
+        "houseArrestBackend": "NATIVE_HOUSE_ARREST_AFC",
+        "pairingBackend": "AUTOMATIC_REMOTE_PAIRING_HOUSE_ARREST",
+        "ddiBackend": "NATIVE_PERSONALIZED_DEVELOPER_SUPPORT",
+        "developerSupportProviderClassification": built_protocols[
+            "developerSupportProviderClassification"
+        ],
+        "legacyFallbackUsed": False,
+        "consumerBuildAttempted": False,
+        "buildTimestamp": manifest["release"]["buildTimestamp"],
+    }
+    with (resources / "BuildProvenance.plist").open("wb") as fh:
+        plistlib.dump(build_provenance, fh)
     return app_dir
+
+
+def write_engine_integrity_manifest(app_dir: Path) -> None:
+    contents = app_dir / "Contents"
+    resources = contents / "Resources"
+    helper = contents / "MacOS" / "IOSSimProvisioner"
+    bridge = resources / "NativeDeviceBridge" / HOST_BRIDGE_LIB.name
+    payload_manifest = resources / "DeviceArtifacts" / "manifest.json"
+    protocols = protocol_versions(helper, bridge)
+    manifest = {
+        "schemaVersion": 1,
+        "helperRelativePath": "Contents/MacOS/IOSSimProvisioner",
+        "helperSHA256": sha256_file(helper),
+        "helperSchemaVersion": protocols["helperProtocol"],
+        "setupStateSchemaVersion": protocols["setupState"],
+        "artifactManifestSchemaVersion": protocols["artifactManifest"],
+        "nativeBridgeRelativePath": f"NativeDeviceBridge/{HOST_BRIDGE_LIB.name}",
+        "nativeBridgeSHA256": sha256_file(bridge),
+        "nativeBridgeABI": protocols["nativeBridgeABI"],
+        "payloadManifestRelativePath": "DeviceArtifacts/manifest.json",
+        "payloadManifestSHA256": sha256_file(payload_manifest),
+    }
+    with (resources / "EngineIntegrity.plist").open("wb") as manifest_file:
+        plistlib.dump(manifest, manifest_file, fmt=plistlib.FMT_XML, sort_keys=True)
 
 
 def sign_self_contained_app(runner: Runner, app_dir: Path) -> bool:
     identity = os.environ.get("IOSSIM_MAC_CODE_SIGN_IDENTITY", "-") or "-"
     ok = True
+    bridge = app_dir / "Contents" / "Resources" / "NativeDeviceBridge" / HOST_BRIDGE_LIB.name
+    ok &= run_step(
+        runner,
+        "Sign native device bridge",
+        "codesign-native-device-bridge",
+        ["codesign", "--force", "--sign", identity, "--options", "runtime", "--timestamp=none", str(bridge)],
+    )
     for executable in [app_dir / "Contents" / "MacOS" / "IOSSimProvisioner", app_dir / "Contents" / "MacOS" / "IOSSim"]:
         ok &= run_step(runner, f"Strip {executable.name}", f"strip-{executable.name}", ["/usr/bin/strip", "-x", str(executable)])
         ok &= run_step(runner, f"Sign {executable.name}", f"codesign-{executable.name}", ["codesign", "--force", "--sign", identity, str(executable)])
+    if ok:
+        write_engine_integrity_manifest(app_dir)
     ok &= run_step(runner, "Sign IOSSim.app", "codesign-iossim-app", ["codesign", "--force", "--deep", "--sign", identity, str(app_dir)])
     ok &= run_step(runner, "Verify IOSSim.app signature", "codesign-verify-iossim-app", ["codesign", "--verify", "--deep", "--strict", str(app_dir)])
     return bool(ok)
@@ -1523,6 +1998,7 @@ def distribution_sign_macos_app(runner: Runner, app_dir: Path, identity: Develop
     )
     main = app_dir / "Contents" / "MacOS" / "IOSSim"
     runner.run("strip-IOSSim-release", ["/usr/bin/strip", "-x", str(main)])
+    write_engine_integrity_manifest(app_dir)
     runner.run(
         "developer-id-IOSSim-app",
         [
@@ -1552,6 +2028,7 @@ def local_sign_macos_app(runner: Runner, app_dir: Path) -> None:
     )
     main = app_dir / "Contents" / "MacOS" / "IOSSim"
     runner.run("strip-IOSSim-local", ["/usr/bin/strip", "-x", str(main)])
+    write_engine_integrity_manifest(app_dir)
     runner.run(
         "local-sign-IOSSim-app",
         [
@@ -1736,7 +2213,7 @@ def command_package_app(args: argparse.Namespace) -> int:
         app_dir = assemble_self_contained_app(runner, ios_configuration="Release")
         print_step("PASS", "Assemble self-contained IOSSim.app", str(app_dir))
     except Exception as exc:
-        print_step("FAIL", "Assemble self-contained IOSSim.app", Redactor.redact(str(exc)))
+        print_step("FAIL", "Assemble self-contained IOSSim.app", redact(str(exc)))
         return 1
     ok &= sign_self_contained_app(runner, app_dir)
     ok &= audit_app(app_dir, verbose=args.verbose)
@@ -1840,16 +2317,16 @@ def staple_and_validate(runner: Runner, path: Path, label: str) -> None:
 
 def create_release_dmg(runner: Runner, app_dir: Path, output: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="iossim-dmg-") as temporary:
-        staging = Path(temporary) / "IOSSim"
+        staging = Path(temporary) / RELEASE_CONFIG.product_name
         staging.mkdir()
-        shutil.copytree(app_dir, staging / "IOSSim.app", symlinks=True)
+        shutil.copytree(app_dir, staging / f"{RELEASE_CONFIG.product_name}.app", symlinks=True)
         os.symlink("/Applications", staging / "Applications")
         if output.exists():
             output.unlink()
         runner.run(
             "create-release-dmg",
             [
-                "/usr/bin/hdiutil", "create", "-volname", "IOSSim",
+                "/usr/bin/hdiutil", "create", "-volname", RELEASE_CONFIG.product_name,
                 "-srcfolder", str(staging), "-ov", "-format", "UDZO", str(output),
             ],
         )
@@ -1920,53 +2397,81 @@ def write_release_sidecars(
     app_notarization: dict[str, Any],
     dmg_notarization: dict[str, Any],
 ) -> tuple[Path, Path]:
-    digest = sha256_file(dmg_path)
+    identity_report = inspect_dmg(dmg_path)
+    assert_identity(identity_report, expected_release_identity({
+        "productName": RELEASE_CONFIG.product_name,
+        "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
+        "shortVersion": MAC_VERSION,
+        "buildNumber": MAC_BUILD_NUMBER,
+        "minimumMacOS": RELEASE_CONFIG.minimum_macos,
+        "architectures": list(RELEASE_CONFIG.architectures),
+        "developerSupportProviderClassification": RELEASE_CONFIG.developer_support_provider_classification,
+    }))
+    artifact = identity_report["artifact"]
+    payload_release = identity_report["payloadManifest"]["release"]
+    build_provenance = identity_report["buildProvenance"]
+    digest = artifact["sha256"]
     checksum_path = dmg_path.with_suffix(dmg_path.suffix + ".sha256")
     checksum_path.write_text(f"{digest}  {dmg_path.name}\n", encoding="utf-8")
     report_path = dmg_path.with_suffix(".release.json")
     report = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "distributionClass": "PUBLIC_RELEASE",
         "developerID": True,
         "notarized": True,
         "gatekeeperQualified": True,
         "publicDistribution": True,
         "productionUI": True,
-        "product": RELEASE_CONFIG.product_name,
-        "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
-        "shortVersion": MAC_VERSION,
-        "buildNumber": MAC_BUILD_NUMBER,
-        "sourceCommit": source_commit(),
-        "sourceDirty": source_dirty(),
+        "product": identity_report["productName"],
+        "bundleIdentifier": identity_report["bundleIdentifier"],
+        "shortVersion": identity_report["version"],
+        "buildNumber": identity_report["build"],
+        "sourceCommit": build_provenance.get("guiSourceCommit"),
+        "sourceDirty": build_provenance.get("sourceDirty"),
         "buildTimestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "variant": RELEASE_CONFIG.variant,
-        "architectures": list(RELEASE_CONFIG.architectures),
-        "signing": {
-            "type": "Developer ID Application",
-            "teamID": identity.team_id,
-        },
+        "channel": "stable",
+        "architectures": identity_report["actualArchitectures"],
+        "schemas": identity_report["schemas"],
+        "components": identity_report["components"],
+        "payloads": identity_report["payloads"],
+        "signing": identity_report["signing"],
         "notarization": {
             "app": app_notarization,
             "dmg": dmg_notarization,
         },
         "stapled": {"app": True, "dmg": True},
-        "artifact": {
-            "fileName": dmg_path.name,
-            "sizeBytes": dmg_path.stat().st_size,
-            "sha256": digest,
+        "developerSupportProvider": {
+            "classification": identity_report["developerSupportProvider"]["classification"]
         },
+        "dependencies": identity_report["dependencies"],
+        "artifact": artifact,
+        "artifactIdentity": identity_report,
     }
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return checksum_path, report_path
 
 
 def write_local_release_sidecars(dmg_path: Path) -> tuple[Path, Path]:
-    digest = sha256_file(dmg_path)
+    identity_report = inspect_dmg(dmg_path)
+    assert_identity(identity_report, expected_release_identity({
+        "productName": RELEASE_CONFIG.product_name,
+        "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
+        "shortVersion": MAC_VERSION,
+        "buildNumber": MAC_BUILD_NUMBER,
+        "minimumMacOS": RELEASE_CONFIG.minimum_macos,
+        "architectures": list(RELEASE_CONFIG.architectures),
+        "developerSupportProviderClassification": LOCAL_TEST_DDI_PROVIDER,
+    }))
+    artifact = identity_report["artifact"]
+    payload_release = identity_report["payloadManifest"]["release"]
+    build_provenance = identity_report["buildProvenance"]
+    digest = artifact["sha256"]
     checksum_path = dmg_path.with_suffix(dmg_path.suffix + ".sha256")
     checksum_path.write_text(f"{digest}  {dmg_path.name}\n", encoding="utf-8")
     report_path = dmg_path.with_suffix(".release.json")
     report = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "labels": ["LOCAL TEST BUILD", "NOT NOTARIZED", "NOT FOR PUBLIC DISTRIBUTION"],
         "distributionClass": "LOCAL_TEST_ONLY",
         "developerID": False,
@@ -1974,26 +2479,25 @@ def write_local_release_sidecars(dmg_path: Path) -> tuple[Path, Path]:
         "gatekeeperQualified": False,
         "publicDistribution": False,
         "productionUI": True,
-        "product": RELEASE_CONFIG.product_name,
-        "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
-        "shortVersion": MAC_VERSION,
-        "buildNumber": MAC_BUILD_NUMBER,
-        "sourceCommit": source_commit(),
-        "sourceDirty": source_dirty(),
+        "product": identity_report["productName"],
+        "bundleIdentifier": identity_report["bundleIdentifier"],
+        "shortVersion": identity_report["version"],
+        "buildNumber": identity_report["build"],
+        "sourceCommit": build_provenance.get("guiSourceCommit"),
+        "sourceDirty": build_provenance.get("sourceDirty"),
         "buildTimestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "variant": RELEASE_CONFIG.variant,
-        "architectures": list(RELEASE_CONFIG.architectures),
-        "signing": {
-            "type": "Ad Hoc",
-            "teamID": None,
-            "hardenedRuntime": True,
-        },
+        "channel": "local-test",
+        "architectures": identity_report["actualArchitectures"],
+        "schemas": identity_report["schemas"],
+        "components": identity_report["components"],
+        "payloads": identity_report["payloads"],
+        "signing": identity_report["signing"],
         "stapled": {"app": False, "dmg": False},
-        "artifact": {
-            "fileName": dmg_path.name,
-            "sizeBytes": dmg_path.stat().st_size,
-            "sha256": digest,
-        },
+        "developerSupportProvider": identity_report["developerSupportProvider"],
+        "dependencies": identity_report["dependencies"],
+        "artifact": artifact,
+        "artifactIdentity": identity_report,
     }
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return checksum_path, report_path
@@ -2002,6 +2506,13 @@ def write_local_release_sidecars(dmg_path: Path) -> tuple[Path, Path]:
 def command_release(args: argparse.Namespace) -> int:
     print("IOSSim Production Release")
     print("")
+    if RELEASE_CONFIG.developer_support_provider_classification != "APPROVED_PRODUCTION_SOURCE":
+        print_step(
+            "FAIL",
+            "Production developer-support provider",
+            "no approved fresh-acquisition source is configured; public zero-Xcode release is closed",
+        )
+        return 1
     if source_dirty():
         print_step("FAIL", "Repository state", "commit or remove all changes before creating a release")
         return 1
@@ -2044,7 +2555,11 @@ def command_release(args: argparse.Namespace) -> int:
             raise RuntimeError("production signature audit failed")
 
         notarization_dir = RELEASE_OUTPUT_DIR / "notarization"
-        app_zip = RELEASE_OUTPUT_DIR / f"IOSSim-{MAC_VERSION}.app.zip"
+        canonical_stem = (
+            f"{RELEASE_CONFIG.product_name}-{MAC_VERSION}-build{MAC_BUILD_NUMBER}-"
+            f"{source_commit()[:7]}"
+        )
+        app_zip = RELEASE_OUTPUT_DIR / f"{canonical_stem}.app.zip"
         if app_zip.exists():
             app_zip.unlink()
         runner.run(
@@ -2054,7 +2569,7 @@ def command_release(args: argparse.Namespace) -> int:
         app_notarization = submit_for_notarization(app_zip, "app", profile, notarization_dir)
         staple_and_validate(runner, app_dir, "app")
 
-        dmg_path = RELEASE_OUTPUT_DIR / f"IOSSim-{MAC_VERSION}.dmg"
+        dmg_path = RELEASE_OUTPUT_DIR / f"{canonical_stem}.dmg"
         create_release_dmg(runner, app_dir, dmg_path)
         runner.run(
             "sign-release-dmg",
@@ -2086,8 +2601,7 @@ def command_release_local(args: argparse.Namespace) -> int:
     print("LOCAL TEST BUILD — NOT NOTARIZED — NOT FOR PUBLIC DISTRIBUTION")
     print("")
     if source_dirty():
-        print_step("FAIL", "Repository state", "commit or remove all changes before creating a local release candidate")
-        return 1
+        print_step("WARN", "Repository state", "dirty source is permitted only because this artifact is LOCAL_TEST_ONLY")
     try:
         validate_release_inputs()
     except Exception as exc:
@@ -2124,7 +2638,11 @@ def command_release_local(args: argparse.Namespace) -> int:
         if not audit_local_signatures(app_dir):
             raise RuntimeError("local structural signature audit failed")
 
-        dmg_path = LOCAL_RELEASE_OUTPUT_DIR / f"IOSSim-{MAC_VERSION}-local.dmg"
+        canonical_stem = (
+            f"{RELEASE_CONFIG.product_name}-{MAC_VERSION}-build{MAC_BUILD_NUMBER}-"
+            f"{source_commit()[:7]}-local-test"
+        )
+        dmg_path = LOCAL_RELEASE_OUTPUT_DIR / f"{canonical_stem}.dmg"
         create_release_dmg(runner, app_dir, dmg_path)
         checksum_path, report_path = write_local_release_sidecars(dmg_path)
         if not local_release_audit(dmg_path, verbose=args.verbose):
@@ -2226,6 +2744,20 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
         "BigInt MIT license notice",
         "Contents/Resources/ThirdPartyNotices/BigInt-LICENSE.txt missing or changed",
     )
+    sbom_path = resources / SBOM_FILE_NAME
+    try:
+        sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+        package_names = {str(package.get("name", "")).lower() for package in sbom.get("packages", [])}
+        sbom_ok = (
+            sbom.get("spdxVersion") == "SPDX-2.3"
+            and sbom.get("dataLicense") == "CC0-1.0"
+            and {RELEASE_CONFIG.product_name.lower(), "bigint", "idevice"}.issubset(package_names)
+            and bool(sbom.get("buildInputs", {}).get("cargoLockSHA256"))
+            and bool(sbom.get("buildInputs", {}).get("swiftPackageResolvedSHA256"))
+        )
+        ok &= audit_pass("SPDX dependency inventory", f"{len(sbom.get('packages', []))} packages") if sbom_ok else audit_fail("SPDX dependency inventory", "schema, roots, or lock digests are incomplete")
+    except Exception as exc:
+        ok &= audit_fail("SPDX dependency inventory", str(exc))
     if not manifest_path.exists():
         ok &= audit_fail("Device artifact manifest", "missing")
         return False
@@ -2341,6 +2873,30 @@ def audit_app(app_dir: Path, verbose: bool = False) -> bool:
     ok &= audit_pass("No absolute repository paths") if not path_hits else audit_fail("No absolute repository paths", "; ".join(path_hits[:10]))
     ok &= audit_pass("No private keys/pairing/auth material") if not secret_hits else audit_fail("No private keys/pairing/auth material", "; ".join(secret_hits[:10]))
     ok &= audit_pass("No world-writable files") if not world_writable else audit_fail("No world-writable files", ", ".join(world_writable[:10]))
+    try:
+        identity_report = inspect_app(app_dir)
+        assert_identity(identity_report, expected_release_identity({
+            "productName": RELEASE_CONFIG.product_name,
+            "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
+            "shortVersion": MAC_VERSION,
+            "buildNumber": MAC_BUILD_NUMBER,
+            "minimumMacOS": RELEASE_CONFIG.minimum_macos,
+            "architectures": list(RELEASE_CONFIG.architectures),
+            "developerSupportProviderClassification": (
+                LOCAL_TEST_DDI_PROVIDER
+                if identity_report.get("distribution", {}).get("distributionClass") == "LOCAL_TEST_ONLY"
+                else RELEASE_CONFIG.developer_support_provider_classification
+                if identity_report.get("distribution", {}).get("distributionClass") == "PUBLIC_RELEASE"
+                else None
+            ),
+        }))
+        ok &= audit_pass(
+            "Artifact-derived identity",
+            f"architectures={','.join(identity_report['actualArchitectures'])} "
+            f"schemas={json.dumps(identity_report['schemas'], sort_keys=True)}",
+        )
+    except (ArtifactIdentityError, OSError, ValueError) as exc:
+        ok &= audit_fail("Artifact-derived identity", str(exc))
     return bool(ok)
 
 
@@ -2384,8 +2940,19 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
     report: dict[str, Any] = {}
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        observed_identity = inspect_dmg(dmg_path)
+        assert_identity(observed_identity, expected_release_identity({
+            "productName": RELEASE_CONFIG.product_name,
+            "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
+            "shortVersion": MAC_VERSION,
+            "buildNumber": MAC_BUILD_NUMBER,
+            "minimumMacOS": RELEASE_CONFIG.minimum_macos,
+            "architectures": list(RELEASE_CONFIG.architectures),
+            "developerSupportProviderClassification": RELEASE_CONFIG.developer_support_provider_classification,
+        }))
         metadata_ok = (
-            report.get("distributionClass") == "PUBLIC_RELEASE"
+            report.get("schemaVersion") == 2
+            and report.get("distributionClass") == "PUBLIC_RELEASE"
             and report.get("developerID") is True
             and report.get("notarized") is True
             and report.get("gatekeeperQualified") is True
@@ -2394,9 +2961,16 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
             and report.get("shortVersion") == MAC_VERSION
             and str(report.get("buildNumber")) == MAC_BUILD_NUMBER
             and report.get("variant") == RELEASE_CONFIG.variant
+            and report.get("channel") == "stable"
             and report.get("bundleIdentifier") == RELEASE_CONFIG.bundle_identifier
             and report.get("sourceDirty") is False
             and report.get("artifact", {}).get("sha256") == actual_digest
+            and report.get("architectures") == observed_identity.get("actualArchitectures")
+            and report.get("developerSupportProvider", {}).get("classification")
+                == RELEASE_CONFIG.developer_support_provider_classification
+            and report.get("schemas") == observed_identity.get("schemas")
+            and report.get("dependencies") == observed_identity.get("dependencies")
+            and report.get("artifactIdentity") == observed_identity
             and report.get("notarization", {}).get("app", {}).get("status") == "Accepted"
             and report.get("notarization", {}).get("dmg", {}).get("status") == "Accepted"
         )
@@ -2436,10 +3010,11 @@ def release_audit(dmg_path: Path, verbose: bool = False) -> bool:
             return bool(ok)
         try:
             visible = sorted(path.name for path in mount.iterdir() if not path.name.startswith("."))
-            ok &= audit_pass("DMG contents", ", ".join(visible)) if visible == ["Applications", "IOSSim.app"] else audit_fail("DMG contents", ", ".join(visible))
+            expected_app_name = f"{RELEASE_CONFIG.product_name}.app"
+            ok &= audit_pass("DMG contents", ", ".join(visible)) if visible == ["Applications", expected_app_name] else audit_fail("DMG contents", ", ".join(visible))
             applications = mount / "Applications"
             ok &= audit_pass("Applications shortcut") if applications.is_symlink() and os.readlink(applications) == "/Applications" else audit_fail("Applications shortcut")
-            app_dir = mount / "IOSSim.app"
+            app_dir = mount / expected_app_name
             ok &= audit_app(app_dir, verbose=verbose)
             ok &= audit_distribution_metadata(app_dir, "PUBLIC_RELEASE")
             try:
@@ -2537,10 +3112,22 @@ def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
 
     report_path = dmg_path.with_suffix(".release.json")
     report: dict[str, Any] = {}
+    observed_identity: dict[str, Any] = {}
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        observed_identity = inspect_dmg(dmg_path)
+        assert_identity(observed_identity, expected_release_identity({
+            "productName": RELEASE_CONFIG.product_name,
+            "bundleIdentifier": RELEASE_CONFIG.bundle_identifier,
+            "shortVersion": MAC_VERSION,
+            "buildNumber": MAC_BUILD_NUMBER,
+            "minimumMacOS": RELEASE_CONFIG.minimum_macos,
+            "architectures": list(RELEASE_CONFIG.architectures),
+            "developerSupportProviderClassification": LOCAL_TEST_DDI_PROVIDER,
+        }))
         metadata_ok = (
-            report.get("distributionClass") == "LOCAL_TEST_ONLY"
+            report.get("schemaVersion") == 2
+            and report.get("distributionClass") == "LOCAL_TEST_ONLY"
             and report.get("developerID") is False
             and report.get("notarized") is False
             and report.get("gatekeeperQualified") is False
@@ -2550,11 +3137,18 @@ def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
             and report.get("shortVersion") == MAC_VERSION
             and str(report.get("buildNumber")) == MAC_BUILD_NUMBER
             and report.get("variant") == "PRODUCTION"
+            and report.get("channel") == "local-test"
             and report.get("bundleIdentifier") == RELEASE_CONFIG.bundle_identifier
-            and report.get("sourceDirty") is False
-            and report.get("signing", {}).get("type") == "Ad Hoc"
+            and report.get("sourceDirty") == observed_identity.get("buildProvenance", {}).get("sourceDirty")
+            and report.get("signing", {}).get("classification") == "AD_HOC"
             and report.get("signing", {}).get("teamID") is None
+            and report.get("developerSupportProvider", {}).get("classification")
+                == LOCAL_TEST_DDI_PROVIDER
             and report.get("artifact", {}).get("sha256") == actual_digest
+            and report.get("architectures") == observed_identity.get("actualArchitectures")
+            and report.get("schemas") == observed_identity.get("schemas")
+            and report.get("dependencies") == observed_identity.get("dependencies")
+            and report.get("artifactIdentity") == observed_identity
         )
         ok &= audit_pass("Local release metadata", "LOCAL_TEST_ONLY") if metadata_ok else audit_fail("Local release metadata", "local-only classification, provenance, or hash is invalid")
     except Exception as exc:
@@ -2580,10 +3174,11 @@ def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
             return bool(ok)
         try:
             visible = sorted(path.name for path in mount.iterdir() if not path.name.startswith("."))
-            ok &= audit_pass("DMG contents", ", ".join(visible)) if visible == ["Applications", "IOSSim.app"] else audit_fail("DMG contents", ", ".join(visible))
+            expected_app_name = f"{RELEASE_CONFIG.product_name}.app"
+            ok &= audit_pass("DMG contents", ", ".join(visible)) if visible == ["Applications", expected_app_name] else audit_fail("DMG contents", ", ".join(visible))
             applications = mount / "Applications"
             ok &= audit_pass("Applications shortcut") if applications.is_symlink() and os.readlink(applications) == "/Applications" else audit_fail("Applications shortcut")
-            app_dir = mount / "IOSSim.app"
+            app_dir = mount / expected_app_name
             ok &= audit_app(app_dir, verbose=verbose)
             ok &= audit_distribution_metadata(app_dir, "LOCAL_TEST_ONLY")
             ok &= audit_local_signatures(app_dir)
@@ -2594,7 +3189,7 @@ def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
                     release.get("variant") == "PRODUCTION"
                     and release.get("macVersion") == MAC_VERSION
                     and str(release.get("buildNumber")) == MAC_BUILD_NUMBER
-                    and release.get("sourceDirty") is False
+                    and release.get("sourceDirty") == observed_identity.get("payloadManifest", {}).get("release", {}).get("sourceDirty")
                     and release.get("sourceCommit") == report.get("sourceCommit")
                 )
                 ok &= audit_pass("Bundled production provenance") if provenance_ok else audit_fail("Bundled production provenance")
@@ -2617,10 +3212,13 @@ def local_release_audit(dmg_path: Path, verbose: bool = False) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-    if not source_dirty() and report.get("sourceCommit") == source_commit():
-        ok &= audit_pass("Source provenance", source_commit())
+    if report.get("sourceCommit") == observed_identity.get("buildProvenance", {}).get("guiSourceCommit"):
+        ok &= audit_pass(
+            "Source provenance",
+            f"{report.get('sourceCommit')} dirty={str(report.get('sourceDirty')).lower()}",
+        )
     else:
-        ok &= audit_fail("Source provenance", "working tree is dirty or HEAD differs from local release metadata")
+        ok &= audit_fail("Source provenance", "sidecar disagrees with mounted BuildProvenance")
     return bool(ok)
 
 
@@ -2643,6 +3241,256 @@ def command_local_release_audit(args: argparse.Namespace) -> int:
     print("")
     print(f"Overall: {'PASS' if ok else 'FAIL'} (LOCAL_TEST_ONLY; public gates not assessed)")
     return 0 if ok else 1
+
+
+def _receive_exact(connection: socket.socket, length: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = length
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            raise ConnectionError("usbmux closed the connection before completing its response")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def probe_apple_usbmux(timeout_seconds: float = 8.0) -> dict[str, Any]:
+    endpoint = Path("/var/run/usbmuxd")
+    result: dict[str, Any] = {
+        "endpoint": "launchd Unix socket /var/run/usbmuxd",
+        "connect": False,
+        "request": False,
+        "count": None,
+        "devices": [],
+    }
+    if not endpoint.exists():
+        result.update(error_code="USBMUX_SOCKET_MISSING", error_category="ENDPOINT")
+        return result
+    request = plistlib.dumps(
+        {
+            "MessageType": "ListDevices",
+            "ClientVersionString": "IOSSim device-debug",
+            "ProgName": "iossim-device-debug",
+            "kLibUSBMuxVersion": 3,
+        },
+        fmt=plistlib.FMT_XML,
+        sort_keys=False,
+    )
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(timeout_seconds)
+            connection.connect(str(endpoint))
+            result["connect"] = True
+            connection.sendall(struct.pack("<IIII", len(request) + 16, 1, 8, 1) + request)
+            header = _receive_exact(connection, 16)
+            length, version, message_type, _tag = struct.unpack("<IIII", header)
+            if length < 16 or length > 16 * 1024 * 1024:
+                raise ValueError("usbmux returned an invalid frame length")
+            response = plistlib.loads(_receive_exact(connection, length - 16))
+            devices = response.get("DeviceList")
+            if not isinstance(devices, list):
+                raise ValueError("usbmux response did not contain a DeviceList array")
+            result.update(request=True, count=len(devices), protocol_version=version, message_type=message_type)
+            for item in devices:
+                properties = item.get("Properties", {}) if isinstance(item, dict) else {}
+                identifier = str(properties.get("SerialNumber") or "")
+                result["devices"].append({
+                    "identifierHash": hashlib.sha256(identifier.encode()).hexdigest()[:12] if identifier else "unknown",
+                    "connection": str(properties.get("ConnectionType") or "unknown").lower(),
+                })
+    except (OSError, ValueError, plistlib.InvalidFileException, ConnectionError) as exc:
+        result.update(
+            error_code=type(exc).__name__.upper(),
+            error_category="CONNECT" if not result["connect"] else "PROTOCOL",
+        )
+    return result
+
+
+def probe_system_usb() -> dict[str, Any]:
+    result = subprocess.run(
+        ["/usr/sbin/ioreg", "-a", "-p", "IOUSB"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {"ok": False, "count": None, "error_code": "IOREG_FAILED"}
+    try:
+        roots = plistlib.loads(result.stdout)
+    except plistlib.InvalidFileException:
+        return {"ok": False, "count": None, "error_code": "IOREG_DECODE_FAILED"}
+
+    matches = 0
+
+    def visit(value: Any) -> None:
+        nonlocal matches
+        if isinstance(value, dict):
+            vendor = value.get("idVendor", value.get("USB Vendor ID"))
+            product = " ".join(str(value.get(key, "")) for key in (
+                "USB Product Name", "kUSBProductString", "IORegistryEntryName", "Product Name",
+            )).lower()
+            apple_vendor = vendor == 1452 or str(vendor).lower() in {"0x5ac", "0x05ac", "1452"}
+            if apple_vendor and "iphone" in product:
+                matches += 1
+            for child in value.get("IORegistryEntryChildren", []):
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(roots)
+    return {"ok": True, "count": matches}
+
+
+class _CBridgeResult(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_int32),
+        ("payload", ctypes.POINTER(ctypes.c_uint8)),
+        ("payload_len", ctypes.c_size_t),
+        ("diagnostic", ctypes.c_char_p),
+    ]
+
+
+def probe_bridge_c_abi(bridge_path: Path, timeout_ms: int = 8_000) -> dict[str, Any]:
+    output: dict[str, Any] = {"load": False, "call": False, "count": None, "devices": []}
+    try:
+        library = ctypes.CDLL(str(bridge_path.resolve()), mode=getattr(os, "RTLD_LOCAL", 4) | getattr(os, "RTLD_NOW", 2))
+    except OSError:
+        output.update(error_code="BRIDGE_LOAD_FAILED", error_category="LIBRARY")
+        return output
+    output["load"] = True
+    try:
+        library.iossim_bridge_abi_version.restype = ctypes.c_uint32
+        library.iossim_bridge_version.restype = ctypes.c_char_p
+        library.iossim_bridge_list_devices.argtypes = [ctypes.c_uint64]
+        library.iossim_bridge_list_devices.restype = ctypes.POINTER(_CBridgeResult)
+        library.iossim_bridge_result_free.argtypes = [ctypes.POINTER(_CBridgeResult)]
+        abi = int(library.iossim_bridge_abi_version())
+        version_bytes = library.iossim_bridge_version()
+        version = version_bytes.decode("utf-8", errors="replace") if version_bytes else "unknown"
+        pointer = library.iossim_bridge_list_devices(timeout_ms)
+        if not pointer:
+            output.update(error_code="NULL_RESULT", error_category="FFI", abi=abi, version=version)
+            return output
+        try:
+            value = pointer.contents
+            diagnostic = value.diagnostic.decode("utf-8", errors="replace") if value.diagnostic else ""
+            payload = ctypes.string_at(value.payload, value.payload_len) if value.payload and value.payload_len else b""
+            status = int(value.status)
+        finally:
+            library.iossim_bridge_result_free(pointer)
+        output.update(call=True, abi=abi, version=version, status=status, diagnostic=diagnostic)
+        if status != 0:
+            output.update(error_code=f"C_STATUS_{status}", error_category="BRIDGE")
+            return output
+        devices = json.loads(payload.decode("utf-8"))
+        if not isinstance(devices, list):
+            raise ValueError("bridge device payload is not an array")
+        output["count"] = len(devices)
+        for item in devices:
+            identifier = str(item.get("stableId") or "") if isinstance(item, dict) else ""
+            output["devices"].append({
+                "identifierHash": hashlib.sha256(identifier.encode()).hexdigest()[:12] if identifier else "unknown",
+                "connection": str(item.get("connection") or "unknown") if isinstance(item, dict) else "unknown",
+            })
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        output.update(error_code="C_ABI_DECODE_FAILED", error_category="FFI")
+    return output
+
+
+def discovery_count_mismatches(apple: int, rust: int, c_abi: int, swift: int) -> list[str]:
+    values = {"Apple usbmux": apple, "Rust parsed": rust, "C ABI": c_abi, "Swift": swift}
+    first = apple
+    return [f"{name}={count}" for name, count in values.items() if count != first]
+
+
+def command_device_debug(args: argparse.Namespace) -> int:
+    print("IOSSim Device Discovery Debug")
+    print("")
+    usb = probe_system_usb()
+    print_step("PASS" if usb.get("ok") else "FAIL", "System USB", f"devices: {usb.get('count', 'unknown')}")
+
+    apple = probe_apple_usbmux()
+    apple_ok = bool(apple.get("connect") and apple.get("request"))
+    print_step("PASS" if apple_ok else "FAIL", "Apple usbmux", f"devices: {apple.get('count', 'unknown')}")
+    print(f"  endpoint: {apple['endpoint']}")
+    if not apple_ok:
+        print(f"  error: {apple.get('error_category', 'UNKNOWN')}/{apple.get('error_code', 'UNKNOWN')}")
+
+    pair = next(
+        ((helper, bridge) for helper, bridge in native_discovery_candidates() if helper.is_file() and bridge.is_file()),
+        None,
+    )
+    if pair is None:
+        print_step("FAIL", "Rust bridge", "HELPER_LIBRARY_MISSING")
+        print_step("FAIL", "C ABI", "not attempted")
+        print_step("FAIL", "Swift", "not attempted")
+        print_step("FAIL", "Discovery", "DEVICE_DISCOVERY_UNAVAILABLE")
+        return 1
+    helper, bridge = pair
+    print(f"  bridge: {bridge.resolve()}")
+    print(f"  helper: {helper.resolve()}")
+
+    c_probe = probe_bridge_c_abi(bridge)
+    c_ok = c_probe.get("load") and c_probe.get("call") and c_probe.get("status") == 0
+    rust_count = c_probe.get("count")
+    print_step("PASS" if c_ok else "FAIL", "Rust bridge", f"devices: {rust_count if rust_count is not None else 'unknown'}")
+    if c_probe.get("version"):
+        print(f"  version: {c_probe['version']}")
+    print_step("PASS" if c_ok else "FAIL", "C ABI", f"devices: {c_probe.get('count', 'unknown')}")
+    if not c_ok:
+        print(f"  error: {c_probe.get('error_category', 'UNKNOWN')}/{c_probe.get('error_code', 'UNKNOWN')}")
+
+    swift = discover_native_devices(Runner(verbose=args.verbose, log_commands=False))
+    print_step("PASS" if swift.available else "FAIL", "Swift", f"devices: {swift.returned_count}")
+    if not swift.available:
+        print(f"  error: {swift.error_code or 'UNKNOWN'}")
+
+    if swift.returned_count == 0:
+        print_step("SKIP", "Lockdown", "no enumerated device")
+    else:
+        lockdown_codes = {"LOCKDOWN_FAILED", "TRUST_REQUIRED", "DEVICE_LOCKED"}
+        warnings = [item.get("code", "UNKNOWN") for item in swift.diagnostics if item.get("code") in lockdown_codes]
+        print_step("WARN" if warnings else "PASS", "Lockdown", ", ".join(warnings) if warnings else "metadata inspected")
+        first = swift.devices[0]
+        print(f"Product: {first.get('model') or 'iPhone'}")
+        print(f"OS: {first.get('osVersion') or 'unknown'}")
+
+    counts_available = apple.get("count") is not None and c_probe.get("count") is not None
+    mismatches = []
+    if counts_available:
+        mismatches = discovery_count_mismatches(
+            int(apple["count"]), int(c_probe["count"]), int(c_probe["count"]), swift.returned_count
+        )
+    if not apple_ok or not c_ok or not swift.available:
+        print_step("FAIL", "Discovery", "DEVICE_DISCOVERY_UNAVAILABLE")
+        return 1
+    if mismatches:
+        print_step("FAIL", "Discovery", "COUNT_MISMATCH: " + ", ".join(mismatches))
+        return 1
+    if swift.returned_count == 0:
+        print_step("ACTION", "Discovery", "NO_DEVICE_AT_APPLE_USBMUX")
+        return 2
+    print_step("PASS", "Discovery", f"devices: {swift.returned_count}")
+    return 0
+
+
+def command_readiness_debug(args: argparse.Namespace) -> int:
+    pair = next(
+        ((helper, bridge) for helper, bridge in native_discovery_candidates() if helper.is_file() and bridge.is_file()),
+        None,
+    )
+    if pair is None:
+        print_step("FAIL", "Developer services", "HELPER_LIBRARY_MISSING")
+        return 1
+    helper, bridge = pair
+    resources = helper.parent.parent / "Resources"
+    command = [str(helper), "--resources", str(resources), "developer-services-debug"]
+    if args.device:
+        command.extend(["--device", args.device])
+    environment = merged_env({"IOSSIM_DEVICE_BRIDGE_PATH": str(bridge)})
+    return subprocess.run(command, env=environment, check=False).returncode
 
 
 def command_device(args: argparse.Namespace) -> int:
@@ -2693,7 +3541,6 @@ def command_device(args: argparse.Namespace) -> int:
             hint_for_failure(f"install-{app.name}", result)
             ok = False
     print_step("ACTION", "LocalDevVPN", "install/launch on iPhone and approve VPN configuration")
-    print_step("ACTION", "PAIRING MATERIAL", "import RPPairing inside IOSSim; contents are not inspected or logged here")
     print("")
     print(f"Installed artifacts: {installed}")
     print(f"Overall: {'PASS' if ok else 'FAIL'}")
@@ -2720,7 +3567,8 @@ def select_device(devices: list[dict[str, Any]], selector: str | None) -> dict[s
 def command_info(args: argparse.Namespace) -> int:
     matrix = [
         ("macOS", "runtime", "system", "13.0+", "no", "compatible Mac", "IOSSimProvisioner doctor --json"),
-        ("xcrun/devicectl", "runtime", "Apple developer tools", "current Xcode path", "no", "install/select Apple developer tools", "IOSSimProvisioner device-status --json"),
+        ("native idevice/usbmux", "runtime", "bundled bridge", "pinned bridge revision", "yes in app", "connect/unlock iPhone", "./iossim device-debug"),
+        ("xcrun/devicectl", "developer-only comparison", "Apple developer tools", "n/a", "not used by consumer runtime", "none", "explicit backend comparison only"),
         ("Xcode/xcodebuild", "build-time", "Apple", "15.0+", "yes from packaged runtime", "build machine only", "./iossim package-app"),
         ("SwiftPM package", "build-time", "ios/Package.swift and macos/Package.swift", "Swift tools 5.9", "yes from packaged runtime", "none", "./iossim build"),
         ("iOS app project", "build-time", "ios/IOSSimOnDevicePOC.xcodeproj", "iOS 17 target", "yes from packaged runtime", "Apple signing at package time", "./iossim package-app"),
@@ -2730,7 +3578,7 @@ def command_info(args: argparse.Namespace) -> int:
         ("Frontend engineering UI", "development-only", "frontend/package.json", "Node 20+", "yes from packaged runtime", "install Node for tests", "npm test"),
         ("Backend engineering API", "development-only", "backend/requirements.txt", "Python 3.11+", "yes from packaged runtime", "install Python for tests", "pytest backend"),
         ("LocalDevVPN", "runtime", "external iPhone app", "current external app", "no", "install/approve on iPhone", "in-app diagnostics"),
-        ("RPPairing", "runtime", "iPhone app Keychain", "valid plist", "no", "import in IOSSim", "in-app diagnostics"),
+        ("Remote pairing", "runtime", "native IOSSim pairing lifecycle", "current device", "yes", "keep iPhone unlocked when requested", "in-app diagnostics"),
     ]
     print("IOSSim Dependency Matrix")
     print("")
@@ -2767,6 +3615,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("release-local-audit", "verify a local-test-only DMG without public release claims"),
         ("test", "run current main validation suite"),
         ("diagnose-apple-srp-init", "run the password-free Apple SRP initialization probe"),
+        ("device-debug", "trace no-Xcode device discovery at every boundary"),
+        ("readiness-debug", "probe CoreDevice/RSD/AppService readiness without starting runtime"),
         ("device", "build and install internal device-side components"),
         ("info", "print dependency matrix"),
         ("clean", "remove CLI-owned generated state"),
@@ -2777,6 +3627,8 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--json", action="store_true", help="emit machine-readable status")
         if name == "device":
             p.add_argument("--device", help="target a ready iPhone by redacted identifier or exact device name")
+        if name == "readiness-debug":
+            p.add_argument("--device", help="target an iPhone by exact or redacted identifier")
         if name == "audit-app":
             p.add_argument("app", help="path to IOSSim.app")
         if name in {"release-audit", "release-local-audit"}:
@@ -2820,6 +3672,10 @@ def main(argv: list[str] | None = None) -> int:
             env=merged_env(),
             check=False,
         ).returncode
+    if args.command == "device-debug":
+        return command_device_debug(args)
+    if args.command == "readiness-debug":
+        return command_readiness_debug(args)
     if args.command == "device":
         return command_device(args)
     if args.command == "info":

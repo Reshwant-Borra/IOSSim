@@ -1,7 +1,10 @@
 use idevice::remote_pairing::{RemotePairingLockdownService, RpPairingFile};
 use idevice::{
-    IdeviceService,
+    IdeviceService, RsdService,
+    core_device::AppServiceClient,
+    core_device_proxy::CoreDeviceProxy,
     provider::IdeviceProvider,
+    rsd::RsdHandshake,
     services::{
         afc::opcode::AfcFopenMode, amfi::AmfiClient, house_arrest::HouseArrestClient,
         installation_proxy::InstallationProxyClient, lockdown::LockdownClient,
@@ -30,7 +33,7 @@ const MAX_CONTAINER_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 
 #[repr(i32)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Status {
     Ok = 0,
     InvalidArgument = 1,
@@ -44,6 +47,30 @@ enum Status {
     TimedOut = 9,
     ProtocolError = 10,
     InternalError = 11,
+    DeviceResolutionFailed = 12,
+    CoreDeviceProxyFailed = 13,
+    SoftwareTunnelFailed = 14,
+    RsdUnavailable = 15,
+    RemoteXpcFailed = 16,
+    AppServiceUnavailable = 17,
+    FeatureUnavailable = 18,
+    ApplicationNotFound = 19,
+    DdiRequired = 20,
+    #[allow(dead_code)]
+    DeveloperServicesNotReady = 21,
+    LaunchRejected = 22,
+    ContainerUnavailable = 23,
+    PairingRejected = 24,
+    PairingPending = 25,
+    PairingDenied = 26,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectionKind {
+    Unknown = 0,
+    Usb = 1,
+    Wireless = 2,
 }
 
 #[repr(C)]
@@ -58,6 +85,7 @@ pub struct BridgeResult {
 pub struct DeviceHandle {
     stable_id: String,
     usbmux_id: u32,
+    connection: ConnectionKind,
     connection_generation: u64,
     cancelled: Arc<AtomicBool>,
 }
@@ -88,10 +116,45 @@ struct DeviceInspection {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LockdownPairingReceipt {
+    schema_version: u32,
+    state: &'static str,
+    stable_id: String,
+    usbmux_id: u32,
+    connection_generation: u64,
+    connection: &'static str,
+    pair_record_created: bool,
+    pair_record_persisted: bool,
+    session_validated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AppRecord {
     bundle_id: String,
     version: Option<String>,
     team_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchReceipt {
+    bundle_id: String,
+    pid: u32,
+    process_identifier_version: u32,
+    app_service_connected: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeveloperServicesReceipt {
+    core_device_proxy_ready: bool,
+    software_tunnel_ready: bool,
+    rsd_ready: bool,
+    remote_xpc_ready: bool,
+    app_service_ready: bool,
+    launch_feature_ready: bool,
+    ddi_mounted: Option<bool>,
 }
 
 fn clean_diagnostic(value: impl AsRef<str>) -> String {
@@ -297,21 +360,107 @@ fn connection_name(connection: &Connection) -> &'static str {
     }
 }
 
+fn connection_kind(connection: &Connection) -> ConnectionKind {
+    match connection {
+        Connection::Usb => ConnectionKind::Usb,
+        Connection::Network(_) => ConnectionKind::Wireless,
+        Connection::Unknown(_) => ConnectionKind::Unknown,
+    }
+}
+
+fn connection_kind_name(connection: ConnectionKind) -> &'static str {
+    match connection {
+        ConnectionKind::Usb => "usb",
+        ConnectionKind::Wireless => "wireless",
+        ConnectionKind::Unknown => "unknown",
+    }
+}
+
+fn select_exact_device(
+    values: Vec<idevice::usbmuxd::UsbmuxdDevice>,
+    stable_id: &str,
+    expected_mux: u32,
+    expected_connection: ConnectionKind,
+) -> Result<idevice::usbmuxd::UsbmuxdDevice, Status> {
+    let matches: Vec<_> = values
+        .into_iter()
+        .filter(|device| device.udid == stable_id)
+        .collect();
+    if expected_mux == 0 || expected_connection == ConnectionKind::Unknown {
+        return match matches.len() {
+            0 => Err(Status::DeviceNotFound),
+            1 => Ok(matches.into_iter().next().expect("one exact device")),
+            _ => Err(Status::DeviceResolutionFailed),
+        };
+    }
+    matches
+        .into_iter()
+        .find(|device| {
+            device.device_id == expected_mux
+                && connection_kind(&device.connection_type) == expected_connection
+        })
+        .ok_or(Status::DeviceNotFound)
+}
+
 fn error_result(error: &idevice::IdeviceError) -> *mut BridgeResult {
     let message = error.to_string();
+    make_result(classify_error(error), vec![], message)
+}
+
+fn lockdown_pairing_error_result(error: &idevice::IdeviceError) -> *mut BridgeResult {
+    match error {
+        idevice::IdeviceError::PairingDialogResponsePending => make_result(
+            Status::PairingPending,
+            vec![],
+            "waiting for the user to accept Trust This Computer",
+        ),
+        idevice::IdeviceError::UserDeniedPairing | idevice::IdeviceError::CanceledByUser => {
+            make_result(
+                Status::PairingDenied,
+                vec![],
+                "the user denied computer trust",
+            )
+        }
+        idevice::IdeviceError::PasswordProtected | idevice::IdeviceError::DeviceLocked => {
+            make_result(
+                Status::DeviceLocked,
+                vec![],
+                "unlock the iPhone before pairing",
+            )
+        }
+        _ => error_result(error),
+    }
+}
+
+fn classify_error(error: &idevice::IdeviceError) -> Status {
+    let message = error.to_string();
     let lower = message.to_ascii_lowercase();
-    let status = if lower.contains("not found") {
-        Status::DeviceNotFound
-    } else if lower.contains("password protected") || lower.contains("locked") {
-        Status::DeviceLocked
-    } else if lower.contains("pair") || lower.contains("trust") {
-        Status::TrustRequired
-    } else if lower.contains("disconnect") || lower.contains("broken pipe") {
-        Status::DeviceDisconnected
-    } else {
-        Status::ProtocolError
-    };
-    make_result(status, vec![], message)
+    match error {
+        idevice::IdeviceError::DeviceNotFound => Status::DeviceNotFound,
+        idevice::IdeviceError::DeviceLocked => Status::DeviceLocked,
+        idevice::IdeviceError::DeveloperModeNotEnabled => Status::DeveloperModeRequired,
+        idevice::IdeviceError::ServiceNotFound => Status::AppServiceUnavailable,
+        idevice::IdeviceError::ImageNotMounted => Status::DdiRequired,
+        _ if lower.contains("password protected") || lower.contains("locked") => {
+            Status::DeviceLocked
+        }
+        _ if lower.contains("pair") || lower.contains("trust") => Status::TrustRequired,
+        _ if lower.contains("disconnect") || lower.contains("broken pipe") => {
+            Status::DeviceDisconnected
+        }
+        _ => Status::ProtocolError,
+    }
+}
+
+fn staged_error(status: Status, stage: &str, error: impl std::fmt::Display) -> *mut BridgeResult {
+    make_result(status, vec![], format!("{stage}: {error}"))
+}
+
+async fn personalized_image_mounted(
+    provider: &dyn IdeviceProvider,
+) -> Result<bool, idevice::IdeviceError> {
+    let mut mounter = ImageMounter::connect(provider).await?;
+    Ok(mounter.lookup_image("Personalized").await.is_ok())
 }
 
 async fn selected_device(
@@ -331,7 +480,7 @@ async fn selected_device(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn iossim_bridge_abi_version() -> u32 {
-    1
+    2
 }
 
 #[unsafe(no_mangle)]
@@ -372,6 +521,8 @@ pub extern "C" fn iossim_bridge_list_devices(timeout: u64) -> *mut BridgeResult 
 pub unsafe extern "C" fn iossim_bridge_open_device(
     stable_id: *const u8,
     stable_id_len: usize,
+    expected_usbmux_id: u32,
+    expected_connection: u32,
     connection_generation: u64,
     timeout: u64,
     out_handle: *mut *mut DeviceHandle,
@@ -393,8 +544,34 @@ pub unsafe extern "C" fn iossim_bridge_open_device(
             Ok(value) => value,
             Err(result) => return result,
         };
+        let expected_connection = match expected_connection {
+            0 => ConnectionKind::Unknown,
+            1 => ConnectionKind::Usb,
+            2 => ConnectionKind::Wireless,
+            _ => {
+                return make_result(
+                    Status::InvalidArgument,
+                    vec![],
+                    "connection kind is invalid",
+                );
+            }
+        };
         let selected = match block_on_timeout(&runtime, Duration::from_millis(timeout), devices()) {
-            Ok(Ok(devices)) => devices.into_iter().find(|device| device.udid == stable_id),
+            Ok(Ok(devices)) => match select_exact_device(
+                devices,
+                &stable_id,
+                expected_usbmux_id,
+                expected_connection,
+            ) {
+                Ok(device) => Some(device),
+                Err(status) => {
+                    return make_result(
+                        status,
+                        vec![],
+                        "selected device connection is missing or ambiguous",
+                    );
+                }
+            },
             Ok(Err(error)) => return error_result(&error),
             Err(_) => return make_result(Status::TimedOut, vec![], "opening device timed out"),
         };
@@ -408,6 +585,7 @@ pub unsafe extern "C" fn iossim_bridge_open_device(
         let handle = Box::new(DeviceHandle {
             stable_id,
             usbmux_id: selected.device_id,
+            connection: connection_kind(&selected.connection_type),
             connection_generation,
             cancelled: Arc::new(AtomicBool::new(false)),
         });
@@ -527,6 +705,115 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
     })
 }
 
+/// Attempts Lockdown pairing exactly once. Apple's pending/denied/locked
+/// responses are returned as typed statuses. Pairing material is persisted
+/// directly through usbmuxd and never leaves this native boundary.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_pair_lockdown_once(
+    handle: *mut DeviceHandle,
+    host_name: *const u8,
+    host_name_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let host_name =
+            match unsafe { bounded_utf8_argument(host_name, host_name_len, 256, "host name") } {
+                Ok(value) if !value.trim().is_empty() => value.to_string(),
+                Ok(_) => return make_result(Status::InvalidArgument, vec![], "host name is empty"),
+                Err(result) => return result,
+            };
+        let handle = unsafe { &*handle };
+        if handle.cancelled.load(Ordering::Acquire) {
+            return make_result(Status::Cancelled, vec![], "operation cancelled");
+        }
+        if handle.connection != ConnectionKind::Usb {
+            return make_result(
+                Status::PairingRejected,
+                vec![],
+                "initial computer trust requires the selected USB connection",
+            );
+        }
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let generation = handle.connection_generation;
+        let connection = handle.connection;
+        let cancelled = handle.cancelled.clone();
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let mut lockdown = LockdownClient::connect(&provider).await?;
+            if let Ok(existing) = provider.get_pairing_file().await {
+                if lockdown.start_session(&existing).await.is_ok() {
+                    return Ok(LockdownPairingReceipt {
+                        schema_version: 1,
+                        state: "LOCKDOWN_SESSION_VALIDATED",
+                        stable_id,
+                        usbmux_id: expected_mux,
+                        connection_generation: generation,
+                        connection: connection_kind_name(connection),
+                        pair_record_created: false,
+                        pair_record_persisted: true,
+                        session_validated: true,
+                    });
+                }
+            }
+
+            let mut mux = UsbmuxdAddr::default().connect(0x4953_0002).await?;
+            let system_buid = mux.get_buid().await?;
+            let mut pairing = lockdown
+                .pair_once(system_buid.clone(), system_buid, Some(&host_name))
+                .await?;
+            pairing.udid = Some(stable_id.clone());
+
+            // Validate the candidate before it can replace usbmuxd's stored record.
+            lockdown.start_session(&pairing).await?;
+            let serialized = pairing.clone().serialize()?;
+            mux.save_pair_record(&stable_id, serialized).await?;
+
+            // Re-read from the provider and validate the exact persisted record.
+            let persisted = provider.get_pairing_file().await?;
+            let mut validator = LockdownClient::connect(&provider).await?;
+            if let Err(error) = validator.start_session(&persisted).await {
+                let _ = mux.delete_pair_record(&stable_id).await;
+                return Err(error);
+            }
+            if cancelled.load(Ordering::Acquire) {
+                return Err(idevice::IdeviceError::NotFound);
+            }
+            Ok(LockdownPairingReceipt {
+                schema_version: 1,
+                state: "LOCKDOWN_SESSION_VALIDATED",
+                stable_id,
+                usbmux_id: expected_mux,
+                connection_generation: generation,
+                connection: connection_kind_name(connection),
+                pair_record_created: true,
+                pair_record_persisted: true,
+                session_validated: true,
+            })
+        };
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
+            Ok(Ok(receipt)) => json_result(&receipt),
+            Ok(Err(_)) if handle.cancelled.load(Ordering::Acquire) => {
+                make_result(Status::Cancelled, vec![], "operation cancelled")
+            }
+            Ok(Err(error)) => lockdown_pairing_error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "lockdown pairing timed out"),
+        }
+    })
+}
+
 /// Creates and stores a legitimate RPPairing record over the already trusted
 /// USB lockdown channel. The private key is returned only in the bounded
 /// result buffer so the Swift layer can put it directly into Keychain.
@@ -633,7 +920,18 @@ pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
         };
         match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "ok"),
-            Ok(Err(error)) => error_result(&error),
+            Ok(Err(error)) => {
+                let lower = error.to_string().to_ascii_lowercase();
+                if matches!(&error, idevice::IdeviceError::DeviceNotFound) {
+                    error_result(&error)
+                } else if matches!(&error, idevice::IdeviceError::DeviceLocked) {
+                    error_result(&error)
+                } else if lower.contains("trust dialog") || lower.contains("invalid host") {
+                    error_result(&error)
+                } else {
+                    staged_error(Status::PairingRejected, "remote_pairing_validate", error)
+                }
+            }
             Err(_) => make_result(
                 Status::TimedOut,
                 vec![],
@@ -797,7 +1095,10 @@ pub unsafe extern "C" fn iossim_bridge_app_inventory(
                 .map(|(bundle_id, value)| {
                     let dictionary = value.as_dictionary();
                     let version = dictionary
-                        .and_then(|item| item.get("CFBundleShortVersionString"))
+                        .and_then(|item| {
+                            item.get("CFBundleShortVersionString")
+                                .or_else(|| item.get("CFBundleVersion"))
+                        })
                         .and_then(|item| item.as_string())
                         .map(ToOwned::to_owned);
                     let team_id = dictionary
@@ -917,6 +1218,263 @@ pub unsafe extern "C" fn iossim_bridge_uninstall_app(
     })
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_developer_services_status(
+    handle: *mut DeviceHandle,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux)
+                .await
+                .map_err(|error| {
+                    (
+                        Status::DeviceResolutionFailed,
+                        "device_resolution",
+                        error.to_string(),
+                    )
+                })?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let ddi_mounted = personalized_image_mounted(&provider).await.ok();
+            let proxy = match CoreDeviceProxy::connect(&provider).await {
+                Ok(value) => value,
+                Err(error) => {
+                    let status = if matches!(error, idevice::IdeviceError::ImageNotMounted) {
+                        Status::DdiRequired
+                    } else {
+                        Status::CoreDeviceProxyFailed
+                    };
+                    return Err((status, "coredevice_proxy", error.to_string()));
+                }
+            };
+            let rsd_port = proxy.tunnel_info().server_rsd_port;
+            let adapter = proxy.create_software_tunnel().map_err(|error| {
+                (
+                    Status::SoftwareTunnelFailed,
+                    "software_tunnel",
+                    error.to_string(),
+                )
+            })?;
+            let mut adapter = adapter.to_async_handle();
+            let stream = adapter
+                .connect(rsd_port)
+                .await
+                .map_err(|error| (Status::RsdUnavailable, "rsd_connect", error.to_string()))?;
+            let mut handshake = RsdHandshake::new(stream)
+                .await
+                .map_err(|error| (Status::RsdUnavailable, "rsd_handshake", error.to_string()))?;
+            let app_service_name = AppServiceClient::rsd_service_name();
+            let Some(service) = handshake.services.get(app_service_name.as_ref()) else {
+                return Err((
+                    Status::AppServiceUnavailable,
+                    "appservice_resolution",
+                    "com.apple.coredevice.appservice is absent from the RSD service map"
+                        .to_string(),
+                ));
+            };
+            if let Some(features) = service.features.as_ref()
+                && !features
+                    .iter()
+                    .any(|feature| feature == "com.apple.coredevice.feature.launchapplication")
+            {
+                return Err((
+                    Status::FeatureUnavailable,
+                    "appservice_feature",
+                    "launchapplication is not advertised".to_string(),
+                ));
+            }
+            let _app_service = AppServiceClient::connect_rsd(&mut adapter, &mut handshake)
+                .await
+                .map_err(|error| {
+                    (
+                        Status::RemoteXpcFailed,
+                        "remotexpc_handshake",
+                        error.to_string(),
+                    )
+                })?;
+            Ok(DeveloperServicesReceipt {
+                core_device_proxy_ready: true,
+                software_tunnel_ready: true,
+                rsd_ready: true,
+                remote_xpc_ready: true,
+                app_service_ready: true,
+                launch_feature_ready: true,
+                ddi_mounted,
+            })
+        };
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
+            Ok(Ok(receipt)) => json_result(&receipt),
+            Ok(Err((status, stage, error))) => staged_error(status, stage, error),
+            Err(_) => make_result(
+                Status::TimedOut,
+                vec![],
+                "developer_services: readiness probe timed out",
+            ),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iossim_bridge_launch_app(
+    handle: *mut DeviceHandle,
+    bundle_id: *const u8,
+    bundle_id_len: usize,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: identifier is bounded and copied before use.
+        let bundle_id = match unsafe {
+            bounded_utf8_argument(bundle_id, bundle_id_len, 255, "bundle identifier")
+        } {
+            Ok(value) if validate_bundle_id(value) => value.to_string(),
+            Ok(_) => {
+                return make_result(
+                    Status::InvalidArgument,
+                    vec![],
+                    "bundle identifier is invalid",
+                );
+            }
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = async move {
+            let selected = selected_device(&stable_id, expected_mux)
+                .await
+                .map_err(|error| {
+                    (
+                        Status::DeviceResolutionFailed,
+                        "device_resolution",
+                        error.to_string(),
+                    )
+                })?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let proxy = match CoreDeviceProxy::connect(&provider).await {
+                Ok(value) => value,
+                Err(error) => {
+                    let status = if matches!(error, idevice::IdeviceError::ImageNotMounted) {
+                        Status::DdiRequired
+                    } else {
+                        Status::CoreDeviceProxyFailed
+                    };
+                    return Err((status, "coredevice_proxy", error.to_string()));
+                }
+            };
+            let rsd_port = proxy.tunnel_info().server_rsd_port;
+            let adapter = proxy.create_software_tunnel().map_err(|error| {
+                (
+                    Status::SoftwareTunnelFailed,
+                    "software_tunnel",
+                    error.to_string(),
+                )
+            })?;
+            let mut adapter = adapter.to_async_handle();
+            let stream = adapter
+                .connect(rsd_port)
+                .await
+                .map_err(|error| (Status::RsdUnavailable, "rsd_connect", error.to_string()))?;
+            let mut handshake = RsdHandshake::new(stream)
+                .await
+                .map_err(|error| (Status::RsdUnavailable, "rsd_handshake", error.to_string()))?;
+            let app_service_name = AppServiceClient::rsd_service_name();
+            let Some(service) = handshake.services.get(app_service_name.as_ref()) else {
+                return Err((
+                    Status::AppServiceUnavailable,
+                    "appservice_resolution",
+                    "com.apple.coredevice.appservice is absent from the RSD service map"
+                        .to_string(),
+                ));
+            };
+            if let Some(features) = service.features.as_ref()
+                && !features
+                    .iter()
+                    .any(|feature| feature == "com.apple.coredevice.feature.launchapplication")
+            {
+                return Err((
+                    Status::FeatureUnavailable,
+                    "appservice_feature",
+                    "launchapplication is not advertised".to_string(),
+                ));
+            }
+            let mut app_service = AppServiceClient::connect_rsd(&mut adapter, &mut handshake)
+                .await
+                .map_err(|error| {
+                    (
+                        Status::RemoteXpcFailed,
+                        "remotexpc_handshake",
+                        error.to_string(),
+                    )
+                })?;
+            let response = app_service
+                .launch_application(bundle_id.clone(), &[], true, false, None, None, None)
+                .await
+                .map_err(|error| {
+                    let message = error.to_string();
+                    let lower = message.to_ascii_lowercase();
+                    let status = if matches!(error, idevice::IdeviceError::NotFound) {
+                        Status::ApplicationNotFound
+                    } else if matches!(error, idevice::IdeviceError::DeviceLocked) {
+                        Status::DeviceLocked
+                    } else if matches!(error, idevice::IdeviceError::DeveloperModeNotEnabled) {
+                        Status::DeveloperModeRequired
+                    } else if lower.contains("security")
+                        || lower.contains("denied")
+                        || lower.contains("signature")
+                        || lower.contains("trusted")
+                    {
+                        Status::LaunchRejected
+                    } else {
+                        Status::ProtocolError
+                    };
+                    (status, "launchapplication", message)
+                })?;
+            Ok(LaunchReceipt {
+                bundle_id,
+                pid: response.pid,
+                process_identifier_version: response.process_identifier_version,
+                app_service_connected: true,
+            })
+        };
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
+            Ok(Ok(receipt)) => json_result(&receipt),
+            Ok(Err((status, stage, error))) => staged_error(status, stage, error),
+            Err(_) => make_result(
+                Status::TimedOut,
+                vec![],
+                "launchapplication: operation timed out",
+            ),
+        }
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iossim_bridge_container_write(
@@ -995,7 +1553,14 @@ pub unsafe extern "C" fn iossim_bridge_container_write(
         };
         match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(())) => make_result(Status::Ok, vec![], "container write completed"),
-            Ok(Err(error)) => error_result(&error),
+            Ok(Err(error)) => {
+                let status = if matches!(error, idevice::IdeviceError::ServiceNotFound) {
+                    Status::ContainerUnavailable
+                } else {
+                    classify_error(&error)
+                };
+                staged_error(status, "house_arrest_write", error)
+            }
             Err(_) => make_result(Status::TimedOut, vec![], "container write timed out"),
         }
     })
@@ -1068,7 +1633,14 @@ pub unsafe extern "C" fn iossim_bridge_container_read(
                 vec![],
                 "container response exceeded size limit",
             ),
-            Ok(Err(error)) => error_result(&error),
+            Ok(Err(error)) => {
+                let status = if matches!(error, idevice::IdeviceError::ServiceNotFound) {
+                    Status::ContainerUnavailable
+                } else {
+                    classify_error(&error)
+                };
+                staged_error(status, "house_arrest_read", error)
+            }
             Err(_) => make_result(Status::TimedOut, vec![], "container read timed out"),
         }
     })
@@ -1193,5 +1765,105 @@ mod tests {
         assert!(!validate_container_path("../outside"));
         assert!(!validate_container_path("/private/var/tmp/outside"));
         assert!(!validate_container_path("Library//outside"));
+    }
+
+    #[test]
+    fn service_not_found_is_not_reported_as_physical_device_missing() {
+        assert_eq!(
+            classify_error(&idevice::IdeviceError::ServiceNotFound) as i32,
+            Status::AppServiceUnavailable as i32
+        );
+        assert_eq!(
+            classify_error(&idevice::IdeviceError::DeviceNotFound) as i32,
+            Status::DeviceNotFound as i32
+        );
+    }
+
+    #[test]
+    fn setup_status_values_remain_abi_stable() {
+        assert_eq!(Status::DeveloperServicesNotReady as i32, 21);
+        assert_eq!(Status::ContainerUnavailable as i32, 23);
+        assert_eq!(Status::PairingPending as i32, 25);
+        assert_eq!(Status::PairingDenied as i32, 26);
+        assert_eq!(iossim_bridge_abi_version(), 2);
+    }
+
+    #[test]
+    fn launch_receipt_identifies_exact_appservice_target() {
+        let value = serde_json::to_value(LaunchReceipt {
+            bundle_id: "com.example.runner".to_string(),
+            pid: 42,
+            process_identifier_version: 1,
+            app_service_connected: true,
+        })
+        .expect("launch receipt JSON");
+        assert_eq!(value["bundleId"], "com.example.runner");
+        assert_eq!(value["pid"], 42);
+        assert_eq!(value["appServiceConnected"], true);
+    }
+
+    #[test]
+    fn exact_selector_uses_udid_mux_and_connection_not_input_order() {
+        for values in [
+            vec![
+                device(
+                    "PHONE-0001",
+                    90,
+                    Connection::Network("127.0.0.1".parse().unwrap()),
+                ),
+                device("PHONE-0001", 7, Connection::Usb),
+            ],
+            vec![
+                device("PHONE-0001", 7, Connection::Usb),
+                device(
+                    "PHONE-0001",
+                    90,
+                    Connection::Network("127.0.0.1".parse().unwrap()),
+                ),
+            ],
+        ] {
+            let selected = select_exact_device(values, "PHONE-0001", 7, ConnectionKind::Usb)
+                .expect("exact USB connection");
+            assert_eq!(selected.device_id, 7);
+            assert_eq!(
+                connection_kind(&selected.connection_type),
+                ConnectionKind::Usb
+            );
+        }
+    }
+
+    #[test]
+    fn selector_rejects_ambiguous_legacy_or_wrong_connection_identity() {
+        let ambiguous = vec![
+            device("PHONE-0001", 7, Connection::Usb),
+            device(
+                "PHONE-0001",
+                90,
+                Connection::Network("127.0.0.1".parse().unwrap()),
+            ),
+        ];
+        assert_eq!(
+            select_exact_device(ambiguous, "PHONE-0001", 0, ConnectionKind::Unknown)
+                .expect_err("ambiguous selection") as i32,
+            Status::DeviceResolutionFailed as i32
+        );
+        let wrong = vec![device("PHONE-0001", 7, Connection::Usb)];
+        assert_eq!(
+            select_exact_device(wrong, "PHONE-0001", 7, ConnectionKind::Wireless)
+                .expect_err("wrong connection") as i32,
+            Status::DeviceNotFound as i32
+        );
+    }
+
+    fn device(
+        stable_id: &str,
+        mux: u32,
+        connection: Connection,
+    ) -> idevice::usbmuxd::UsbmuxdDevice {
+        idevice::usbmuxd::UsbmuxdDevice {
+            connection_type: connection,
+            udid: stable_id.to_string(),
+            device_id: mux,
+        }
     }
 }

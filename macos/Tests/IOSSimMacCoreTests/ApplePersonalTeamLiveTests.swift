@@ -432,11 +432,13 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         let identity = try await backend.prepareIdentity(team: .fixturePersonal)
 
         XCTAssertFalse(identity.reused)
+        XCTAssertTrue(identity.pendingPromotion)
         XCTAssertEqual(keychain.createdKeyCount, 1)
         XCTAssertEqual(keychain.addedCertificateCount, 1)
-        XCTAssertNotNil(keychain.metadata?.certificateFingerprint)
-        let savedTag = try XCTUnwrap(keychain.metadata?.keyApplicationTag)
-        XCTAssertNotNil(keychain.metadata.flatMap {
+        XCTAssertNil(keychain.metadata, "A new identity must remain a candidate before verified installation")
+        XCTAssertNotNil(keychain.candidateMetadata?.certificateFingerprint)
+        let savedTag = try XCTUnwrap(keychain.candidateMetadata?.keyApplicationTag)
+        XCTAssertNotNil(keychain.candidateMetadata.flatMap {
             canonicalManagedKeyTag($0.keyApplicationTag, teamIdentifier: "ABCDEFGHIJ")
         })
         let retrieved = try XCTUnwrap(keychain.lookupPrivateKey(applicationTag: savedTag).key)
@@ -444,6 +446,9 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertTrue(diagnostics.store.load()?.events.contains(where: {
             $0.checkpoint == "PROVISIONING_PREPARATION_CONTINUED"
         }) == true)
+        try keychain.promoteCandidate(teamIdentifier: "ABCDEFGHIJ")
+        XCTAssertEqual(keychain.metadata?.keyApplicationTag, savedTag)
+        XCTAssertNil(keychain.candidateMetadata)
     }
 
     func testManagedIdentityReusesValidCertificateAndMatchingPrivateKey() async throws {
@@ -470,6 +475,7 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
 
         XCTAssertTrue(identity.reused)
         XCTAssertEqual(keychain.createdKeyCount, 0)
+        XCTAssertEqual(keychain.authorizedTags, [tag], "Reused keys must have the packaged signing ACL repaired before helper use")
         XCTAssertEqual(keychain.addedCertificateCount, 1)
         let event = diagnostics.store.load()?.events.last(where: {
             $0.checkpoint == "CERTIFICATE_PUBLIC_KEY_MATCH"
@@ -498,8 +504,10 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
 
         XCTAssertFalse(identity.reused)
         XCTAssertEqual(keychain.createdKeyCount, 0, "Recovery must reuse the existing permanent IOSSim key")
+        XCTAssertEqual(keychain.authorizedTags, [tag])
         XCTAssertEqual(keychain.metadata?.keyApplicationTag, tag)
-        XCTAssertNotNil(keychain.metadata?.certificateFingerprint)
+        XCTAssertNil(keychain.metadata?.certificateFingerprint)
+        XCTAssertNotNil(keychain.candidateMetadata?.certificateFingerprint)
         XCTAssertTrue(diagnostics.store.load()?.events.contains(where: {
             $0.checkpoint == "MANAGED_IDENTITY_RECOVERY_SUCCEEDED"
         }) == true)
@@ -535,7 +543,8 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         _ = try await backend.prepareIdentity(team: .fixturePersonal)
 
         XCTAssertEqual(keychain.createdKeyCount, 1)
-        XCTAssertNotEqual(keychain.metadata?.keyApplicationTag, staleTag)
+        XCTAssertEqual(keychain.metadata?.keyApplicationTag, staleTag)
+        XCTAssertNotEqual(keychain.candidateMetadata?.keyApplicationTag, staleTag)
         XCTAssertNotNil(keychain.keys[unrelatedTag], "Unrelated signing keys must remain untouched")
         XCTAssertNotNil(keychain.keys[historicalTag], "Historical IOSSim keys must remain untouched")
         XCTAssertTrue(keychain.deletedTags.isEmpty)
@@ -572,6 +581,40 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertEqual(keychain.createdKeyCount, 0)
         XCTAssertEqual(keychain.metadata?.keyApplicationTag, staleTag)
         XCTAssertTrue(keychain.deletedTags.isEmpty)
+    }
+
+    func testUnrepairableLegacySigningACLAutomaticallyCreatesUsableIOSSimIdentity() async throws {
+        let legacy = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let replacement = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let legacyTag = canonicalFixtureTag()
+        let keychain = FixtureManagedIdentityKeychain(
+            metadata: fixtureIdentityMetadata(tag: legacyTag, certificate: legacy, serial: "LEGACY"),
+            keys: [legacyTag: legacy.privateKey],
+            keysToCreate: [replacement.privateKey],
+            authorizationFailure: .missingPrivateKey
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([
+                certificateObject(legacy.certificateData, serial: "LEGACY")
+            ], available: 2)),
+            .plist(certificateSubmission(replacement.certificateData, serial: "REPLACEMENT"))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        let identity = try await backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertFalse(identity.reused)
+        XCTAssertEqual(keychain.createdKeyCount, 1)
+        XCTAssertEqual(keychain.metadata?.keyApplicationTag, legacyTag)
+        XCTAssertNotEqual(keychain.candidateMetadata?.keyApplicationTag, legacyTag)
+        XCTAssertNotNil(keychain.keys[legacyTag], "Recovery must not delete the consumer's legacy key")
+        XCTAssertTrue(diagnostics.store.load()?.events.contains(where: {
+            $0.checkpoint == "MANAGED_IDENTITY_RECOVERY_SUCCEEDED"
+        }) == true)
     }
 
     func testMismatchedCertificatePublicKeyIsRejectedWithoutDeletingAnyIdentity() async throws {
@@ -640,6 +683,33 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertTrue(publicKeysEqual(key, lookup.key!))
     }
 
+    func testSigningKeyAccessPolicyUsesThePackagedMacOSHelperLocation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-signing-policy-\(UUID().uuidString)", isDirectory: true)
+        let bundle = root.appendingPathComponent("IOSSim.app", isDirectory: true)
+        let macOS = bundle.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        let app = macOS.appendingPathComponent("IOSSim")
+        let helper = macOS.appendingPathComponent("IOSSimProvisioner")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try Data().write(to: app)
+        try Data().write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: app.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+
+        let policy = IOSSimSigningKeyAccessPolicy(
+            bundleURL: bundle,
+            bundleExecutableName: "IOSSim"
+        )
+
+        XCTAssertEqual(policy.trustedExecutablePaths, [
+            "/usr/bin/codesign",
+            app.path,
+            helper.path,
+        ])
+        XCTAssertFalse(policy.trustedExecutablePaths.contains(where: { $0.contains("Contents/Helpers") }))
+    }
+
     func testStoredSessionIsValidatedByLiveTeamDiscovery() async throws {
         let transport = ScriptedAppleTransport([
             .plist(teamResponse())
@@ -667,6 +737,30 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertTrue(requests[0].url?.path.hasSuffix("/listTeams.action") == true)
         XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-Apple-I-Identity-Id"), "123456789")
         XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-Apple-GS-Token"), "synthetic-session-token")
+    }
+
+    func testResponseShapeChangePreservesStoredSessionAndReportsProtocolMismatch() async throws {
+        let transport = ScriptedAppleTransport([
+            .plist(["resultCode": 0, "teams": [["unexpected": "shape"]]])
+        ])
+        let store = MemoryAuthorizationSessionStore(session: fixtureSession())
+        let backend = LiveApplePersonalTeamBackend(
+            transport: transport,
+            machineIdentity: FixtureMachineIdentity(),
+            sessionStore: store,
+            diagnostics: ApplePersonalTeamDiagnosticsStore(url: FileManager.default.temporaryDirectory
+                .appendingPathComponent("iossim-live-test-\(UUID().uuidString).json"))
+        )
+
+        do {
+            _ = try await backend.resumeSession()
+            XCTFail("expected protocol mismatch")
+        } catch let error as ExperimentalBackendError {
+            XCTAssertEqual(error, .authenticationProtocolMismatch)
+        }
+        XCTAssertNotNil(try store.loadMetadata())
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.count, 1)
     }
 
     func testSelectedDeviceAndExistingDerivedAppIDsUseReadBeforeCreate() async throws {
@@ -1649,31 +1743,55 @@ private func makeIdentityBackend(
 
 private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychain, @unchecked Sendable {
     var metadata: IOSSimIdentityMetadata?
+    var candidateMetadata: IOSSimIdentityMetadata?
     var keys: [Data: SecKey]
     var keysToCreate: [SecKey]
     let missingKeyStatus: OSStatus
+    let authorizationFailure: ExperimentalBackendError?
+    /// Hermetic stand-in for the real `/usr/bin/codesign` usability proof.
+    let usabilityFailure: ExperimentalBackendError?
     private(set) var createdKeyCount = 0
+    private(set) var authorizedTags: [Data] = []
     private(set) var addedCertificateCount = 0
     private(set) var deletedTags: [Data] = []
+    private(set) var usabilityProbeCount = 0
 
     init(
         metadata: IOSSimIdentityMetadata? = nil,
         keys: [Data: SecKey] = [:],
         keysToCreate: [SecKey] = [],
-        missingKeyStatus: OSStatus = errSecItemNotFound
+        missingKeyStatus: OSStatus = errSecItemNotFound,
+        authorizationFailure: ExperimentalBackendError? = nil,
+        usabilityFailure: ExperimentalBackendError? = nil
     ) {
         self.metadata = metadata
         self.keys = keys
         self.keysToCreate = keysToCreate
         self.missingKeyStatus = missingKeyStatus
+        self.authorizationFailure = authorizationFailure
+        self.usabilityFailure = usabilityFailure
     }
 
     func load(teamIdentifier: String) throws -> IOSSimIdentityMetadata? {
         metadata?.teamIdentifier == teamIdentifier ? metadata : nil
     }
 
+    func loadCandidate(teamIdentifier: String) throws -> IOSSimIdentityMetadata? {
+        candidateMetadata?.teamIdentifier == teamIdentifier ? candidateMetadata : nil
+    }
+
     func save(_ metadata: IOSSimIdentityMetadata) throws {
         self.metadata = metadata
+    }
+
+    func saveCandidate(_ metadata: IOSSimIdentityMetadata) throws {
+        candidateMetadata = metadata
+    }
+
+    func promoteCandidate(teamIdentifier: String) throws {
+        guard candidateMetadata?.teamIdentifier == teamIdentifier else { return }
+        metadata = candidateMetadata
+        candidateMetadata = nil
     }
 
     func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup {
@@ -1696,8 +1814,19 @@ private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychai
         return key
     }
 
+    func authorizePrivateKeyForSigning(applicationTag: Data) throws {
+        if let authorizationFailure { throw authorizationFailure }
+        guard keys[applicationTag] != nil else { throw ExperimentalBackendError.missingPrivateKey }
+        authorizedTags.append(applicationTag)
+    }
+
     func addCertificate(_ certificate: SecCertificate, teamIdentifier: String) throws {
         addedCertificateCount += 1
+    }
+
+    func verifySigningKeyUsable(certificate: SecCertificate) throws {
+        usabilityProbeCount += 1
+        if let usabilityFailure { throw usabilityFailure }
     }
 }
 

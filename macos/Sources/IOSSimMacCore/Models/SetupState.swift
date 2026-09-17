@@ -38,8 +38,8 @@ public enum SetupPhase: String, Equatable, Sendable, CaseIterable {
         case .checkingDevice: return "Check iPhone"
         case .deviceActionRequired: return "Action Required"
         case .appleAccount: return "Apple Account"
-        case .installing: return "Install IOSSim"
-        case .developerProfileTrust: return "Trust IOSSim"
+        case .installing: return "Install Veya"
+        case .developerProfileTrust: return "Trust Veya"
         case .runtimeSetup: return "Runtime Setup"
         case .verifying: return "Verify"
         case .complete: return "Complete"
@@ -55,8 +55,8 @@ public struct SetupError: Equatable, Sendable, Identifiable {
     public let details: String
 
     public init(headline: String, recovery: String, details: String) {
-        self.headline = headline
-        self.recovery = recovery
+        self.headline = ProductBrand.userFacing(headline)
+        self.recovery = ProductBrand.userFacing(recovery)
         self.details = details
     }
 }
@@ -72,7 +72,7 @@ public enum InstallStage: String, CaseIterable, Equatable, Sendable, Identifiabl
     public var title: String {
         switch self {
         case .prepare: return "Preparing components"
-        case .installIOSSim: return "Installing IOSSim"
+        case .installIOSSim: return "Installing Veya"
         case .installRuntime: return "Installing runtime"
         case .verify: return "Verifying installation"
         }

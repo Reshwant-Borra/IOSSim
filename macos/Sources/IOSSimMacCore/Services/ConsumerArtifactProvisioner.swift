@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public actor ConsumerArtifactProvisioner {
-    public static let provisionerVersion = "3"
+    public static let provisionerVersion = "4"
 
     private let context: RuntimeProvisioningContext
     private let stateStore: ConsumerProvisioningStateStore
@@ -13,9 +13,11 @@ public actor ConsumerArtifactProvisioner {
     private let fileManager: FileManager
     private let workspaceRootURL: URL?
     private let inventoryReader: any DeviceApplicationInventoryReading
-    /// Legacy comparison backend retained until physical qualification. The
-    /// no-Xcode readiness/onboarding coordinator does not construct this type.
     private let deviceBackend: any DeviceProvisioningBackend
+    private let runtimeConfigurationManager: NativeApplicationManager?
+    private let remotePairingCoordinator: RemotePairingCoordinator?
+    private let localDevVPNCoordinator: LocalDevVPNSetupCoordinator?
+    private let developerServicesCoordinator: (any DeveloperServicesPreparing)?
     private let inventoryRetryPolicy: InstallationInventoryRetryPolicy
     private let profileWriteOptions: Data.WritingOptions
     private var operationGeneration: UInt64?
@@ -29,10 +31,17 @@ public actor ConsumerArtifactProvisioner {
         faultInjector: any ConsumerProvisioningFaultInjecting = NoConsumerProvisioningFaults(),
         fileManager: FileManager = .default,
         workspaceRootURL: URL? = nil,
-        inventoryReader: any DeviceApplicationInventoryReading = DevicectlApplicationInventoryReader(),
-        deviceBackend: any DeviceProvisioningBackend = DevicectlProvisioningBackend(),
+        inventoryReader: any DeviceApplicationInventoryReading = NativeApplicationInventoryReader(),
+        deviceBackend: any DeviceProvisioningBackend = IdeviceProvisioningBackend(),
+        runtimeConfigurationManager: NativeApplicationManager? = nil,
+        remotePairingCoordinator: RemotePairingCoordinator? = nil,
+        localDevVPNCoordinator: LocalDevVPNSetupCoordinator? = nil,
+        developerServicesCoordinator: (any DeveloperServicesPreparing)? = nil,
         inventoryRetryPolicy: InstallationInventoryRetryPolicy = .postInstall,
-        profileWriteOptions: Data.WritingOptions = [.atomic, .completeFileProtection]
+        // Provisioning profiles are persisted by a macOS process. iOS file-
+        // protection flags fail with EPERM on current macOS; the write sites set
+        // owner-only permissions immediately after atomic replacement.
+        profileWriteOptions: Data.WritingOptions = [.atomic]
     ) {
         self.context = context
         self.stateStore = stateStore
@@ -45,6 +54,10 @@ public actor ConsumerArtifactProvisioner {
         self.workspaceRootURL = workspaceRootURL
         self.inventoryReader = inventoryReader
         self.deviceBackend = deviceBackend
+        self.runtimeConfigurationManager = runtimeConfigurationManager
+        self.remotePairingCoordinator = remotePairingCoordinator
+        self.localDevVPNCoordinator = localDevVPNCoordinator
+        self.developerServicesCoordinator = developerServicesCoordinator
         self.inventoryRetryPolicy = inventoryRetryPolicy
         self.profileWriteOptions = profileWriteOptions
     }
@@ -154,7 +167,7 @@ public actor ConsumerArtifactProvisioner {
                 nativeSigningIdentity: nativeSigningIdentity
             )
             defer { try? fileManager.removeItem(at: prepared.workspaceURL) }
-            try await validateExistingState(
+            let preinstallInventory = try await validateExistingState(
                 request: request,
                 selectedTeam: team,
                 rawDeviceIdentifier: rawDeviceIdentifier
@@ -163,7 +176,12 @@ public actor ConsumerArtifactProvisioner {
             let now = Date()
             let selectedDevice = await deviceBackend.discoverDevices(context: context)
                 .first(where: { $0.selectionIdentifier == rawDeviceIdentifier })
-            try await installArtifacts(prepared, rawDeviceIdentifier: rawDeviceIdentifier)
+            try await installArtifacts(
+                prepared,
+                rawDeviceIdentifier: rawDeviceIdentifier,
+                existingInventory: preinstallInventory,
+                forceUpgrade: request.operation == .refresh
+            )
             var manifest = ConsumerProvisioningManifest(
                 deviceIdentifierSafe: RuntimeProvisioning.shortIdentifier(rawDeviceIdentifier),
                 deviceIdentifierHash: PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier),
@@ -179,10 +197,13 @@ public actor ConsumerArtifactProvisioner {
                 installedRunnerBundleID: prepared.identifiers.runner,
                 mainProfile: prepared.mainProfile,
                 runnerProfile: prepared.runnerProfile,
-                lastInstallDate: previous?.lastInstallDate ?? now,
+                lastInstallDate: (request.operation == .refresh
+                    || !preinstallInventory.bundleIdentifiers.contains(prepared.identifiers.main)
+                    || !preinstallInventory.bundleIdentifiers.contains(prepared.identifiers.runner))
+                    ? now : (previous?.lastInstallDate ?? now),
                 lastRefreshAttempt: request.operation == .refresh ? now : previous?.lastRefreshAttempt,
-                lastRefreshSuccess: request.operation == .refresh ? now : previous?.lastRefreshSuccess,
-                runtimeSetupStatus: previous?.runtimeSetupStatus ?? .userActionRequired,
+                lastRefreshSuccess: previous?.lastRefreshSuccess,
+                runtimeSetupStatus: .userActionRequired,
                 lastRuntimeHealthCheck: previous?.lastRuntimeHealthCheck,
                 appVersion: prepared.appVersion,
                 provisionerVersion: Self.provisionerVersion,
@@ -196,16 +217,41 @@ public actor ConsumerArtifactProvisioner {
                 rawDeviceIdentifier: rawDeviceIdentifier,
                 expected: prepared.identifiers
             )
+            if let nativeArtifacts, let signingDeviceIdentifier {
+                // Promotion is deliberately after exact installed inventory.
+                // Candidate preparation/signing/install failures therefore
+                // leave the last active identity and profiles untouched.
+                if nativeArtifacts.signingIdentityPendingPromotion == true {
+                    try IOSSimIdentityMetadataStore().promoteCandidate(
+                        teamIdentifier: nativeArtifacts.teamIdentifier
+                    )
+                }
+                try await nativeArtifactStore.promoteCandidate(
+                    teamIdentifier: nativeArtifacts.teamIdentifier,
+                    selectedDeviceIdentifier: signingDeviceIdentifier
+                )
+            }
             manifest = manifest.updatingSetupCheckpoint(.installationVerified, inventory: inventory)
             try await stateStore.saveManifest(manifest)
             manifest = try await advanceRuntimeConfiguration(
                 manifest: manifest,
                 rawDeviceIdentifier: rawDeviceIdentifier
             )
+            if manifest.effectiveSetupCheckpoint.runtimeConfigurationIsVerified,
+               manifest.effectiveSetupCheckpoint != .developerProfileTrustRequired {
+                manifest = try await advanceRemotePairing(
+                    manifest: manifest,
+                    rawDeviceIdentifier: rawDeviceIdentifier
+                )
+            }
             let finalStage: ConsumerProvisioningStage = manifest.effectiveSetupCheckpoint == .developerProfileTrustRequired
                 ? .developerProfileTrustRequired
                 : .complete
             if finalStage == .complete {
+                if request.operation == .refresh {
+                    manifest = manifest.recordingRefreshSuccess(at: Date())
+                    try await stateStore.saveManifest(manifest)
+                }
                 try await record(
                     stage: .complete,
                     device: rawDeviceIdentifier,
@@ -249,11 +295,27 @@ public actor ConsumerArtifactProvisioner {
         }
     }
 
-    /// Resumes from the deepest persisted device-side checkpoint. This path
-    /// never authenticates, provisions, signs, installs, or uninstalls.
+    /// Reconciles the persisted hint against current native inventory before
+    /// resuming. If an owned component is missing, repair is delegated to the
+    /// same native provision path and only the missing component is installed.
     public func resumeSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerProvisioningResult {
         operationGeneration = request.generation
         let started = Date()
+        let reconciliation = try await reconcileSetup(request)
+        if reconciliation.repairRequired {
+            let mutationOperation: ConsumerProvisioningOperation =
+                (reconciliation.renewalRequired || reconciliation.releaseUpgradeRequired) ? .refresh : .repair
+            let repair = ConsumerProvisioningRequest(
+                operation: mutationOperation,
+                selectedDeviceIdentifier: request.selectedDeviceIdentifier,
+                selectedTeamIdentifier: request.selectedTeamIdentifier,
+                allowFreshInstallAfterCrossTeamConflict: request.allowFreshInstallAfterCrossTeamConflict,
+                backend: .nativePersonalTeam,
+                generation: request.generation,
+                reconciliationTrigger: request.reconciliationTrigger
+            )
+            return try await provision(repair)
+        }
         guard var manifest = try await stateStore.loadManifest() else {
             throw installFailure(
                 .installVerificationFailed,
@@ -261,14 +323,11 @@ public actor ConsumerArtifactProvisioner {
                 detail: "No persisted installation checkpoint is available."
             )
         }
-        guard manifest.teamID == request.selectedTeamIdentifier else {
-            throw ConsumerProvisioningFailure(
-                code: .staleTeamState,
-                stage: .validatingTeam,
-                userMessage: "IOSSim setup information does not match the selected Apple Account.",
-                remediation: "Return to setup and select the Apple Account used for the installed IOSSim app.",
-                developerDetail: "Persisted checkpoint team does not match the current provisioning context."
-            )
+        var developerServicesPrepared = false
+        if let derived = reconciliation.derivedCheckpoint,
+           derived != manifest.effectiveSetupCheckpoint {
+            manifest = manifest.updatingSetupCheckpoint(derived)
+            try await stateStore.saveManifest(manifest)
         }
         guard let rawDeviceIdentifier = await deviceBackend.rawDeviceIdentifier(
             matching: request.selectedDeviceIdentifier,
@@ -276,32 +335,8 @@ public actor ConsumerArtifactProvisioner {
         ) else {
             throw deviceFailure(.deviceUnavailable, detail: "Selected device is unavailable while resuming setup.")
         }
-        guard manifest.deviceIdentifierHash == PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier) else {
-            throw ConsumerProvisioningFailure(
-                code: .deviceUnavailable,
-                stage: .waitingForDevice,
-                userMessage: "Reconnect the iPhone used for this IOSSim installation.",
-                remediation: "Connect and unlock the same iPhone, then click Continue.",
-                developerDetail: "Selected device does not match the persisted installation checkpoint."
-            )
-        }
-        let expected = try PersonalTeamBundleIdentifierSet(teamIdentifier: manifest.teamID)
-        guard manifest.installedMainBundleID == expected.main,
-              manifest.installedRunnerBundleID == expected.runner else {
-            throw ConsumerProvisioningFailure(
-                code: .staleTeamState,
-                stage: .validatingTeam,
-                userMessage: "IOSSim setup information needs repair.",
-                remediation: "Choose Repair to inspect the current IOSSim installation.",
-                developerDetail: "Persisted bundle mapping does not match the current team context."
-            )
-        }
         if manifest.effectiveSetupCheckpoint == .installCommandsSucceeded {
-            let inventory = try await verifyPostInstallInventory(
-                rawDeviceIdentifier: rawDeviceIdentifier,
-                expected: expected
-            )
-            manifest = manifest.updatingSetupCheckpoint(.installationVerified, inventory: inventory)
+            manifest = manifest.updatingSetupCheckpoint(.installationVerified, inventory: reconciliation.inventory)
             try await stateStore.saveManifest(manifest)
         }
         if [.installationVerified, .developerProfileTrustRequired].contains(manifest.effectiveSetupCheckpoint) {
@@ -309,11 +344,11 @@ public actor ConsumerArtifactProvisioner {
                 manifest: manifest,
                 rawDeviceIdentifier: rawDeviceIdentifier
             )
+            developerServicesPrepared = manifest.effectiveSetupCheckpoint.runtimeConfigurationIsVerified
         } else if manifest.effectiveSetupCheckpoint == .runtimeConfigurationWritten {
-            try await verifyPersistedRunnerMapping(
-                rawDeviceIdentifier: rawDeviceIdentifier,
-                expectedMainBundleIdentifier: manifest.installedMainBundleID,
-                expectedRunnerBundleIdentifier: manifest.installedRunnerBundleID
+            try await verifyRuntimeConfiguration(
+                manifest: manifest,
+                rawDeviceIdentifier: rawDeviceIdentifier
             )
             manifest = manifest.updatingSetupCheckpoint(
                 .runtimeConfigurationVerified,
@@ -321,6 +356,19 @@ public actor ConsumerArtifactProvisioner {
             )
             try await stateStore.saveManifest(manifest)
             try await record(stage: .runtimeConfigurationVerified, device: rawDeviceIdentifier, result: .passed)
+        }
+        if manifest.effectiveSetupCheckpoint.runtimeConfigurationIsVerified,
+           manifest.effectiveSetupCheckpoint != .developerProfileTrustRequired {
+            if !developerServicesPrepared {
+                try await prepareDeveloperServices(
+                    manifest: manifest,
+                    rawDeviceIdentifier: rawDeviceIdentifier
+                )
+            }
+            manifest = try await advanceRemotePairing(
+                manifest: manifest,
+                rawDeviceIdentifier: rawDeviceIdentifier
+            )
         }
         let trustPending = manifest.effectiveSetupCheckpoint == .developerProfileTrustRequired
         if !trustPending {
@@ -343,6 +391,142 @@ public actor ConsumerArtifactProvisioner {
 
     public func currentManifest() async throws -> ConsumerProvisioningManifest? {
         try await stateStore.loadManifest()
+    }
+
+    public func reconcileSetup(_ request: ConsumerProvisioningRequest) async throws -> ConsumerSetupReconciliationResult {
+        operationGeneration = request.generation
+        let trigger = request.reconciliationTrigger ?? .resumeBoundary
+        if trigger == .tryAgain {
+            try await record(
+                stage: .tryAgainRequested,
+                result: .started,
+                detail: "previousCheckpoint=\((try? await stateStore.loadManifest())?.effectiveSetupCheckpoint.rawValue ?? "NONE")"
+            )
+        }
+        guard let manifest = try await stateStore.loadManifest() else {
+            throw installFailure(
+                .installVerificationFailed,
+                stage: .physicalReconciliationStarted,
+                detail: "No persisted installation hint is available for reconciliation."
+            )
+        }
+        guard manifest.teamID == request.selectedTeamIdentifier else {
+            throw ConsumerProvisioningFailure(
+                code: .staleTeamState,
+                stage: .validatingTeam,
+                userMessage: "IOSSim setup information does not match the selected Apple Account.",
+                remediation: "Return to setup and select the Apple Account used for this IOSSim installation.",
+                developerDetail: "Persisted checkpoint team does not match the current provisioning context."
+            )
+        }
+        guard let rawDeviceIdentifier = await deviceBackend.rawDeviceIdentifier(
+            matching: request.selectedDeviceIdentifier,
+            context: context
+        ) else {
+            throw deviceFailure(.deviceUnavailable, detail: "Selected device is unavailable during physical reconciliation.")
+        }
+        guard manifest.deviceIdentifierHash == PersonalTeamProvisioningPOC.deviceIdentifierHash(rawDeviceIdentifier) else {
+            throw deviceFailure(.deviceUnavailable, detail: "Live canonical UDID does not match the persisted installation hint.")
+        }
+        let expected = try PersonalTeamBundleIdentifierSet(teamIdentifier: manifest.teamID)
+        guard manifest.installedMainBundleID == expected.main,
+              manifest.installedRunnerBundleID == expected.runner else {
+            throw ConsumerProvisioningFailure(
+                code: .staleTeamState,
+                stage: .validatingTeam,
+                userMessage: "IOSSim setup information needs repair.",
+                remediation: "Choose Repair to inspect the current IOSSim installation.",
+                developerDetail: "Persisted bundle mapping does not match deterministic current-team identifiers."
+            )
+        }
+        try await record(
+            stage: .physicalReconciliationStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "trigger=\(trigger.rawValue) persistedCheckpoint=\(manifest.effectiveSetupCheckpoint.rawValue) setupEngine=BUNDLED_PROVISIONING_ENGINE discoveryBackend=NATIVE_IDEVICE_USBMUX installationBackend=NATIVE_AFC_INSTALLATION_PROXY launchBackend=NATIVE_APPSERVICE_RSD"
+        )
+        let snapshot = await inventoryReader.read(rawDeviceIdentifier: rawDeviceIdentifier, context: context)
+        if let failureCode = snapshot.failureCode {
+            if [.deviceUnavailable, .deviceLocked, .computerTrustRequired, .developerModeRequired].contains(failureCode) {
+                throw deviceFailure(failureCode, detail: snapshot.safeReason)
+            }
+            throw installFailure(.installVerificationFailed, stage: .physicalReconciliationResult, detail: snapshot.safeReason)
+        }
+        let inventory = installationInventoryResult(snapshot: snapshot, expected: expected)
+        let releaseManifest = try context.loadManifest()
+        let expectedAppVersion: String? = try releaseManifest.components
+            .first(where: { $0.role == "iosMain" })
+            .map { component in
+                let infoURL = context.resourcesURL
+                    .appendingPathComponent(component.relativePath)
+                    .appendingPathComponent("Info.plist")
+                let info = try readPlist(infoURL)
+                return (info["CFBundleShortVersionString"] as? String)
+                    ?? (info["CFBundleVersion"] as? String)
+                    ?? "unknown"
+            }
+        let releaseCurrent = expectedAppVersion == manifest.appVersion
+            && manifest.provisionerVersion == Self.provisionerVersion
+        let refreshState = ConsumerRefreshPolicy.recommended.dueState(
+            expiration: manifest.earliestExpiration
+        )
+        let signingCurrent = ![RefreshDueState.dueNow, .expired, .unavailable].contains(refreshState)
+        let runtimeReceiptCurrent = (try? await stateStore.loadRuntimeProofReceipt())?
+            .validates(manifest: manifest) == true
+        var repairInput = SetupReconciliationInput()
+        repairInput.signingCurrent = signingCurrent
+        repairInput.releaseCurrent = releaseCurrent
+        repairInput.mainInstalled = inventory.mainPresent
+        repairInput.runnerInstalled = inventory.runnerPresent
+        repairInput.runtimeProofCurrent = runtimeReceiptCurrent
+        let repairScope = repairInput.smallestRepair
+        var derivedCheckpoint: ConsumerSetupCheckpoint? = inventory.verified
+            ? manifest.effectiveSetupCheckpoint : nil
+        var runtimeMappingCurrent = true
+        if inventory.verified && manifest.effectiveSetupCheckpoint.runtimeConfigurationIsVerified {
+            do {
+                try await verifyRuntimeConfiguration(
+                    manifest: manifest,
+                    rawDeviceIdentifier: rawDeviceIdentifier
+                )
+            } catch {
+                derivedCheckpoint = .installationVerified
+                runtimeMappingCurrent = false
+            }
+        }
+        // A persisted pairing/final checkpoint is a hint. Inventory and native
+        // House Arrest can physically retain runtime mapping proof, but the
+        // CoreDevice session and phone receipt must be revalidated after every
+        // setup-start/reconnect boundary before deriving final readiness.
+        if derivedCheckpoint?.remotePairingIsVerified == true {
+            derivedCheckpoint = .runtimeConfigurationVerified
+        }
+        let result = ConsumerSetupReconciliationResult(
+            trigger: trigger,
+            persistedCheckpoint: manifest.effectiveSetupCheckpoint,
+            derivedCheckpoint: derivedCheckpoint,
+            inventory: inventory,
+            mainInstallRequired: !inventory.mainPresent,
+            runnerInstallRequired: !inventory.runnerPresent,
+            repairScope: repairScope,
+            renewalRequired: !signingCurrent,
+            releaseUpgradeRequired: !releaseCurrent
+        )
+        // A new reconciliation boundary can create a new CoreDevice/RSD
+        // session. A previously stored runtime receipt remains useful
+        // evidence, but it cannot keep READY asserted until the bounded Rich
+        // runtime proof is repeated against the new live session.
+        let reconciledManifest = manifest
+            .updatingInstallationInventory(inventory)
+            .updatingRuntimeSetupStatus(.needsAttention)
+        try await stateStore.saveManifest(reconciledManifest)
+        try await record(
+            stage: .physicalReconciliationResult,
+            device: rawDeviceIdentifier,
+            result: .passed,
+            detail: "persistedCheckpoint=\(result.persistedCheckpoint.rawValue) derivedCheckpoint=\(result.derivedCheckpoint?.rawValue ?? "INSTALLATION_REPAIR_REQUIRED") repairScope=\(repairScope.rawValue) mainPresent=\(inventory.mainPresent) runnerPresent=\(inventory.runnerPresent) signingCurrent=\(signingCurrent) releaseCurrent=\(releaseCurrent) runtimeProofCurrent=\(runtimeReceiptCurrent) runtimeMappingCurrent=\(runtimeMappingCurrent) checkpointSource=PHYSICAL_DERIVED legacyFallbackUsed=false consumerBuildAttempted=false"
+        )
+        return result
     }
 
     public func availableTeams(selectedDeviceIdentifier: String?) async -> [PersonalTeamCandidate] {
@@ -433,7 +617,7 @@ public actor ConsumerArtifactProvisioner {
         request: ConsumerProvisioningRequest,
         selectedTeam: PersonalTeamCandidate,
         rawDeviceIdentifier: String
-    ) async throws {
+    ) async throws -> DeviceApplicationInventory {
         let prior = try await stateStore.loadManifest()
         let expected = try Self.installedIdentifiers(
             teamIdentifier: selectedTeam.teamIdentifier,
@@ -466,12 +650,12 @@ public actor ConsumerArtifactProvisioner {
                     detail: "Authoritative current-device inventory contains the exact current-team main and runner; stale local team metadata was ignored."
                 )
             }
-            return
+            return authoritativeInventory
         }
         if appliesToSelectedDevice,
            prior?.teamID == selectedTeam.teamIdentifier,
            priorUsesExpectedIdentifiers {
-            return
+            return authoritativeInventory
         }
         if appliesToSelectedDevice,
            prior?.teamID != selectedTeam.teamIdentifier,
@@ -504,9 +688,16 @@ public actor ConsumerArtifactProvisioner {
             try await uninstallIOSSimOwnedComponents(
                 priorMainBundleIdentifier: appliesToSelectedDevice ? prior?.installedMainBundleID : nil,
                 priorRunnerBundleIdentifier: appliesToSelectedDevice ? prior?.installedRunnerBundleID : nil,
+                expectedTeamIdentifier: selectedTeam.teamIdentifier,
                 rawDeviceIdentifier: rawDeviceIdentifier
             )
+            return DeviceApplicationInventory(
+                selectedDeviceMatches: true,
+                bundleIdentifiers: [],
+                safeReason: "explicit fresh install removed IOSSim-owned components"
+            )
         }
+        return authoritativeInventory
     }
 
     private func installedIdentityMigrationFailure() -> ConsumerProvisioningFailure {
@@ -522,6 +713,7 @@ public actor ConsumerArtifactProvisioner {
     private func uninstallIOSSimOwnedComponents(
         priorMainBundleIdentifier: String?,
         priorRunnerBundleIdentifier: String?,
+        expectedTeamIdentifier: String,
         rawDeviceIdentifier: String
     ) async throws {
         var identifiers = await installedIOSSimMainAndRunnerBundleIdentifiers(rawDeviceIdentifier: rawDeviceIdentifier)
@@ -533,20 +725,13 @@ public actor ConsumerArtifactProvisioner {
            ConsumerInstalledIdentityPolicy.isIOSSimOwnedRunner(priorRunnerBundleIdentifier) {
             identifiers.append(priorRunnerBundleIdentifier)
         }
-        identifiers.append(ProtectedSourceBundleIdentifiers.default.main)
-        identifiers.append(ProtectedSourceBundleIdentifiers.default.runner)
         let orderedIdentifiers = Array(Set(identifiers)).sorted()
         for bundleIdentifier in orderedIdentifiers {
-            let result = try await context.runner.run(
-                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
-                arguments: [
-                    "devicectl", "device", "uninstall", "app",
-                    "--device", rawDeviceIdentifier,
-                    bundleIdentifier,
-                    "--timeout", "30", "--quiet"
-                ],
-                workingDirectory: context.resourcesURL,
-                environment: RuntimeProvisioning.deterministicEnvironment()
+            let result = try await deviceBackend.uninstall(
+                bundleIdentifier: bundleIdentifier,
+                expectedTeamIdentifier: expectedTeamIdentifier,
+                rawDeviceIdentifier: rawDeviceIdentifier,
+                context: context
             )
             let missing = result.combinedOutput.localizedCaseInsensitiveContains("not installed")
             guard result.exitCode == 0 || missing else {
@@ -947,23 +1132,69 @@ public actor ConsumerArtifactProvisioner {
         }
     }
 
-    private func installArtifacts(_ prepared: PreparedConsumerArtifacts, rawDeviceIdentifier: String) async throws {
+    private func installArtifacts(
+        _ prepared: PreparedConsumerArtifacts,
+        rawDeviceIdentifier: String,
+        existingInventory: DeviceApplicationInventory,
+        forceUpgrade: Bool = false
+    ) async throws {
         try faultInjector.check(.deviceDisconnected)
-        try await install(
-            url: prepared.mainURL,
-            bundleIdentifier: prepared.identifiers.main,
-            role: "iosMain",
-            stage: .installingMain,
-            failureCode: .mainInstallFailure,
-            rawDeviceIdentifier: rawDeviceIdentifier
-        )
-        try await install(
-            url: prepared.runnerURL,
-            bundleIdentifier: prepared.identifiers.runner,
-            role: "locationControlRunner",
-            stage: .installingRunner,
-            failureCode: .runnerInstallFailure,
-            rawDeviceIdentifier: rawDeviceIdentifier
+        if forceUpgrade || !existingInventory.available || !existingInventory.bundleIdentifiers.contains(prepared.identifiers.main) {
+            try await install(
+                url: prepared.mainURL,
+                bundleIdentifier: prepared.identifiers.main,
+                role: "iosMain",
+                stage: .installingMain,
+                failureCode: .mainInstallFailure,
+                expectedTeamIdentifier: prepared.team.teamIdentifier,
+                rawDeviceIdentifier: rawDeviceIdentifier
+            )
+        } else {
+            try await record(stage: .componentInstallSkipped, artifact: "iosMain", device: rawDeviceIdentifier, result: .skipped, detail: "Physical inventory already contains the exact current main bundle.")
+        }
+        if forceUpgrade || !existingInventory.available || !existingInventory.bundleIdentifiers.contains(prepared.identifiers.runner) {
+            try await install(
+                url: prepared.runnerURL,
+                bundleIdentifier: prepared.identifiers.runner,
+                role: "locationControlRunner",
+                stage: .installingRunner,
+                failureCode: .runnerInstallFailure,
+                expectedTeamIdentifier: prepared.team.teamIdentifier,
+                rawDeviceIdentifier: rawDeviceIdentifier
+            )
+        } else {
+            try await record(stage: .componentInstallSkipped, artifact: "locationControlRunner", device: rawDeviceIdentifier, result: .skipped, detail: "Physical inventory already contains the exact current runner bundle.")
+        }
+    }
+
+    private func installationInventoryResult(
+        snapshot: DeviceApplicationInventory,
+        expected: PersonalTeamBundleIdentifierSet
+    ) -> InstallationInventoryResult {
+        let mainPresent = snapshot.bundleIdentifiers.contains(expected.main)
+        let runnerPresent = snapshot.bundleIdentifiers.contains(expected.runner)
+        let stalePresent = snapshot.bundleIdentifiers.contains {
+            ConsumerInstalledIdentityPolicy.isIOSSimOwnedMainOrRunner($0)
+                && $0 != expected.main && $0 != expected.runner
+        }
+        let reason: String
+        if !snapshot.available { reason = snapshot.safeReason }
+        else if !mainPresent && !runnerPresent { reason = "expected main and runner missing" }
+        else if !mainPresent { reason = "expected main missing" }
+        else if !runnerPresent { reason = "expected runner missing" }
+        else { reason = "exact current main and runner present" }
+        return InstallationInventoryResult(
+            selectedDeviceMatches: snapshot.selectedDeviceMatches,
+            inventoryAvailable: snapshot.available,
+            mainPresent: mainPresent,
+            runnerPresent: runnerPresent,
+            mainBundleIDMatches: mainPresent,
+            runnerBundleIDMatches: runnerPresent,
+            expectedTeamContext: true,
+            staleIOSSimArtifactsPresent: stalePresent,
+            retryCount: 0,
+            elapsedMilliseconds: 0,
+            safeReason: reason
         )
     }
 
@@ -1060,6 +1291,7 @@ public actor ConsumerArtifactProvisioner {
         role: String,
         stage: ConsumerProvisioningStage,
         failureCode: ConsumerProvisioningErrorCode,
+        expectedTeamIdentifier: String,
         rawDeviceIdentifier: String
     ) async throws {
         try faultInjector.check(stage == .installingMain ? .installMain : .installRunner)
@@ -1068,7 +1300,8 @@ public actor ConsumerArtifactProvisioner {
             bundleIdentifier: bundleIdentifier,
             version: "prepared",
             relativePath: url.path,
-            sha256: "prepared"
+            sha256: "prepared",
+            expectedTeamIdentifier: expectedTeamIdentifier
         )
         let installContext = RuntimeProvisioningContext(resourcesURL: URL(fileURLWithPath: "/"), runner: context.runner)
         let result = try await deviceBackend.install(
@@ -1124,16 +1357,10 @@ public actor ConsumerArtifactProvisioner {
             result: .started,
             detail: "Launching the current main bundle to write its deterministic runner mapping."
         )
-        let result = try await context.runner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
-            arguments: [
-                "devicectl", "device", "process", "launch",
-                "--device", rawDeviceIdentifier,
-                expectedMainBundleIdentifier,
-                "--timeout", "15", "--quiet"
-            ],
-            workingDirectory: context.resourcesURL,
-            environment: RuntimeProvisioning.deterministicEnvironment()
+        let result = try await deviceBackend.launch(
+            bundleIdentifier: expectedMainBundleIdentifier,
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            context: context
         )
         if result.exitCode != 0 {
             let code = ConsumerProvisioningErrorClassifier.launchErrorCode(output: result.combinedOutput)
@@ -1143,9 +1370,33 @@ public actor ConsumerArtifactProvisioner {
             if [.deviceUnavailable, .deviceLocked, .computerTrustRequired, .developerModeRequired].contains(code) {
                 throw deviceFailure(code, detail: result.combinedOutput)
             }
+            let developerServiceCodes: Set<ConsumerProvisioningErrorCode> = [
+                .deviceResolutionFailed, .coreDeviceProxyFailed, .softwareTunnelFailed,
+                .rsdUnavailable, .remoteXPCFailed, .appServiceUnavailable,
+                .featureUnavailable, .ddiRequired, .developerServicesNotReady,
+                .nativeProtocolError,
+            ]
+            if developerServiceCodes.contains(code) {
+                throw ConsumerProvisioningFailure(
+                    code: code,
+                    stage: .developerServicesReconciliationStarted,
+                    userMessage: "IOSSim is still preparing iPhone developer services.",
+                    remediation: "Keep the same iPhone connected, unlocked, and in Developer Mode, then click Try Again.",
+                    developerDetail: result.combinedOutput
+                )
+            }
+            if code == .applicationNotFound {
+                throw ConsumerProvisioningFailure(
+                    code: code,
+                    stage: .mainNativeLaunchStarted,
+                    userMessage: "The current IOSSim app could not be found on the selected iPhone.",
+                    remediation: "Click Try Again so IOSSim can reconcile and repair only the missing app.",
+                    developerDetail: result.combinedOutput
+                )
+            }
             throw ConsumerProvisioningFailure(
-                code: .runtimeConfigurationWriteFailed,
-                stage: .writingRuntimeConfiguration,
+                code: code,
+                stage: .mainNativeLaunchStarted,
                 userMessage: "IOSSim was installed but could not finish setup on the iPhone.",
                 remediation: "Keep the same iPhone connected and unlocked, then click Try Again.",
                 developerDetail: result.combinedOutput
@@ -1163,6 +1414,19 @@ public actor ConsumerArtifactProvisioner {
             device: rawDeviceIdentifier,
             result: .started,
             detail: "Testing profile trust by launching the already-installed current main app."
+        )
+        try await record(
+            stage: .developerServicesReconciliationStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Checking CoreDeviceProxy, software tunnel, RSD, RemoteXPC, and AppService for the selected device."
+        )
+        try await prepareDeveloperServices(manifest: manifest, rawDeviceIdentifier: rawDeviceIdentifier)
+        try await record(
+            stage: .mainNativeLaunchStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Launching the exact current main bundle through NATIVE_APPSERVICE_RSD."
         )
         switch try await launchMainForRuntimeConfiguration(
             rawDeviceIdentifier: rawDeviceIdentifier,
@@ -1183,19 +1447,70 @@ public actor ConsumerArtifactProvisioner {
             )
             return pending
         case .launched:
+            try await record(stage: .rsdReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(stage: .remoteXPCReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(stage: .appServiceReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(stage: .mainNativeLaunchSucceeded, device: rawDeviceIdentifier, result: .passed)
+            try await record(
+                stage: .runtimeConfigurationReconciliationStarted,
+                device: rawDeviceIdentifier,
+                result: .started,
+                detail: "Reconciling the schema-1 runtime mapping through native House Arrest and AFC."
+            )
+            if let runtimeConfigurationManager,
+               let identity = await deviceBackend.nativeDeviceIdentity(
+                   matching: rawDeviceIdentifier,
+                   context: context
+               ) {
+                do {
+                    let result = try await runtimeConfigurationManager.writeAndVerifyRuntimeMapping(
+                        mainBundleIdentifier: manifest.installedMainBundleID,
+                        runnerBundleIdentifier: manifest.installedRunnerBundleID,
+                        teamIdentifier: manifest.teamID,
+                        on: identity
+                    )
+                    try await record(
+                        stage: .houseArrestReady,
+                        device: rawDeviceIdentifier,
+                        result: .passed,
+                        detail: "Native House Arrest vended the exact current main-app container."
+                    )
+                    try await record(
+                        stage: .runtimeConfigurationWritten,
+                        device: rawDeviceIdentifier,
+                        result: .passed,
+                        detail: "result=\(result.rawValue) schema=1"
+                    )
+                } catch {
+                    let code: ConsumerProvisioningErrorCode = (error as? NativeDeviceBridgeError).map {
+                        if case .containerUnavailable = $0 { return .houseArrestUnavailable }
+                        return .runtimeConfigurationWriteFailed
+                    } ?? .runtimeConfigurationWriteFailed
+                    throw ConsumerProvisioningFailure(
+                        code: code,
+                        stage: .writingRuntimeConfiguration,
+                        userMessage: "IOSSim could not finish configuring the iPhone app.",
+                        remediation: "Keep the same iPhone connected and unlocked, then click Try Again.",
+                        developerDetail: "HOUSE_ARREST_RUNTIME_CONFIGURATION_FAILED: \(error)"
+                    )
+                }
+            }
             var updated = manifest.updatingSetupCheckpoint(
                 .runtimeConfigurationWritten,
                 developerProfileTrustStatus: .trusted
             )
             try await stateStore.saveManifest(updated)
             try await record(stage: .developerProfileTrusted, device: rawDeviceIdentifier, result: .passed)
-            try await record(stage: .runtimeConfigurationWritten, device: rawDeviceIdentifier, result: .passed)
+            if runtimeConfigurationManager == nil {
+                try await record(
+                    stage: .runtimeConfigurationWritten,
+                    device: rawDeviceIdentifier,
+                    result: .passed,
+                    detail: "compatibilitySource=APP_INFO_PLIST"
+                )
+            }
             try faultInjector.check(.runtimeConfigVerify)
-            try await verifyPersistedRunnerMapping(
-                rawDeviceIdentifier: rawDeviceIdentifier,
-                expectedMainBundleIdentifier: manifest.installedMainBundleID,
-                expectedRunnerBundleIdentifier: manifest.installedRunnerBundleID
-            )
+            try await verifyRuntimeConfiguration(manifest: manifest, rawDeviceIdentifier: rawDeviceIdentifier)
             updated = updated.updatingSetupCheckpoint(
                 .runtimeConfigurationVerified,
                 developerProfileTrustStatus: .trusted
@@ -1206,66 +1521,158 @@ public actor ConsumerArtifactProvisioner {
         }
     }
 
+    private func prepareDeveloperServices(
+        manifest: ConsumerProvisioningManifest,
+        rawDeviceIdentifier: String
+    ) async throws {
+        guard let developerServicesCoordinator else { return }
+        guard let identity = await deviceBackend.nativeDeviceIdentity(
+            matching: rawDeviceIdentifier,
+            context: context
+        ) else {
+            throw deviceFailure(.deviceUnavailable, detail: "Selected developer-services identity is invalid.")
+        }
+        do {
+            let proofContext = DeveloperServicesProofContext(
+                releaseIdentity: "\(manifest.appVersion):\(manifest.provisionerVersion)",
+                pairingGeneration: nil,
+                targetBundleIdentifier: manifest.installedRunnerBundleID
+            )
+            let receipt = try await developerServicesCoordinator.prepare(
+                device: identity,
+                context: proofContext
+            ) { [weak self] stage in
+                guard let self else { return }
+                let passed: Set<ConsumerProvisioningStage> = [
+                    .ddiAcquisitionSucceeded, .ddiPersonalizationSucceeded, .ddiMountSucceeded,
+                ]
+                try? await self.record(
+                    stage: stage,
+                    device: rawDeviceIdentifier,
+                    result: passed.contains(stage) ? .passed : .started
+                )
+            }
+            guard receipt.isCurrent(
+                for: identity,
+                releaseIdentity: proofContext.releaseIdentity,
+                pairingGeneration: proofContext.pairingGeneration,
+                targetBundleIdentifier: proofContext.targetBundleIdentifier
+            ) else {
+                throw NativeDeviceBridgeError.developerServicesNotReady("incomplete readiness receipt")
+            }
+            try await record(stage: .coreDeviceProxyReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(stage: .softwareTunnelReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(
+                stage: receipt.ddiMounted == true ? .ddiMountSucceeded : .ddiNotRequired,
+                device: rawDeviceIdentifier,
+                result: .passed
+            )
+            try await record(stage: .rsdReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(stage: .remoteXPCReady, device: rawDeviceIdentifier, result: .passed)
+            try await record(stage: .appServiceReady, device: rawDeviceIdentifier, result: .passed)
+        } catch DeveloperSupportFailure.noApprovedSource {
+            try await record(
+                stage: .ddiRequired,
+                device: rawDeviceIdentifier,
+                result: .failed,
+                errorCode: .ddiRequired,
+                detail: "No release-approved exact-build developer-support asset is available."
+            )
+            throw ConsumerProvisioningFailure(
+                code: .ddiRequired,
+                stage: .ddiRequired,
+                userMessage: "IOSSim needs a compatible iPhone developer-support component.",
+                remediation: "Install an IOSSim release that includes approved support for this iOS build, then click Try Again.",
+                developerDetail: "DDI_NO_APPROVED_SOURCE"
+            )
+        } catch let error as NativeDeviceBridgeError {
+            let result = IdeviceProvisioningBackend.nativeLaunchFailureDescription(error)
+            let code = ConsumerProvisioningErrorClassifier.launchErrorCode(output: result)
+            if code == .developerModeRequired {
+                throw deviceFailure(code, detail: result)
+            }
+            throw ConsumerProvisioningFailure(
+                code: code,
+                stage: .developerServicesReconciliationStarted,
+                userMessage: "IOSSim is still preparing iPhone developer services.",
+                remediation: "Keep the same iPhone connected, unlocked, and in Developer Mode, then click Try Again.",
+                developerDetail: result
+            )
+        } catch let failure as DeveloperSupportFailure {
+            let code: ConsumerProvisioningErrorCode
+            let stage: ConsumerProvisioningStage
+            switch failure {
+            case .tssUnavailable, .personalizationRejected:
+                code = .ddiPersonalizationFailed; stage = .ddiPersonalizationStarted
+            case .mountRejected, .uploadFailed:
+                code = .ddiMountFailed; stage = .ddiMountStarted
+            default:
+                code = .developerServicesNotReady; stage = .developerServicesReconciliationStarted
+            }
+            throw ConsumerProvisioningFailure(
+                code: code,
+                stage: stage,
+                userMessage: "IOSSim could not prepare iPhone developer services.",
+                remediation: "Keep the same iPhone connected and click Try Again.",
+                developerDetail: failure.rawValue
+            )
+        }
+    }
+
     private func verifyPersistedRunnerMapping(
         rawDeviceIdentifier: String,
         expectedMainBundleIdentifier: String,
         expectedRunnerBundleIdentifier: String
     ) async throws {
-        let root = fileManager.temporaryDirectory
-            .appendingPathComponent("iossim-runner-mapping-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: root) }
         var detail = "Preference readback did not complete."
         var deviceUnavailable = false
+        let preferencePath = "Library/Preferences/\(expectedMainBundleIdentifier).plist"
 
         for attempt in 0..<3 {
-            let destination = root.appendingPathComponent("attempt-\(attempt)", isDirectory: true)
-            let result = try await context.runner.run(
-                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
-                arguments: [
-                    "devicectl", "device", "copy", "from",
-                    "--device", rawDeviceIdentifier,
-                    "--domain-type", "appDataContainer",
-                    "--domain-identifier", expectedMainBundleIdentifier,
-                    "--source", "Library/Preferences",
-                    "--destination", destination.path,
-                    "--timeout", "30",
-                    "--quiet"
-                ],
-                workingDirectory: root,
-                environment: RuntimeProvisioning.deterministicEnvironment()
-            )
-            if result.exitCode == 0,
-               let enumerator = fileManager.enumerator(at: destination, includingPropertiesForKeys: nil),
-               let preferenceURL = enumerator.compactMap({ $0 as? URL }).first(where: { $0.pathExtension == "plist" }),
-               let preferences = try? readPlist(preferenceURL),
-               let installedRunner = preferences["IOSSimGate3RunnerBundleIdentifier"] as? String {
-                guard installedRunner == expectedRunnerBundleIdentifier else {
-                    throw ConsumerProvisioningFailure(
-                        code: .runtimeConfigurationReadbackFailed,
-                        stage: .verifyingRuntimeConfiguration,
-                        userMessage: "IOSSim’s support configuration does not match the installed component.",
-                        remediation: "Keep the iPhone unlocked and choose Repair.",
-                        developerDetail: "Persisted runner mapping does not equal the expected deterministic runner identifier."
-                    )
-                }
-                try await record(
-                    stage: .writingRuntimeConfiguration,
-                    artifact: "runnerMapping",
-                    device: rawDeviceIdentifier,
-                    result: .passed
+            do {
+                let data = try await deviceBackend.readContainerFile(
+                    bundleIdentifier: expectedMainBundleIdentifier,
+                    relativePath: preferencePath,
+                    rawDeviceIdentifier: rawDeviceIdentifier,
+                    context: context
                 )
-                return
+                if let preferences = try? PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [],
+                    format: nil
+                ) as? [String: Any],
+               let installedRunner = preferences["IOSSimGate3RunnerBundleIdentifier"] as? String {
+                    guard installedRunner == expectedRunnerBundleIdentifier else {
+                        throw ConsumerProvisioningFailure(
+                            code: .runtimeConfigurationReadbackFailed,
+                            stage: .verifyingRuntimeConfiguration,
+                            userMessage: "IOSSim’s support configuration does not match the installed component.",
+                            remediation: "Keep the iPhone unlocked and choose Repair.",
+                            developerDetail: "Persisted runner mapping does not equal the expected deterministic runner identifier."
+                        )
+                    }
+                    try await record(
+                        stage: .verifyingRuntimeConfiguration,
+                        artifact: "runnerMapping",
+                        device: rawDeviceIdentifier,
+                        result: .passed
+                    )
+                    return
+                }
+                detail = "The app preferences did not contain the expected runner mapping."
+            } catch let failure as ConsumerProvisioningFailure {
+                throw failure
+            } catch {
+                detail = Redactor.redact(String(describing: error))
+                deviceUnavailable = ConsumerProvisioningErrorClassifier.installErrorCode(
+                    output: detail,
+                    artifact: "main"
+                ) == .deviceUnavailable
             }
-            detail = result.combinedOutput
-            deviceUnavailable = ConsumerProvisioningErrorClassifier.installErrorCode(
-                output: result.combinedOutput,
-                artifact: "main"
-            ) == .deviceUnavailable
             if attempt < 2 { try await Task.sleep(nanoseconds: 300_000_000) }
         }
         throw ConsumerProvisioningFailure(
-            code: deviceUnavailable ? .deviceUnavailable : .runtimeConfigurationReadbackFailed,
+            code: deviceUnavailable ? .deviceUnavailable : .nativeContainerReadFailed,
             stage: deviceUnavailable ? .waitingForDevice : .verifyingRuntimeConfiguration,
             userMessage: deviceUnavailable
                 ? "IOSSim is ready to continue when the selected iPhone reconnects."
@@ -1275,6 +1682,265 @@ public actor ConsumerArtifactProvisioner {
                 : "Keep the iPhone unlocked, open IOSSim once, then choose Repair.",
             developerDetail: detail
         )
+    }
+
+    private func verifyRuntimeConfiguration(
+        manifest: ConsumerProvisioningManifest,
+        rawDeviceIdentifier: String
+    ) async throws {
+        if let runtimeConfigurationManager,
+           let identity = await deviceBackend.nativeDeviceIdentity(
+               matching: rawDeviceIdentifier,
+               context: context
+           ) {
+            do {
+                guard try await runtimeConfigurationManager.verifyRuntimeMapping(
+                    mainBundleIdentifier: manifest.installedMainBundleID,
+                    runnerBundleIdentifier: manifest.installedRunnerBundleID,
+                    teamIdentifier: manifest.teamID,
+                    on: identity
+                ) else {
+                    throw NativeApplicationManagementError.readbackMismatch
+                }
+                try await record(
+                    stage: .verifyingRuntimeConfiguration,
+                    artifact: "runtimeMapping",
+                    device: rawDeviceIdentifier,
+                    result: .passed,
+                    detail: "Native House Arrest readback matched schema, device, team, main, and runner semantics."
+                )
+                return
+            } catch {
+                let code: ConsumerProvisioningErrorCode = (error as? NativeDeviceBridgeError).map {
+                    if case .containerUnavailable = $0 { return .houseArrestUnavailable }
+                    return .runtimeConfigurationReadbackFailed
+                } ?? .runtimeConfigurationReadbackFailed
+                throw ConsumerProvisioningFailure(
+                    code: code,
+                    stage: .verifyingRuntimeConfiguration,
+                    userMessage: "IOSSim could not verify its iPhone configuration.",
+                    remediation: "Keep the same iPhone connected and unlocked, then click Try Again.",
+                    developerDetail: "HOUSE_ARREST_RUNTIME_CONFIGURATION_READBACK_FAILED: \(error)"
+                )
+            }
+        }
+        try await verifyPersistedRunnerMapping(
+            rawDeviceIdentifier: rawDeviceIdentifier,
+            expectedMainBundleIdentifier: manifest.installedMainBundleID,
+            expectedRunnerBundleIdentifier: manifest.installedRunnerBundleID
+        )
+    }
+
+    private func advanceRemotePairing(
+        manifest: ConsumerProvisioningManifest,
+        rawDeviceIdentifier: String
+    ) async throws -> ConsumerProvisioningManifest {
+        guard let remotePairingCoordinator else { return manifest }
+        guard let identity = await deviceBackend.nativeDeviceIdentity(
+            matching: rawDeviceIdentifier,
+            context: context
+        ) else {
+            throw deviceFailure(.deviceUnavailable, detail: "Selected pairing device identity is invalid.")
+        }
+        try await record(
+            stage: .pairingReconciliationStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Reconciling device-scoped RemotePairing through the native trusted USB channel."
+        )
+        try await record(
+            stage: .pairingDeliveryStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Preparing the authenticated app-private House Arrest setup inbox."
+        )
+        do {
+            _ = try await remotePairingCoordinator.reconcileAutomatically(
+                device: identity,
+                teamIdentifier: manifest.teamID,
+                appBundleIdentifier: manifest.installedMainBundleID,
+                hostname: "IOSSim-Mac",
+                releaseIdentity: "\(manifest.appVersion):\(manifest.provisionerVersion)"
+            )
+            let disposition = await remotePairingCoordinator.lastDisposition
+            try await record(
+                stage: disposition == .created ? .pairingCreated : .pairingReused,
+                device: rawDeviceIdentifier,
+                result: .passed,
+                detail: "Pairing secret remains in the device-scoped Mac Keychain item."
+            )
+            try await record(stage: .pairingDeliverySucceeded, device: rawDeviceIdentifier, result: .passed)
+            try await record(
+                stage: .pairingReceiptVerified,
+                device: rawDeviceIdentifier,
+                result: .passed,
+                detail: "Phone receipt matched device, team, identifier, public fingerprint, and accepted state."
+            )
+            var updated = manifest.updatingSetupCheckpoint(.remotePairingVerified)
+            try await stateStore.saveManifest(updated)
+            if localDevVPNCoordinator != nil {
+                return try await advanceLocalDevVPN(
+                    manifest: updated,
+                    identity: identity,
+                    rawDeviceIdentifier: rawDeviceIdentifier
+                )
+            }
+            updated = updated.updatingSetupCheckpoint(.setupReadyForRuntime)
+            updated = updated.updatingRuntimeSetupStatus(.userActionRequired)
+            try await stateStore.saveManifest(updated)
+            try await record(
+                stage: .setupReadyForRuntime,
+                device: rawDeviceIdentifier,
+                result: .passed,
+                detail: "All first-time setup gates verified; location runtime not started."
+            )
+            return updated
+        } catch let failure as ConsumerProvisioningFailure {
+            throw failure
+        } catch let failure as RemotePairingFailure {
+            let code: ConsumerProvisioningErrorCode
+            let stage: ConsumerProvisioningStage
+            switch failure {
+            case .deliveryFailed, .bootstrapMissing, .bootstrapInvalid, .bootstrapExpired:
+                code = .pairingDeliveryFailed; stage = .pairingDeliveryStarted
+            case .receiptMissing, .receiptInvalid, .receiptRejected:
+                code = .pairingReceiptFailed; stage = .pairingReceiptVerified
+            case .deviceLocked:
+                throw deviceFailure(.deviceLocked, detail: failure.rawValue)
+            case .deviceTrustRequired:
+                throw deviceFailure(.computerTrustRequired, detail: failure.rawValue)
+            case .transientTransport:
+                throw deviceFailure(.deviceUnavailable, detail: failure.rawValue)
+            default:
+                code = .remotePairingFailed; stage = .pairingReconciliationStarted
+            }
+            throw ConsumerProvisioningFailure(
+                code: code,
+                stage: stage,
+                userMessage: "IOSSim could not finish preparing the secure device connection.",
+                remediation: "Keep the same iPhone connected and unlocked, then click Try Again.",
+                developerDetail: failure.rawValue
+            )
+        } catch {
+            throw ConsumerProvisioningFailure(
+                code: .remotePairingFailed,
+                stage: .pairingReconciliationStarted,
+                userMessage: "IOSSim could not finish preparing the secure device connection.",
+                remediation: "Keep the same iPhone connected and unlocked, then click Try Again.",
+                developerDetail: String(describing: error)
+            )
+        }
+    }
+
+    private func advanceLocalDevVPN(
+        manifest: ConsumerProvisioningManifest,
+        identity: IOSSimDeviceIdentity,
+        rawDeviceIdentifier: String
+    ) async throws -> ConsumerProvisioningManifest {
+        guard let localDevVPNCoordinator else { return manifest }
+        try await record(
+            stage: .localDevVPNReadinessStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Activating the existing iPhone route probe before launching external LocalDevVPN."
+        )
+        try await record(
+            stage: .localDevVPNLaunchStarted,
+            device: rawDeviceIdentifier,
+            result: .started,
+            detail: "Opening the installed LocalDevVPN app through NATIVE_APPSERVICE_RSD."
+        )
+        do {
+            let receipt = try await localDevVPNCoordinator.prepare(
+                device: identity,
+                iosSimBundleIdentifier: manifest.installedMainBundleID,
+                teamIdentifier: manifest.teamID,
+                releaseIdentity: "\(manifest.appVersion):\(manifest.provisionerVersion)"
+            )
+            try await record(
+                stage: .localDevVPNLaunchSucceeded,
+                device: rawDeviceIdentifier,
+                result: .passed,
+                detail: "LocalDevVPN was already ready or its external app was launched successfully."
+            )
+            guard receipt.endpointReachable,
+                  receipt.endpoint.host == "10.7.0.1",
+                  receipt.endpoint.port == 49152 else {
+                throw LocalDevVPNSetupFailure.receiptInvalid
+            }
+            var updated = manifest.updatingSetupCheckpoint(.localDevVPNReady)
+            try await stateStore.saveManifest(updated)
+            try await record(
+                stage: .localDevVPNReady,
+                device: rawDeviceIdentifier,
+                result: .passed,
+                detail: "The existing iPhone probe reached 10.7.0.1:49152; interface visibility remained diagnostic only."
+            )
+            updated = updated.updatingSetupCheckpoint(.setupReadyForRuntime)
+            updated = updated.updatingRuntimeSetupStatus(.userActionRequired)
+            try await stateStore.saveManifest(updated)
+            try await record(
+                stage: .setupReadyForRuntime,
+                device: rawDeviceIdentifier,
+                result: .passed,
+                detail: "All setup gates including LocalDevVPN readiness verified; TestManager/XCTest/location runtime not started."
+            )
+            return updated
+        } catch let failure as LocalDevVPNSetupFailure {
+            let code: ConsumerProvisioningErrorCode
+            let userMessage: String
+            let remediation: String
+            switch failure {
+            case .appMissing:
+                code = .localDevVPNMissing
+                userMessage = "LocalDevVPN must be installed on this iPhone."
+                remediation = "Install LocalDevVPN, then return to IOSSim and choose Try Again."
+            case .unsupportedVersion:
+                code = .localDevVPNUserActionRequired
+                userMessage = "This LocalDevVPN version is not supported by IOSSim."
+                remediation = "Update LocalDevVPN from the App Store, then return to IOSSim and choose Try Again."
+            case .vpnPermissionRequired:
+                code = .localDevVPNUserActionRequired
+                userMessage = "Approve the VPN configuration on your iPhone."
+                remediation = "Open LocalDevVPN, tap Connect, approve Apple's VPN prompt, then return to IOSSim and choose Try Again."
+            case .vpnNotRunning:
+                code = .localDevVPNUserActionRequired
+                userMessage = "LocalDevVPN is configured but not running."
+                remediation = "Open LocalDevVPN and tap Connect, then return to IOSSim and choose Try Again."
+            case .endpointUnavailable:
+                code = .localDevVPNReadinessFailed
+                userMessage = "LocalDevVPN is running, but the developer endpoint is not ready."
+                remediation = "Keep LocalDevVPN connected and the iPhone unlocked, then choose Try Again."
+            case .userActionRequired:
+                code = .localDevVPNUserActionRequired
+                userMessage = "Finish enabling LocalDevVPN on your iPhone."
+                remediation = "Open LocalDevVPN and follow its setup guidance, then return to IOSSim and choose Try Again."
+            case .receiptMissing, .receiptInvalid:
+                code = .localDevVPNReadinessFailed
+                userMessage = "IOSSim could not verify LocalDevVPN readiness."
+                remediation = "Keep the iPhone unlocked, confirm LocalDevVPN shows Connected, then choose Try Again."
+            case .transportUnavailable:
+                code = .deviceUnavailable
+                userMessage = "IOSSim lost contact with the iPhone while checking LocalDevVPN."
+                remediation = "Reconnect and unlock the same iPhone, then choose Try Again."
+            }
+            try await record(
+                stage: [.userActionRequired, .appMissing, .unsupportedVersion, .vpnPermissionRequired, .vpnNotRunning].contains(failure)
+                    ? .localDevVPNUserActionRequired : .localDevVPNReadinessStarted,
+                device: rawDeviceIdentifier,
+                result: .failed,
+                errorCode: code,
+                detail: failure.rawValue
+            )
+            throw ConsumerProvisioningFailure(
+                code: code,
+                stage: [.userActionRequired, .appMissing, .unsupportedVersion, .vpnPermissionRequired, .vpnNotRunning].contains(failure)
+                    ? .localDevVPNUserActionRequired : .localDevVPNReadinessStarted,
+                userMessage: userMessage,
+                remediation: remediation,
+                developerDetail: failure.rawValue
+            )
+        }
     }
 
     private func updateBundleInfo(appURL: URL, bundleIdentifier: String, runnerBundleIdentifier: String) throws {

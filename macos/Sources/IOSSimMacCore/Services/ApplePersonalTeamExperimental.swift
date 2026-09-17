@@ -243,6 +243,9 @@ public struct ExperimentalSigningIdentity: Equatable, Sendable {
     public let privateKeyPersistentReference: Data
     /// Non-secret identifier for the permanent IOSSim-owned Keychain key.
     public let keyApplicationTagIdentifier: String?
+    /// True when this identity is staged and must not replace the active
+    /// IOSSim-managed identity until installation has been verified.
+    public let pendingPromotion: Bool
     public let reused: Bool
 
     public init(
@@ -250,12 +253,14 @@ public struct ExperimentalSigningIdentity: Equatable, Sendable {
         certificateExpiration: Date,
         privateKeyPersistentReference: Data,
         keyApplicationTagIdentifier: String? = nil,
+        pendingPromotion: Bool = false,
         reused: Bool
     ) {
         self.certificateFingerprint = certificateFingerprint
         self.certificateExpiration = certificateExpiration
         self.privateKeyPersistentReference = privateKeyPersistentReference
         self.keyApplicationTagIdentifier = keyApplicationTagIdentifier
+        self.pendingPromotion = pendingPromotion
         self.reused = reused
     }
 }
@@ -387,7 +392,7 @@ public struct ExperimentalProvisioningReceipt: Equatable, Sendable {
     }
 }
 
-public protocol ExperimentalPersonalTeamBackend: Sendable {
+public protocol ApplePersonalTeamService: Sendable {
     var method: AppleAuthorizationMethodCategory { get }
     var clientIdentityVersion: String { get }
     var isPhysicallyQualified: Bool { get }
@@ -396,6 +401,7 @@ public protocol ExperimentalPersonalTeamBackend: Sendable {
     func beginAuthorization(account: String, password: SensitiveInput) async throws -> ExperimentalAuthorizationResult
     func submitVerification(code: SensitiveInput) async throws -> ExperimentalAuthorizationResult
     func invalidateSession() async
+    func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws
     func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity
     func registerDevice(_ request: ExperimentalProvisioningRequest, team: ExperimentalAppleTeam) async throws
     func registerIdentifiers(_ identifiers: PersonalTeamBundleIdentifierSet, team: ExperimentalAppleTeam) async throws
@@ -416,6 +422,10 @@ public protocol ExperimentalPersonalTeamBackend: Sendable {
     ) async throws -> ExperimentalInstallInventory
     func preparePairing(for request: ExperimentalProvisioningRequest) async throws -> Bool
 }
+
+/// Source compatibility for development fixtures while product code uses the
+/// responsibility-based service name.
+public typealias ExperimentalPersonalTeamBackend = ApplePersonalTeamService
 
 public enum ExperimentalBackendError: Error, Equatable, Sendable {
     case badPassword
@@ -455,6 +465,7 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
     case profileRequestFailed
     case responseTooLarge
     case redirectRejected
+    case adapterDisabled
 
     public var safeCode: String {
         switch self {
@@ -486,6 +497,7 @@ public enum ExperimentalBackendError: Error, Equatable, Sendable {
         case .serviceUnavailable: return "APPLE_SERVICE_UNAVAILABLE"
         case .responseTooLarge: return "APPLE_RESPONSE_TOO_LARGE"
         case .redirectRejected: return "APPLE_REDIRECT_REJECTED"
+        case .adapterDisabled: return "APPLE_PRIVATE_ADAPTER_DISABLED"
         default: return String(describing: self).uppercased()
         }
     }
@@ -513,6 +525,8 @@ public enum ApplePersonalTeamCheckpoint: String, Codable, CaseIterable, Sendable
     case csrCreated = "CSR_CREATED"
     case developmentCertificateCreated = "DEVELOPMENT_CERTIFICATE_CREATED"
     case managedIdentityRecoverySucceeded = "MANAGED_IDENTITY_RECOVERY_SUCCEEDED"
+    case signingKeyUsabilityVerified = "SIGNING_KEY_USABILITY_VERIFIED"
+    case signingKeyUsabilityFailed = "SIGNING_KEY_USABILITY_FAILED"
     case provisioningPreparationContinued = "PROVISIONING_PREPARATION_CONTINUED"
     case signingIdentityReused = "SIGNING_IDENTITY_REUSED"
     case signingIdentityCreated = "SIGNING_IDENTITY_CREATED"
@@ -595,10 +609,10 @@ public actor ExperimentalConsumerProvisioningCoordinator {
         sessionValid: false
     )
     public private(set) var teams: [ExperimentalAppleTeam] = []
-    private let backend: any ExperimentalPersonalTeamBackend
+    private let backend: any ApplePersonalTeamService
     private var authorizationGeneration: UInt64 = 0
 
-    public init(backend: any ExperimentalPersonalTeamBackend) {
+    public init(backend: any ApplePersonalTeamService) {
         self.backend = backend
         authorization = AppleAuthorizationSummary(
             method: backend.method,
@@ -727,6 +741,12 @@ public actor ExperimentalConsumerProvisioningCoordinator {
         )
     }
 
+    /// Re-applies IOSSim's noninteractive signing policy before cached
+    /// provisioning artifacts cross into the packaged provisioner process.
+    public func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws {
+        try await backend.repairSigningIdentityAccess(team: team)
+    }
+
     public func invalidate() async {
         _ = nextAuthorizationGeneration()
         teams = []
@@ -834,6 +854,7 @@ public struct UnavailableExperimentalPersonalTeamBackend: ExperimentalPersonalTe
         throw ExperimentalBackendError.unavailable
     }
     public func invalidateSession() async {}
+    public func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws { throw ExperimentalBackendError.unavailable }
     public func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity { throw ExperimentalBackendError.unavailable }
     public func registerDevice(_ request: ExperimentalProvisioningRequest, team: ExperimentalAppleTeam) async throws { throw ExperimentalBackendError.unavailable }
     public func registerIdentifiers(_ identifiers: PersonalTeamBundleIdentifierSet, team: ExperimentalAppleTeam) async throws { throw ExperimentalBackendError.unavailable }
@@ -894,6 +915,148 @@ public struct PrivateAppleProtocolAdapter: Equatable, Sendable {
             || normalized.contains("octet-stream") else {
             throw ExperimentalBackendError.responseChanged
         }
+    }
+}
+
+public struct PrivateAppleProvisioningAdapterPolicy: Equatable, Sendable {
+    public let enabled: Bool
+    public let allowedAdapterVersions: Set<String>
+
+    public init(enabled: Bool, allowedAdapterVersions: Set<String>) {
+        self.enabled = enabled
+        self.allowedAdapterVersions = allowedAdapterVersions
+    }
+
+    public static func current(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> PrivateAppleProvisioningAdapterPolicy {
+        let disabled = ["1", "true", "yes"].contains(
+            environment["VEYA_DISABLE_PRIVATE_APPLE_PROVISIONING"]?.lowercased() ?? ""
+        )
+        return PrivateAppleProvisioningAdapterPolicy(
+            enabled: !disabled,
+            allowedAdapterVersions: [PrivateAppleProtocolAdapter.researched2026.version]
+        )
+    }
+
+    public func permits(adapterVersion: String) -> Bool {
+        enabled && allowedAdapterVersions.contains(adapterVersion)
+    }
+}
+
+/// Domain-facing, kill-switchable boundary for the version-bound private
+/// Apple protocol implementation. Setup/UI code receives only typed service
+/// operations and outcomes through this adapter.
+public actor VersionedPrivateAppleProvisioningAdapter: ApplePersonalTeamService {
+    public nonisolated let method: AppleAuthorizationMethodCategory
+    public nonisolated let clientIdentityVersion: String
+    public nonisolated let isPhysicallyQualified: Bool
+
+    private let service: any ApplePersonalTeamService
+    private let policy: PrivateAppleProvisioningAdapterPolicy
+
+    public init(
+        service: any ApplePersonalTeamService,
+        policy: PrivateAppleProvisioningAdapterPolicy = .current()
+    ) {
+        self.service = service
+        self.policy = policy
+        method = service.method
+        clientIdentityVersion = service.clientIdentityVersion
+        isPhysicallyQualified = service.isPhysicallyQualified
+            && policy.permits(adapterVersion: service.clientIdentityVersion)
+    }
+
+    private func requireAvailable() throws {
+        guard policy.enabled else { throw ExperimentalBackendError.adapterDisabled }
+        guard policy.allowedAdapterVersions.contains(clientIdentityVersion) else {
+            throw ExperimentalBackendError.authenticationProtocolMismatch
+        }
+    }
+
+    public func resumeSession() async throws -> [ExperimentalAppleTeam]? {
+        try requireAvailable()
+        return try await service.resumeSession()
+    }
+
+    public func beginAuthorization(
+        account: String,
+        password: SensitiveInput
+    ) async throws -> ExperimentalAuthorizationResult {
+        try requireAvailable()
+        return try await service.beginAuthorization(account: account, password: password)
+    }
+
+    public func submitVerification(code: SensitiveInput) async throws -> ExperimentalAuthorizationResult {
+        try requireAvailable()
+        return try await service.submitVerification(code: code)
+    }
+
+    public func invalidateSession() async {
+        await service.invalidateSession()
+    }
+
+    public func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws {
+        try requireAvailable()
+        try await service.repairSigningIdentityAccess(team: team)
+    }
+
+    public func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity {
+        try requireAvailable()
+        return try await service.prepareIdentity(team: team)
+    }
+
+    public func registerDevice(
+        _ request: ExperimentalProvisioningRequest,
+        team: ExperimentalAppleTeam
+    ) async throws {
+        try requireAvailable()
+        try await service.registerDevice(request, team: team)
+    }
+
+    public func registerIdentifiers(
+        _ identifiers: PersonalTeamBundleIdentifierSet,
+        team: ExperimentalAppleTeam
+    ) async throws {
+        try requireAvailable()
+        try await service.registerIdentifiers(identifiers, team: team)
+    }
+
+    public func obtainProfiles(
+        identifiers: PersonalTeamBundleIdentifierSet,
+        identity: ExperimentalSigningIdentity,
+        request: ExperimentalProvisioningRequest,
+        team: ExperimentalAppleTeam
+    ) async throws -> [ExperimentalProfile] {
+        try requireAvailable()
+        return try await service.obtainProfiles(
+            identifiers: identifiers,
+            identity: identity,
+            request: request,
+            team: team
+        )
+    }
+
+    public func signArtifacts(
+        identifiers: PersonalTeamBundleIdentifierSet,
+        identity: ExperimentalSigningIdentity,
+        profiles: [ExperimentalProfile]
+    ) async throws {
+        try requireAvailable()
+        try await service.signArtifacts(identifiers: identifiers, identity: identity, profiles: profiles)
+    }
+
+    public func installArtifacts(
+        identifiers: PersonalTeamBundleIdentifierSet,
+        request: ExperimentalProvisioningRequest
+    ) async throws -> ExperimentalInstallInventory {
+        try requireAvailable()
+        return try await service.installArtifacts(identifiers: identifiers, request: request)
+    }
+
+    public func preparePairing(for request: ExperimentalProvisioningRequest) async throws -> Bool {
+        try requireAvailable()
+        return try await service.preparePairing(for: request)
     }
 }
 

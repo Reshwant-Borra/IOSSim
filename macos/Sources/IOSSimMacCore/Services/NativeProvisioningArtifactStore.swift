@@ -25,6 +25,9 @@ public struct NativeProvisioningArtifacts: Codable, Equatable, Sendable {
     /// Non-secret application tag used to query only the IOSSim-owned private key.
     /// Optional for schema-1 artifacts written before this continuity field existed.
     public let keyApplicationTagIdentifier: String?
+    /// The corresponding Keychain metadata is staged until exact installation
+    /// inventory succeeds.
+    public let signingIdentityPendingPromotion: Bool?
     public let certificateExpiresAt: Date
     public let deviceIdentifierHash: String
     public let identifiers: PersonalTeamBundleIdentifierSet
@@ -40,6 +43,7 @@ public struct NativeProvisioningArtifacts: Codable, Equatable, Sendable {
         teamIdentifier = preparation.team.id
         certificateFingerprint = preparation.identity.certificateFingerprint.uppercased()
         keyApplicationTagIdentifier = preparation.identity.keyApplicationTagIdentifier
+        signingIdentityPendingPromotion = preparation.identity.pendingPromotion
         certificateExpiresAt = preparation.identity.certificateExpiration
         deviceIdentifierHash = PersonalTeamProvisioningPOC.deviceIdentifierHash(selectedDeviceIdentifier)
         identifiers = preparation.derivedIdentifiers
@@ -68,6 +72,7 @@ public struct NativeProvisioningArtifacts: Codable, Equatable, Sendable {
 /// private key is never exported; it remains in the keychain.
 public actor NativeProvisioningArtifactStore {
     public static let fileName = "native-provisioning-artifacts.json"
+    public static let candidateFileName = "native-provisioning-candidate.json"
 
     private let directoryURL: URL
     private let fileManager: FileManager
@@ -85,6 +90,10 @@ public actor NativeProvisioningArtifactStore {
 
     public var artifactURL: URL {
         directoryURL.appendingPathComponent(Self.fileName)
+    }
+
+    public var candidateArtifactURL: URL {
+        directoryURL.appendingPathComponent(Self.candidateFileName)
     }
 
     public func save(
@@ -109,12 +118,43 @@ public actor NativeProvisioningArtifactStore {
             attributes: [.posixPermissions: 0o700]
         )
         try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
-        let temporaryURL = directoryURL.appendingPathComponent(".\(Self.fileName).\(UUID().uuidString).tmp")
+        let temporaryURL = directoryURL.appendingPathComponent(".\(Self.candidateFileName).\(UUID().uuidString).tmp")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(artifacts)
-        try data.write(to: temporaryURL, options: [.atomic, .completeFileProtection])
+        // NSFileProtection is not a macOS storage primitive and is rejected by
+        // current Foundation with EPERM. Atomic replacement plus 0600 permissions
+        // provides the intended macOS persistence boundary.
+        try data.write(to: temporaryURL, options: [.atomic])
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
+        if fileManager.fileExists(atPath: candidateArtifactURL.path) {
+            _ = try fileManager.replaceItemAt(candidateArtifactURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: candidateArtifactURL)
+        }
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: candidateArtifactURL.path)
+    }
+
+    /// Promotes a fully validated candidate without deleting the previous
+    /// active artifact until the atomic replacement succeeds.
+    public func promoteCandidate(
+        teamIdentifier: String,
+        selectedDeviceIdentifier: String,
+        now: Date = Date()
+    ) throws {
+        guard fileManager.fileExists(atPath: candidateArtifactURL.path) else { return }
+        let candidate = try decode(
+            at: candidateArtifactURL,
+            teamIdentifier: teamIdentifier,
+            selectedDeviceIdentifier: selectedDeviceIdentifier,
+            now: now
+        )
+        let temporaryURL = directoryURL.appendingPathComponent(".\(Self.fileName).promote.\(UUID().uuidString).tmp")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(candidate).write(to: temporaryURL, options: [.atomic])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
         if fileManager.fileExists(atPath: artifactURL.path) {
             _ = try fileManager.replaceItemAt(artifactURL, withItemAt: temporaryURL)
@@ -122,6 +162,7 @@ public actor NativeProvisioningArtifactStore {
             try fileManager.moveItem(at: temporaryURL, to: artifactURL)
         }
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: artifactURL.path)
+        try fileManager.removeItem(at: candidateArtifactURL)
     }
 
     public func load(
@@ -129,12 +170,40 @@ public actor NativeProvisioningArtifactStore {
         selectedDeviceIdentifier: String,
         now: Date = Date()
     ) throws -> NativeProvisioningArtifacts {
-        guard fileManager.fileExists(atPath: artifactURL.path) else {
+        let source = fileManager.fileExists(atPath: candidateArtifactURL.path)
+            ? candidateArtifactURL : artifactURL
+        return try decode(at: source, teamIdentifier: teamIdentifier, selectedDeviceIdentifier: selectedDeviceIdentifier, now: now)
+    }
+
+    public func loadActive(
+        teamIdentifier: String,
+        selectedDeviceIdentifier: String,
+        now: Date = Date()
+    ) throws -> NativeProvisioningArtifacts {
+        try decode(at: artifactURL, teamIdentifier: teamIdentifier, selectedDeviceIdentifier: selectedDeviceIdentifier, now: now)
+    }
+
+    /// Loads the single prepared native context for local-only work while its
+    /// iPhone is temporarily disconnected. Device-bound operations still use
+    /// the normal overload and revalidate the physical UDID after reconnect.
+    public func load(teamIdentifier: String, now: Date = Date()) throws -> NativeProvisioningArtifacts {
+        let source = fileManager.fileExists(atPath: candidateArtifactURL.path)
+            ? candidateArtifactURL : artifactURL
+        return try decode(at: source, teamIdentifier: teamIdentifier, selectedDeviceIdentifier: nil, now: now)
+    }
+
+    private func decode(
+        at sourceURL: URL,
+        teamIdentifier: String,
+        selectedDeviceIdentifier: String?,
+        now: Date
+    ) throws -> NativeProvisioningArtifacts {
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw unavailable("Native Personal Team profiles were not preserved after provisioning.")
         }
         let data: Data
         do {
-            data = try Data(contentsOf: artifactURL)
+            data = try Data(contentsOf: sourceURL)
         } catch {
             throw unavailable("Native Personal Team artifact handoff could not be read: \(error)")
         }
@@ -153,39 +222,6 @@ public actor NativeProvisioningArtifactStore {
             artifacts,
             teamIdentifier: teamIdentifier,
             selectedDeviceIdentifier: selectedDeviceIdentifier,
-            now: now
-        )
-        return artifacts
-    }
-
-    /// Loads the single prepared native context for local-only work while its
-    /// iPhone is temporarily disconnected. Device-bound operations still use
-    /// the normal overload and revalidate the physical UDID after reconnect.
-    public func load(teamIdentifier: String, now: Date = Date()) throws -> NativeProvisioningArtifacts {
-        guard fileManager.fileExists(atPath: artifactURL.path) else {
-            throw unavailable("Native Personal Team profiles were not preserved after provisioning.")
-        }
-        let data: Data
-        do {
-            data = try Data(contentsOf: artifactURL)
-        } catch {
-            throw unavailable("Native Personal Team artifact handoff could not be read: \(error)")
-        }
-        guard data.count <= 4 * 1_024 * 1_024 else {
-            throw unavailable("Native Personal Team artifact handoff exceeds the size limit.")
-        }
-        let artifacts: NativeProvisioningArtifacts
-        do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            artifacts = try decoder.decode(NativeProvisioningArtifacts.self, from: data)
-        } catch {
-            throw unavailable("Native Personal Team artifact handoff is corrupt: \(error)")
-        }
-        try validateEnvelope(
-            artifacts,
-            teamIdentifier: teamIdentifier,
-            selectedDeviceIdentifier: nil,
             now: now
         )
         return artifacts

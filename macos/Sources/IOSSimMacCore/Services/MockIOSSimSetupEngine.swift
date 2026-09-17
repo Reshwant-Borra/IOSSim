@@ -33,7 +33,7 @@ public actor MockIOSSimSetupEngine: IOSSimSetupEngine {
             return Self.status(
                 macReady: false,
                 device: Self.readyDevice(),
-                extraChecks: [.init(state: .action, component: "Xcode", name: "Xcode version", detail: "missing", action: "Install Xcode from Apple.", requiredFor: "build")]
+                extraChecks: [.init(state: .warn, component: "Build Only · Xcode", name: "BUILD_ONLY Xcode version", detail: "missing", action: "Required only to rebuild iPhone payloads.", requiredFor: "build")]
             )
         case .noDevice:
             return Self.status(macReady: true, device: nil)

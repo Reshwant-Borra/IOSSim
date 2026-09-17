@@ -14,6 +14,7 @@ public final class SetupStore: ObservableObject {
     @Published public private(set) var personalTeams: [PersonalTeamCandidate] = []
     @Published public private(set) var selectedTeamIdentifier: String?
     @Published public private(set) var provisioningManifest: ConsumerProvisioningManifest?
+    @Published public private(set) var setupReconciliation: ConsumerSetupReconciliationResult?
     @Published public private(set) var consumerStage: ConsumerProvisioningStage = .idle
     @Published public private(set) var lastConsumerFailureCode: ConsumerProvisioningErrorCode?
     @Published public private(set) var lastConsumerFailureStage: ConsumerProvisioningStage?
@@ -25,12 +26,15 @@ public final class SetupStore: ObservableObject {
     )
     @Published public private(set) var appleVerificationChallenge: AppleVerificationChallenge?
     @Published public private(set) var liveProvisioningCheckpoint: ApplePersonalTeamCheckpoint?
+    @Published public private(set) var lockdownPairingReceipt: LockdownPairingReceipt?
 
     public let engine: any IOSSimSetupEngine
     private let authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator
     private let stateDiagnostics: ApplePersonalTeamDiagnosticsStore
     private let nativeArtifactStore: NativeProvisioningArtifactStore
     private let stateDiagnosticsEnabled: Bool
+    private let preferences: UserDefaults
+    private let temporaryRoot: URL
     public let nativeProvisioningExperiment: Bool
     private var task: Task<Void, Never>?
     private var operationGeneration: UInt64 = 0
@@ -47,25 +51,31 @@ public final class SetupStore: ObservableObject {
         authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator? = nil,
         nativeProvisioningExperiment: Bool = ZeroXcodeCapabilityPolicy.livePersonalTeamExperimentEnabled,
         stateDiagnostics: ApplePersonalTeamDiagnosticsStore? = nil,
-        nativeArtifactStore: NativeProvisioningArtifactStore = NativeProvisioningArtifactStore()
+        nativeArtifactStore: NativeProvisioningArtifactStore = NativeProvisioningArtifactStore(),
+        userDefaults: UserDefaults = .standard,
+        temporaryRoot: URL = FileManager.default.temporaryDirectory
     ) {
         let diagnostics = stateDiagnostics ?? ApplePersonalTeamDiagnosticsStore()
         self.engine = engine
         self.nativeProvisioningExperiment = nativeProvisioningExperiment
         self.stateDiagnostics = diagnostics
         self.nativeArtifactStore = nativeArtifactStore
+        self.preferences = userDefaults
+        self.temporaryRoot = temporaryRoot
         stateDiagnosticsEnabled = nativeProvisioningExperiment || stateDiagnostics != nil
         self.authorizationCoordinator = authorizationCoordinator ?? .init(
             backend: nativeProvisioningExperiment
-                ? LiveApplePersonalTeamBackend(diagnostics: diagnostics)
+                ? VersionedPrivateAppleProvisioningAdapter(
+                    service: LiveApplePersonalTeamBackend(diagnostics: diagnostics)
+                )
                 : UnavailableExperimentalPersonalTeamBackend()
         )
-        selectedDeviceIdentifier = UserDefaults.standard.string(forKey: selectedDeviceKey)
-        selectedTeamIdentifier = UserDefaults.standard.string(forKey: selectedTeamKey)
+        selectedDeviceIdentifier = userDefaults.string(forKey: selectedDeviceKey)
+        selectedTeamIdentifier = userDefaults.string(forKey: selectedTeamKey)
     }
 
     public var onboardingCompleted: Bool {
-        UserDefaults.standard.bool(forKey: onboardingKey)
+        preferences.bool(forKey: onboardingKey)
     }
 
     public var selectedDevice: DetectedDevice? {
@@ -86,14 +96,14 @@ public final class SetupStore: ObservableObject {
         }
         return DeviceSelectionPolicy.resolve(
             devices: status.device.devices,
-            rememberedIdentifier: UserDefaults.standard.string(forKey: selectedDeviceKey),
-            rememberedName: UserDefaults.standard.string(forKey: selectedDeviceNameKey)
+            rememberedIdentifier: preferences.string(forKey: selectedDeviceKey),
+            rememberedName: preferences.string(forKey: selectedDeviceNameKey)
         ).selectionRequired
     }
 
     public var disconnectedDeviceName: String? {
         guard case .rememberedDeviceDisconnected = deviceSelectionReason else { return nil }
-        return UserDefaults.standard.string(forKey: selectedDeviceNameKey)
+        return preferences.string(forKey: selectedDeviceNameKey)
     }
 
     public var selectedTeam: PersonalTeamCandidate? {
@@ -107,10 +117,10 @@ public final class SetupStore: ObservableObject {
 
     public var automaticRefreshEnabled: Bool {
         get {
-            UserDefaults.standard.object(forKey: automaticRefreshKey) == nil
-                || UserDefaults.standard.bool(forKey: automaticRefreshKey)
+            preferences.object(forKey: automaticRefreshKey) == nil
+                || preferences.bool(forKey: automaticRefreshKey)
         }
-        set { UserDefaults.standard.set(newValue, forKey: automaticRefreshKey) }
+        set { preferences.set(newValue, forKey: automaticRefreshKey) }
     }
 
     public func bootstrap() {
@@ -138,7 +148,27 @@ public final class SetupStore: ObservableObject {
             try requireCurrentOperation(generation)
             status = next
             applyDeviceSelection(from: next)
-            try await updateConsumerContext(generation: generation)
+            try await updateConsumerContext(generation: generation, reconciliationTrigger: .setupStart)
+            try requireCurrentOperation(generation)
+            routeAfterDoctor(next)
+        }
+    }
+
+    public func continueDeviceSecurityAction() {
+        guard !isRunning else { return }
+        runCancellable(stage: .checkingDevice) { [self] generation in
+            let device = try selectedDeviceIdentifierForOperation()
+            if selectedDevice?.pairingState != "paired" {
+                lockdownPairingReceipt = try await engine.requestComputerTrust(
+                    selectedDeviceIdentifier: device
+                )
+                try requireCurrentOperation(generation)
+            }
+            let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
+            status = next
+            applyDeviceSelection(from: next)
+            try await updateConsumerContext(generation: generation, reconciliationTrigger: .tryAgain)
             try requireCurrentOperation(generation)
             routeAfterDoctor(next)
         }
@@ -150,8 +180,13 @@ public final class SetupStore: ObservableObject {
             continueDeveloperProfileTrust()
             return
         }
+        if let derived = setupReconciliation?.derivedCheckpoint,
+           !derived.setupIsReadyForRuntime {
+            continueDeveloperProfileTrust()
+            return
+        }
         if let checkpoint = provisioningManifest?.setupCheckpoint,
-           !checkpoint.runtimeConfigurationIsVerified {
+           !checkpoint.setupIsReadyForRuntime {
             continueDeveloperProfileTrust()
             return
         }
@@ -169,18 +204,36 @@ public final class SetupStore: ObservableObject {
 
     public func retryCurrentStep() {
         guard !isRunning else { return }
-        let resumableCodes: Set<ConsumerProvisioningErrorCode> = [
-            .installInventoryPending, .installVerificationFailed,
-            .developerProfileTrustRequired, .developerProfileTrustVerificationFailed,
-            .runtimeConfigurationWriteFailed, .runtimeConfigurationReadbackFailed,
-            .deviceUnavailable, .deviceLocked, .computerTrustRequired, .developerModeRequired
-        ]
-        if let manifest = provisioningManifest,
-           manifest.setupCheckpoint != nil,
-           lastConsumerFailureCode.map(resumableCodes.contains) == true {
-            continueDeveloperProfileTrust()
-        } else {
-            refresh()
+        runCancellable(stage: .checkingDevice) { [self] generation in
+            let next = try await engine.doctor()
+            try requireCurrentOperation(generation)
+            status = next
+            applyDeviceSelection(from: next)
+            try await updateConsumerContext(generation: generation, reconciliationTrigger: .tryAgain)
+            try requireCurrentOperation(generation)
+            guard provisioningManifest != nil else {
+                routeAfterDoctor(next)
+                return
+            }
+            if setupReconciliation?.repairRequired == true {
+                try await runProvisioningBody(operation: .repair, generation: generation)
+                return
+            }
+            let device = try selectedDeviceIdentifierForOperation()
+            guard let team = selectedTeamIdentifier ?? provisioningManifest?.teamID else {
+                throw selectionFailure("TEAM_SELECTION_REQUIRED: current provisioning context is unavailable.")
+            }
+            consumerStage = .verifyingInstallation
+            let result = try await engine.resumeConsumerSetup(ConsumerProvisioningRequest(
+                operation: .repair,
+                selectedDeviceIdentifier: device,
+                selectedTeamIdentifier: team,
+                backend: .nativePersonalTeam,
+                generation: generation,
+                reconciliationTrigger: .resumeBoundary
+            ))
+            try requireCurrentOperation(generation)
+            applyConsumerResult(result)
         }
     }
 
@@ -196,8 +249,9 @@ public final class SetupStore: ObservableObject {
                 operation: .repair,
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
-                backend: nativeProvisioningExperiment ? .nativePersonalTeam : .xcodeFallback,
-                generation: generation
+                backend: .nativePersonalTeam,
+                generation: generation,
+                reconciliationTrigger: .resumeBoundary
             ))
             try requireCurrentOperation(generation)
             applyConsumerResult(result)
@@ -217,7 +271,7 @@ public final class SetupStore: ObservableObject {
                 logs.append(.init(stage: "setup", result: result))
             }
             applyDeviceSelection(from: next)
-            try await updateConsumerContext(generation: generation)
+            try await updateConsumerContext(generation: generation, reconciliationTrigger: .setupStart)
             try requireCurrentOperation(generation)
             if selectedDeviceProvisioningReady {
                 try await runProvisioningBody(operation: .repair, generation: generation)
@@ -294,7 +348,7 @@ public final class SetupStore: ObservableObject {
     }
 
     public func showDashboard() {
-        UserDefaults.standard.set(true, forKey: onboardingKey)
+        preferences.set(true, forKey: onboardingKey)
         phase = .complete
     }
 
@@ -302,20 +356,33 @@ public final class SetupStore: ObservableObject {
         guard !isRunning else { return }
         runCancellable(stage: .verifying) { [self] generation in
             if engine.consumerProvisioningEnabled {
-                guard consumerProvisioningStateSupportsRuntimeSetup else {
+                guard provisioningManifest != nil,
+                      consumerProvisioningStateSupportsRuntimeSetup else {
                     throw ConsumerProvisioningFailure(
                         code: .runnerMappingMissing,
                         stage: .verifyingRuntimeReadiness,
                         userMessage: "IOSSim installation information is missing.",
-                        remediation: "Complete IOSSim installation before finishing iPhone setup.",
-                        developerDetail: "Runtime setup requires a valid provisioning manifest and deterministic runner mapping."
+                        remediation: "Complete IOSSim installation before checking LocalDevVPN.",
+                        developerDetail: "LocalDevVPN setup requires a physically reconciled installation and deterministic runner mapping."
                     )
                 }
-                let manifest = try await engine.confirmRuntimeSetup()
+                let device = try selectedDeviceIdentifierForOperation()
+                guard let team = selectedTeamIdentifier ?? provisioningManifest?.teamID else {
+                    throw selectionFailure("TEAM_SELECTION_REQUIRED: current provisioning context is unavailable.")
+                }
+                let result = try await engine.resumeConsumerSetup(ConsumerProvisioningRequest(
+                    operation: .repair,
+                    selectedDeviceIdentifier: device,
+                    selectedTeamIdentifier: team,
+                    backend: .nativePersonalTeam,
+                    generation: generation,
+                    reconciliationTrigger: .resumeBoundary
+                ))
                 try requireCurrentOperation(generation)
-                provisioningManifest = manifest
+                applyConsumerResult(result)
+                return
             }
-            UserDefaults.standard.set(true, forKey: onboardingKey)
+            preferences.set(true, forKey: onboardingKey)
             let next = try await engine.doctor()
             try requireCurrentOperation(generation)
             status = next
@@ -331,8 +398,8 @@ public final class SetupStore: ObservableObject {
         }
         selectedDeviceIdentifier = device.selectionIdentifier
         deviceSelectionReason = .rememberedDeviceConnected
-        UserDefaults.standard.set(device.selectionIdentifier, forKey: selectedDeviceKey)
-        UserDefaults.standard.set(device.name, forKey: selectedDeviceNameKey)
+        preferences.set(device.selectionIdentifier, forKey: selectedDeviceKey)
+        preferences.set(device.name, forKey: selectedDeviceNameKey)
     }
 
     public func selectTeam(identifier: String) {
@@ -341,7 +408,7 @@ public final class SetupStore: ObservableObject {
             return
         }
         selectedTeamIdentifier = identifier
-        UserDefaults.standard.set(identifier, forKey: selectedTeamKey)
+        preferences.set(identifier, forKey: selectedTeamKey)
     }
 
     /// Accepts the SwiftUI `String` only at this boundary. The view clears its
@@ -437,7 +504,7 @@ public final class SetupStore: ObservableObject {
             physicalUDID = alreadyPhysical
         } else if let resolved = await AppleDeviceTool.signingDeviceIdentifier(
             matching: identifier,
-            context: RuntimeProvisioningContext(resourcesURL: FileManager.default.temporaryDirectory)
+            context: RuntimeProvisioningContext(resourcesURL: temporaryRoot)
         ) {
             physicalUDID = resolved
         } else {
@@ -447,18 +514,24 @@ public final class SetupStore: ObservableObject {
         let availableTeams = await authorizationCoordinator.teams
         try requireCurrentOperation(generation)
         if let preferred = try? ExperimentalConsumerProvisioningCoordinator.preferredTeam(from: availableTeams),
-           (try? await nativeArtifactStore.load(
+           (try? await nativeArtifactStore.loadActive(
                teamIdentifier: preferred.id,
                selectedDeviceIdentifier: physicalUDID
            )) != nil {
-            try requireCurrentOperation(generation)
-            selectedTeamIdentifier = preferred.id
-            liveProvisioningCheckpoint = .provisioningReady
-            consumerStage = .preparingArtifacts
-            phase = .complete
-            recordStateTransition(.setupStepAdvanced, generation: generation)
-            recordStateTransition(.uiStatePublished, generation: generation)
-            return
+            // Cached profiles are only reusable if the IOSSim-owned private
+            // key is still authorized for the packaged app/helper/codesign
+            // process boundary. Older builds wrote a brittle ACL, so repair it
+            // automatically before taking this shortcut.
+            if (try? await authorizationCoordinator.repairSigningIdentityAccess(team: preferred)) != nil {
+                try requireCurrentOperation(generation)
+                selectedTeamIdentifier = preferred.id
+                liveProvisioningCheckpoint = .provisioningReady
+                consumerStage = .preparingArtifacts
+                phase = .complete
+                recordStateTransition(.setupStepAdvanced, generation: generation)
+                recordStateTransition(.uiStatePublished, generation: generation)
+                return
+            }
         }
         let prepared = try await authorizationCoordinator.prepareProvisioning(.init(
             selectedDeviceIdentifier: identifier,
@@ -524,7 +597,7 @@ public final class SetupStore: ObservableObject {
                 selectedDeviceIdentifier: device,
                 selectedTeamIdentifier: team,
                 allowFreshInstallAfterCrossTeamConflict: allowFreshInstall,
-                backend: nativeProvisioningExperiment ? .nativePersonalTeam : .xcodeFallback,
+                backend: .nativePersonalTeam,
                 generation: generation
             ))
             try requireCurrentOperation(generation)
@@ -545,15 +618,25 @@ public final class SetupStore: ObservableObject {
     }
 
     private func routeAfterDoctor(_ status: DoctorStatus) {
-        if let manifest = provisioningManifest,
-           manifest.effectiveSetupCheckpoint == .developerProfileTrustRequired {
+        if setupReconciliation?.repairRequired == true {
+            consumerStage = .verifyingInstallation
+            phase = .installing
+            return
+        }
+        if provisioningManifest?.effectiveSetupCheckpoint == .developerProfileTrustRequired {
             consumerStage = .developerProfileTrustRequired
             completedInstallStages = Set(InstallStage.allCases)
             phase = .developerProfileTrust
             return
         }
+        if let derived = setupReconciliation?.derivedCheckpoint,
+           !derived.setupIsReadyForRuntime {
+            consumerStage = .verifyingRuntimeConfiguration
+            phase = .verifying
+            return
+        }
         if let checkpoint = provisioningManifest?.setupCheckpoint,
-           !checkpoint.runtimeConfigurationIsVerified {
+           !checkpoint.setupIsReadyForRuntime {
             consumerStage = checkpoint == .installCommandsSucceeded
                 ? .verifyingInstallation
                 : .verifyingDeveloperProfileTrust
@@ -596,12 +679,16 @@ public final class SetupStore: ObservableObject {
             phase = .runtimeSetup
         case .complete:
             phase = .complete
-            UserDefaults.standard.set(true, forKey: onboardingKey)
+            preferences.set(true, forKey: onboardingKey)
         }
     }
 
     private var consumerProvisioningStateSupportsRuntimeSetup: Bool {
         guard let manifest = provisioningManifest,
+              let reconciliation = setupReconciliation,
+              reconciliation.inventory.verified,
+              !reconciliation.repairRequired,
+              reconciliation.derivedCheckpoint?.setupIsReadyForRuntime == true,
               manifest.schemaVersion == ConsumerProvisioningManifest.currentSchemaVersion,
               !manifest.teamID.isEmpty,
               let expected = try? PersonalTeamBundleIdentifierSet(teamIdentifier: manifest.teamID) else {
@@ -618,16 +705,37 @@ public final class SetupStore: ObservableObject {
             && manifest.mainProfile.bundleIdentifier == expected.main
             && manifest.runnerProfile.teamIdentifier == manifest.teamID
             && manifest.runnerProfile.bundleIdentifier == expected.runner
-            && manifest.effectiveSetupCheckpoint.runtimeConfigurationIsVerified
+            && manifest.effectiveSetupCheckpoint.setupIsReadyForRuntime
     }
 
     private func applyConsumerResult(_ result: ConsumerProvisioningResult) {
         provisioningManifest = result.manifest
         consumerStage = result.finalStage
+        lastError = nil
         lastConsumerFailureCode = nil
         lastConsumerFailureStage = nil
+        if let inventory = result.manifest.installationInventory {
+            setupReconciliation = ConsumerSetupReconciliationResult(
+                trigger: .resumeBoundary,
+                persistedCheckpoint: result.manifest.effectiveSetupCheckpoint,
+                derivedCheckpoint: inventory.verified ? result.manifest.effectiveSetupCheckpoint : nil,
+                inventory: inventory,
+                mainInstallRequired: !inventory.mainPresent,
+                runnerInstallRequired: !inventory.runnerPresent
+            )
+        } else {
+            setupReconciliation = nil
+        }
         completedInstallStages = Set(InstallStage.allCases)
-        phase = result.finalStage == .developerProfileTrustRequired ? .developerProfileTrust : .runtimeSetup
+        if result.finalStage == .developerProfileTrustRequired {
+            phase = .developerProfileTrust
+        } else if result.manifest.effectiveSetupCheckpoint.setupIsReadyForRuntime,
+                  result.manifest.runtimeSetupStatus == .ready {
+            preferences.set(true, forKey: onboardingKey)
+            phase = .complete
+        } else {
+            phase = .runtimeSetup
+        }
     }
 
     private func routeToConsumerProvisioning() {
@@ -638,9 +746,15 @@ public final class SetupStore: ObservableObject {
         }
     }
 
-    private func updateConsumerContext(generation: UInt64) async throws {
+    private func updateConsumerContext(
+        generation: UInt64,
+        reconciliationTrigger: ConsumerReconciliationTrigger = .setupStart
+    ) async throws {
         guard engine.consumerProvisioningEnabled else { return }
-        let manifest = try await engine.consumerProvisioningStatus()
+        let manifest = try await engine.consumerProvisioningStatus(
+            selectedDeviceIdentifier: selectedDeviceIdentifier,
+            selectedTeamIdentifier: selectedTeamIdentifier
+        )
         try requireCurrentOperation(generation)
         provisioningManifest = manifest
         guard let selectedDeviceIdentifier else {
@@ -668,12 +782,13 @@ public final class SetupStore: ObservableObject {
                     safeErrorCode: appleAuthorization.safeErrorCode
                 )
             }
+            try await reconcileConsumerContext(generation: generation, trigger: reconciliationTrigger)
             return
         }
         let discovered = try await engine.discoverPersonalTeams(selectedDeviceIdentifier: selectedDeviceIdentifier)
         try requireCurrentOperation(generation)
         personalTeams = discovered
-        let remembered = UserDefaults.standard.string(forKey: selectedTeamKey)
+        let remembered = preferences.string(forKey: selectedTeamKey)
         if let remembered, personalTeams.contains(where: { $0.teamIdentifier == remembered }) {
             selectedTeamIdentifier = remembered
         } else if personalTeams.filter(\.personalTeam).count == 1,
@@ -687,11 +802,33 @@ public final class SetupStore: ObservableObject {
         } else {
             selectedTeamIdentifier = nil
         }
+        try await reconcileConsumerContext(generation: generation, trigger: reconciliationTrigger)
+    }
+
+    private func reconcileConsumerContext(
+        generation: UInt64,
+        trigger: ConsumerReconciliationTrigger
+    ) async throws {
+        guard provisioningManifest != nil,
+              let device = selectedDeviceIdentifier,
+              let team = selectedTeamIdentifier ?? provisioningManifest?.teamID else {
+            setupReconciliation = nil
+            return
+        }
+        setupReconciliation = try await engine.reconcileConsumerSetup(ConsumerProvisioningRequest(
+            operation: .repair,
+            selectedDeviceIdentifier: device,
+            selectedTeamIdentifier: team,
+            backend: .nativePersonalTeam,
+            generation: generation,
+            reconciliationTrigger: trigger
+        ))
+        try requireCurrentOperation(generation)
     }
 
     private func applyDeviceSelection(from status: DoctorStatus) {
-        let remembered = UserDefaults.standard.string(forKey: selectedDeviceKey)
-        let rememberedName = UserDefaults.standard.string(forKey: selectedDeviceNameKey)
+        let remembered = preferences.string(forKey: selectedDeviceKey)
+        let rememberedName = preferences.string(forKey: selectedDeviceNameKey)
         let result = DeviceSelectionPolicy.resolve(
             devices: status.device.devices,
             rememberedIdentifier: remembered,
@@ -700,8 +837,8 @@ public final class SetupStore: ObservableObject {
         selectedDeviceIdentifier = result.selectedIdentifier
         deviceSelectionReason = result.reason
         if let selectedDevice = status.device.devices.first(where: { $0.selectionIdentifier == result.selectedIdentifier }) {
-            UserDefaults.standard.set(selectedDevice.selectionIdentifier, forKey: selectedDeviceKey)
-            UserDefaults.standard.set(selectedDevice.name, forKey: selectedDeviceNameKey)
+            preferences.set(selectedDevice.selectionIdentifier, forKey: selectedDeviceKey)
+            preferences.set(selectedDevice.name, forKey: selectedDeviceNameKey)
         }
     }
 
@@ -712,7 +849,7 @@ public final class SetupStore: ObservableObject {
         let liveMatches = status.device.devices.filter { $0.selectionIdentifier == selectedDeviceIdentifier }
         guard let selected = liveMatches.first, liveMatches.count == 1 else {
             if status.device.devices.isEmpty {
-                let name = UserDefaults.standard.string(forKey: selectedDeviceNameKey) ?? "this iPhone"
+                let name = preferences.string(forKey: selectedDeviceNameKey) ?? "this iPhone"
                 throw selectionFailure("IPHONE_DISCONNECTED: Reconnect \(name) or choose another device.")
             }
             throw selectionFailure("DEVICE_SELECTION_REQUIRED: choose one connected iPhone before provisioning.")
@@ -786,13 +923,23 @@ public final class SetupStore: ObservableObject {
                 )
                 self.lastConsumerFailureCode = failure.code
                 self.lastConsumerFailureStage = failure.stage
-                if let checkpoint = try? await self.engine.consumerProvisioningStatus(),
+                if let checkpoint = try? await self.engine.consumerProvisioningStatus(
+                    selectedDeviceIdentifier: self.selectedDeviceIdentifier,
+                    selectedTeamIdentifier: self.selectedTeamIdentifier
+                ),
                    self.activeOperationGeneration == generation {
                     self.provisioningManifest = checkpoint
                 }
                 let waitingForDevice = failure.code == .deviceUnavailable
-                self.consumerStage = waitingForDevice ? .waitingForDevice : .failed
-                self.phase = waitingForDevice ? .waitingForDevice : .failed
+                let localDevVPNAction = failure.code == .localDevVPNMissing
+                    || failure.code == .localDevVPNUserActionRequired
+                    || failure.code == .localDevVPNReadinessFailed
+                self.consumerStage = waitingForDevice
+                    ? .waitingForDevice
+                    : (localDevVPNAction ? failure.stage : .failed)
+                self.phase = waitingForDevice
+                    ? .waitingForDevice
+                    : (localDevVPNAction ? .runtimeSetup : .failed)
                 self.recordStateTransition(
                     .uiStatePublished,
                     generation: generation,
@@ -927,6 +1074,13 @@ public final class SetupStore: ObservableObject {
 
     private static func friendlyError(commandName: String, result: ProcessResult) -> SetupError {
         let lower = result.combinedOutput.lowercased()
+        if lower.contains("veya-integrity-") {
+            return SetupError(
+                headline: "IOSSim installation integrity check failed.",
+                recovery: "Reinstall IOSSim from the original release artifact.",
+                details: result.combinedOutput
+            )
+        }
         if lower.contains("locked") {
             return SetupError(
                 headline: "IOSSim could not install on this iPhone.",
@@ -978,8 +1132,8 @@ public final class SetupStore: ObservableObject {
         }
         if lower.contains("apple development support required") || lower.contains("devicectl") || lower.contains("xcrun") {
             return SetupError(
-                headline: "Apple development support required.",
-                recovery: "Install or select Apple's developer tools required for iPhone discovery and app installation.",
+                headline: "Developer-only Apple tooling unavailable.",
+                recovery: "This operation requires build tooling, but consumer iPhone discovery should continue through IOSSim's native bridge.",
                 details: result.combinedOutput
             )
         }

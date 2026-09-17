@@ -49,10 +49,25 @@ public protocol NativeSigningIdentityResolving: Sendable {
 final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unchecked Sendable {
     private let runner: ProcessRunner
     private let fileManager: FileManager
+    private let signingKeychain: VeyaSigningKeychain
 
-    init(runner: ProcessRunner, fileManager: FileManager = .default) {
+    init(
+        runner: ProcessRunner,
+        fileManager: FileManager = .default,
+        signingKeychain: VeyaSigningKeychain = VeyaSigningKeychain()
+    ) {
         self.runner = runner
         self.fileManager = fileManager
+        self.signingKeychain = signingKeychain
+    }
+
+    /// Restricts a Keychain query to the Veya signing Keychain -- the only
+    /// place a key `/usr/bin/codesign` can actually use is stored.
+    private func scoped(_ query: [String: Any]) -> [String: Any] {
+        guard let keychain = try? signingKeychain.open() else { return query }
+        var value = query
+        value[kSecMatchSearchList as String] = [keychain] as CFArray
+        return value
     }
 
     public func resolve(
@@ -65,6 +80,18 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
         var diagnostics = NativeSigningIdentityDiagnostics()
         let expectedFingerprint = expectedSHA256.uppercased()
         diagnostics.certificateFingerprint = expectedFingerprint
+
+        do {
+            _ = try signingKeychain.open()
+        } catch {
+            throw resolutionFailure(
+                .signingKeychainUnavailable,
+                detail: "The IOSSim-owned signing Keychain could not be opened (\(error)).",
+                diagnostics: diagnostics
+            )
+        }
+        // codesign resolves identities through the user Keychain search list.
+        signingKeychain.ensureInUserSearchList()
 
         guard !certificateDER.isEmpty,
               sha256Hex(certificateDER) == expectedFingerprint,
@@ -81,12 +108,16 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
         var certificateLookup = findCertificate(sha256: expectedFingerprint)
         diagnostics.certificateQueryStatus = certificateLookup.status
         if certificateLookup.certificate == nil, certificateLookup.status == errSecItemNotFound {
-            let addStatus = SecItemAdd([
+            var addAttributes: [String: Any] = [
                 kSecClass as String: kSecClassCertificate,
                 kSecValueRef as String: profileCertificate,
                 kSecAttrLabel as String: "IOSSim Apple Development \(teamIdentifier)",
                 kSecAttrSynchronizable as String: false,
-            ] as CFDictionary, nil)
+            ]
+            if let keychain = try? signingKeychain.open() {
+                addAttributes[kSecUseKeychain as String] = keychain
+            }
+            let addStatus = SecItemAdd(addAttributes as CFDictionary, nil)
             guard addStatus == errSecSuccess || addStatus == errSecDuplicateItem else {
                 diagnostics.certificateQueryStatus = addStatus
                 throw resolutionFailure(
@@ -150,7 +181,12 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
         diagnostics.keychainIdentityFound = identityLookup.identity != nil
 
         var resolvedIdentity: SecIdentity?
-        let resolutionStatus = SecIdentityCreateWithCertificate(nil, keychainCertificate, &resolvedIdentity)
+        let identitySearchScope = (try? signingKeychain.open()).map { $0 as CFTypeRef }
+        let resolutionStatus = SecIdentityCreateWithCertificate(
+            identitySearchScope,
+            keychainCertificate,
+            &resolvedIdentity
+        )
         diagnostics.secIdentityResolutionStatus = resolutionStatus
         guard resolutionStatus == errSecSuccess, let resolvedIdentity else {
             throw resolutionFailure(
@@ -208,7 +244,7 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
         )
         guard sign.exitCode == 0 else {
             throw resolutionFailure(
-                codesignAccessDenied(sign.combinedOutput) ? .signingKeyAccessDenied : .signOperationFailed,
+                codesignAccessDenied(sign.combinedOutput) ? .signingKeyAccessDenied : .signingProbeFailed,
                 detail: "The IOSSim-owned identity was visible but the codesign probe failed (process exit \(sign.exitCode)): \(Redactor.redact(sign.combinedOutput))",
                 diagnostics: diagnostics
             )
@@ -232,12 +268,12 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
 
     private func findCertificate(sha256: String) -> (certificate: SecCertificate?, status: OSStatus) {
         var result: CFTypeRef?
-        let status = SecItemCopyMatching([
+        let status = SecItemCopyMatching(scoped([
             kSecClass as String: kSecClassCertificate,
             kSecAttrSynchronizable as String: false,
             kSecReturnRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
-        ] as CFDictionary, &result)
+        ]) as CFDictionary, &result)
         guard status == errSecSuccess, let certificates = result as? [SecCertificate] else {
             return (nil, status)
         }
@@ -268,7 +304,7 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
             return (nil, nil, errSecParam)
         }
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = SecItemCopyMatching(scoped(query) as CFDictionary, &result)
         guard status == errSecSuccess else {
             return (nil, expectedApplicationTagIdentifier, status)
         }
@@ -291,12 +327,12 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
 
     private func findIdentity(sha256: String) -> (identity: SecIdentity?, status: OSStatus) {
         var result: CFTypeRef?
-        let status = SecItemCopyMatching([
+        let status = SecItemCopyMatching(scoped([
             kSecClass as String: kSecClassIdentity,
             kSecAttrSynchronizable as String: false,
             kSecReturnRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
-        ] as CFDictionary, &result)
+        ]) as CFDictionary, &result)
         guard status == errSecSuccess, let identities = result as? [SecIdentity] else {
             return (nil, status)
         }
@@ -343,7 +379,7 @@ final class NativeSigningIdentityResolver: NativeSigningIdentityResolving, @unch
                 code: code,
                 stage: .preparingIdentities,
                 userMessage: "IOSSim could not use its managed signing identity.",
-                remediation: "Try again after allowing access to IOSSim’s own signing key; Apple authorization remains valid.",
+                remediation: "Try again. IOSSim will repair access to its own signing key automatically; Apple authorization remains valid.",
                 developerDetail: detail
             ),
             diagnostics: diagnostics

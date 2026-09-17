@@ -1,0 +1,242 @@
+{
+  "actualArchitectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "appTreeSHA256": "33b97dfe5d7b9d3966a2fbde72e63f4a1b8f7622e81eb3635ee714c7067e6048",
+  "artifact": {
+    "fileName": "IOSSim-0.1.0-build1-1259da5-local-test.dmg",
+    "mountedAppTreeSHA256": "33b97dfe5d7b9d3966a2fbde72e63f4a1b8f7622e81eb3635ee714c7067e6048",
+    "sha256": "d4e28a0be88b812ac5964d508f658496ed1e685608c1589aabfef6e89572efee",
+    "sizeBytes": 16125098
+  },
+  "build": "1",
+  "buildProvenance": {
+    "artifactManifestSchema": 2,
+    "bridgeVersion": "iossim-device-bridge/0.1.0+idevice-1838db10",
+    "buildTimestamp": "2026-09-16T15:17:34.649103Z",
+    "buildVariant": "PRODUCTION",
+    "consumerBuildAttempted": false,
+    "ddiBackend": "NATIVE_PERSONALIZED_DEVELOPER_SUPPORT",
+    "developerServicesBackend": "NATIVE_COREDEVICE_RSD_REMOTEXPC",
+    "developerServicesReceiptSchema": 2,
+    "developerSupportProviderClassification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030",
+    "discoveryBackend": "NATIVE_IDEVICE_USBMUX",
+    "guiSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+    "guiSourceDirty": true,
+    "guiSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+    "helperSchemaVersion": 2,
+    "helperSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+    "helperSourceDirty": true,
+    "helperSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+    "houseArrestBackend": "NATIVE_HOUSE_ARREST_AFC",
+    "ideviceRevision": "1838db107d38701b4044361163aac049006c2627",
+    "installationBackend": "NATIVE_AFC_INSTALLATION_PROXY",
+    "launchBackend": "NATIVE_APPSERVICE_RSD",
+    "legacyFallbackUsed": false,
+    "nativeBridgeABI": 2,
+    "pairingBackend": "AUTOMATIC_REMOTE_PAIRING_HOUSE_ARREST",
+    "payloadBuildTimestamp": "2026-09-16T15:17:34.649103Z",
+    "payloadBuildVariant": "DEVICE_PAYLOAD_RELEASE",
+    "payloadManifestVersion": "2",
+    "payloadSource": "BUNDLED_PREBUILT_MANIFEST",
+    "payloadSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+    "payloadSourceDirty": true,
+    "payloadSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+    "payloadSourceTreeSHA256": "2111021ced79a85f3196efe7e0ffbe0701162f6b4736310f8c774a08b2c6dec9",
+    "provisioningManifestSchema": 4,
+    "setupEngine": "BUNDLED_PROVISIONING_ENGINE",
+    "setupStateSchema": 5,
+    "sourceDirty": true
+  },
+  "bundleIdentifier": "com.iossim.mac-provisioner",
+  "components": [
+    {
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "relativePath": "Contents/MacOS/IOSSim",
+      "role": "macApp",
+      "sha256": "67b7e813bfd525640f26feb1af507eeb18f9355b0b6017a0105c183ca228405f",
+      "signing": {
+        "cdhash": "7896840907f327b6485315fd9f2ff1751c7e7859",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 9823408
+    },
+    {
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "relativePath": "Contents/MacOS/IOSSimProvisioner",
+      "role": "provisioner",
+      "sha256": "64c6de2124a900a70b6ca82620617e4a602bb606e843c4954b97cf6ffdf3ca57",
+      "signing": {
+        "cdhash": "84501744860de4dc505404b2344f8f57a8431bc9",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 9789456
+    },
+    {
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "relativePath": "Contents/Resources/NativeDeviceBridge/libiossim_device_bridge.dylib",
+      "role": "nativeDeviceBridge",
+      "sha256": "d3486e0ce2b806bf099c1740c13b1b227b940be775c839f14472cc087b25df9b",
+      "signing": {
+        "cdhash": "fe28b879e734049747730a4caf9833104e6ced46",
+        "classification": "AD_HOC",
+        "teamID": null
+      },
+      "sizeBytes": 7056016
+    }
+  ],
+  "dependencies": {
+    "lockDigests": {
+      "cargoLockSHA256": "75a1d322e6018f56032dbad6ffedc2bf82ccdddb968cd1b6a915a7506650b542",
+      "swiftPackageResolvedSHA256": "7be51cd9cbfb9afaca08af65801ba8861a69b377e045610353aecd252e8e5cf9"
+    },
+    "notices": [
+      {
+        "relativePath": "Contents/Resources/ThirdPartyNotices/BigInt-LICENSE.txt",
+        "sha256": "662e7904b2338ddd894f307907df28b4694ee4969ff0a58611eff328686ab3f3"
+      },
+      {
+        "relativePath": "Contents/Resources/ThirdPartyNotices/idevice-LICENSE.txt",
+        "sha256": "233ada9de9b90db2835d48da9f03cabfa180d47671d8b58d3ca003dbb965302a"
+      }
+    ],
+    "sbom": {
+      "packageCount": 208,
+      "relativePath": "Contents/Resources/SBOM.spdx.json",
+      "sha256": "f0f317834af1fabc765645b46e9754c35293de3d16fa8848b4f48045ec5f7d05",
+      "spdxVersion": "SPDX-2.3"
+    }
+  },
+  "developerSupportProvider": {
+    "classification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030"
+  },
+  "distribution": {
+    "developerID": false,
+    "distributionClass": "LOCAL_TEST_ONLY",
+    "gatekeeperQualified": false,
+    "labels": [
+      "LOCAL TEST BUILD",
+      "NOT NOTARIZED",
+      "NOT FOR PUBLIC DISTRIBUTION"
+    ],
+    "notarized": false,
+    "productionUI": true,
+    "publicDistribution": false,
+    "schemaVersion": 1
+  },
+  "engineIntegrity": {
+    "artifactManifestSchemaVersion": 2,
+    "helperRelativePath": "Contents/MacOS/IOSSimProvisioner",
+    "helperSHA256": "64c6de2124a900a70b6ca82620617e4a602bb606e843c4954b97cf6ffdf3ca57",
+    "helperSchemaVersion": 2,
+    "nativeBridgeABI": 2,
+    "nativeBridgeRelativePath": "NativeDeviceBridge/libiossim_device_bridge.dylib",
+    "nativeBridgeSHA256": "d3486e0ce2b806bf099c1740c13b1b227b940be775c839f14472cc087b25df9b",
+    "payloadManifestRelativePath": "DeviceArtifacts/manifest.json",
+    "payloadManifestSHA256": "29cf600e96ffd5ff54987c3b5be6d774c429a68dade2819ef7e207446c3bdbf0",
+    "schemaVersion": 1,
+    "setupStateSchemaVersion": 5
+  },
+  "minimumMacOS": "13.0",
+  "mountedVolumeContents": [
+    "Applications",
+    "IOSSim.app"
+  ],
+  "payloadManifest": {
+    "capabilities": {
+      "automaticPairingInbox": 2,
+      "localDevVPNSetupGate": 2,
+      "pairingReceiptSchema": 2,
+      "richRuntimeProofInbox": 1,
+      "runtimeMappingSchema": 1
+    },
+    "release": {
+      "buildNumber": "1",
+      "buildTimestamp": "2026-09-16T15:17:34.649103Z",
+      "helperSchemaVersion": 2,
+      "localDevVPN": {
+        "appStoreIdentifier": "6755608044",
+        "bundleIdentifier": "com.jkcoxson.LocalDevVPN",
+        "minimumVersion": "1.0.0",
+        "observedAppStoreVersion": "1.3.0",
+        "physicallyTestedVersions": [],
+        "setupProtocolSchema": 2
+      },
+      "macVersion": "0.1.0",
+      "payloadBuildTimestamp": "2026-09-16T15:17:34.649103Z",
+      "payloadBuildVariant": "DEVICE_PAYLOAD_RELEASE",
+      "payloadSourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+      "payloadSourceDirty": true,
+      "payloadSourceHead": "1259da507ecded222022cc86bf82863c15640db9",
+      "payloadSourceTreeSHA256": "2111021ced79a85f3196efe7e0ffbe0701162f6b4736310f8c774a08b2c6dec9",
+      "sourceCommit": "1259da507ecded222022cc86bf82863c15640db9",
+      "sourceDirty": true,
+      "variant": "PRODUCTION"
+    },
+    "schemaVersion": 2,
+    "sha256": "29cf600e96ffd5ff54987c3b5be6d774c429a68dade2819ef7e207446c3bdbf0"
+  },
+  "payloads": [
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "build": "1",
+      "bundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "declaredBundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "declaredSHA256": "a95d87e24d7083d1fc93e918de3e9ed0bc085b6830644d2dfd05bbedb8c10d38",
+      "declaredVersion": "0.1",
+      "relativePath": "Contents/Resources/DeviceArtifacts/IOSSim DVT POC.app",
+      "role": "iosMain",
+      "sha256": "a95d87e24d7083d1fc93e918de3e9ed0bc085b6830644d2dfd05bbedb8c10d38",
+      "signingMode": "personalTeamResign",
+      "sizeBytes": null,
+      "version": "0.1"
+    },
+    {
+      "architectures": [
+        "arm64"
+      ],
+      "build": "1",
+      "bundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "declaredBundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "declaredSHA256": "c605a3311bdbbd2a477a5217066023dbe41c5833586ef25b77276a2939715a11",
+      "declaredVersion": "1.0",
+      "relativePath": "Contents/Resources/DeviceArtifacts/IOSSimLocationControlUITests-Runner.app",
+      "role": "locationControlRunner",
+      "sha256": "c605a3311bdbbd2a477a5217066023dbe41c5833586ef25b77276a2939715a11",
+      "signingMode": "personalTeamResign",
+      "sizeBytes": null,
+      "version": "1.0"
+    }
+  ],
+  "productName": "IOSSim",
+  "schemaVersion": 2,
+  "schemas": {
+    "artifactManifest": 2,
+    "developerSupportProviderClassification": "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030",
+    "helperProtocol": 2,
+    "nativeBridgeABI": 2,
+    "nativeBridgeABIExpected": 2,
+    "provisioningManifest": 4,
+    "setupState": 5
+  },
+  "signing": {
+    "cdhash": "7896840907f327b6485315fd9f2ff1751c7e7859",
+    "classification": "AD_HOC",
+    "teamID": null
+  },
+  "version": "0.1.0"
+}

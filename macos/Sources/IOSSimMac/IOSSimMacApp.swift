@@ -12,7 +12,7 @@ struct IOSSimMacApp: App {
             engine = try BundledProvisioningEngine.live()
         } catch {
             engine = UnavailableIOSSimSetupEngine(
-                message: "Bundled runtime damaged: IOSSim cannot find its setup helper. Reinstall IOSSim."
+                message: String(describing: error)
             )
         }
 #else

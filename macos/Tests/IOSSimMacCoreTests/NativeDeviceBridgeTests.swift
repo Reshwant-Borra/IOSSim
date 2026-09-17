@@ -37,6 +37,18 @@ final class NativeDeviceBridgeTests: XCTestCase {
         XCTAssertEqual(devices.count, 1)
         XCTAssertEqual(devices[0].connection, .usb)
         XCTAssertEqual(devices[0].identity.usbmuxIdentifier, 9)
+        XCTAssertEqual(devices[0].identity.connection, .usb)
+    }
+
+    func testDuplicateUSBRecordsChooseLowestMuxDeterministically() async throws {
+        for orderedMuxes: [UInt32] in [[19, 7], [7, 19]] {
+            let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(devices: try orderedMuxes.map {
+                try descriptor("PHONE-0001", connection: .usb, mux: $0)
+            }))
+            let devices = try await bridge.listDevices()
+            XCTAssertEqual(devices.count, 1)
+            XCTAssertEqual(devices[0].identity.usbmuxIdentifier, 7)
+        }
     }
 
     func testLockedUntrustedAndDeveloperModeOffAreTyped() async throws {
@@ -75,6 +87,13 @@ final class NativeDeviceBridgeTests: XCTestCase {
         let first = try IOSSimDeviceIdentity(udid: "PHONE-0001")
         let second = try IOSSimDeviceIdentity(udid: "PHONE-0002")
         XCTAssertFalse(first.binds(to: second))
+        let usb = try IOSSimDeviceIdentity(
+            udid: "PHONE-0001", usbmuxIdentifier: 1, connection: .usb
+        )
+        let wireless = try IOSSimDeviceIdentity(
+            udid: "PHONE-0001", usbmuxIdentifier: 2, connection: .wireless
+        )
+        XCTAssertFalse(usb.binds(to: wireless))
         XCTAssertThrowsError(try IOSSimDeviceIdentity(udid: "../bad"))
     }
 
@@ -124,6 +143,14 @@ final class NativeDeviceBridgeTests: XCTestCase {
         XCTAssertEqual(snapshot.devices[0].osVersion, "26.0")
     }
 
+    func testUnknownConnectionTypeRemainsVisible() async throws {
+        let device = try descriptor("PHONE-0001", connection: .unknown, mux: 1)
+        let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(devices: [device]))
+        let listed = try await bridge.listDevices()
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed[0].connection, .unknown)
+    }
+
     func testInspectionFailureDoesNotBecomeNoDevice() async throws {
         let device = try descriptor("PHONE-0001", connection: .usb, mux: 1)
         let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(
@@ -154,8 +181,113 @@ final class NativeDeviceBridgeTests: XCTestCase {
         XCTAssertEqual(emptySnapshot.primaryDiagnostic?.code, .zeroDevicesReturned)
     }
 
+    func testDeveloperServicesReceiptRequiresBoundExactAppServiceLaunch() throws {
+        let device = try IOSSimDeviceIdentity(
+            udid: "PHONE-0001",
+            usbmuxIdentifier: 7,
+            connection: .usb,
+            connectionGeneration: 12
+        )
+        let receipt = DeveloperServicesReadinessReceipt(
+            coreDeviceProxyReady: true,
+            softwareTunnelReady: true,
+            rsdReady: true,
+            remoteXPCReady: true,
+            appServiceReady: true,
+            launchFeatureReady: true,
+            ddiMounted: true,
+            schemaVersion: DeveloperServicesReadinessReceipt.currentSchemaVersion,
+            deviceUDIDHash: DeveloperServicesReadinessReceipt.hash(device.udid),
+            usbmuxIdentifier: 7,
+            connection: .usb,
+            connectionGeneration: 12,
+            developerSupportIdentity: "23A1:identity:image-hash",
+            pairingGeneration: 4,
+            releaseIdentity: "0.1.0:4",
+            sessionIdentifier: UUID().uuidString,
+            targetBundleIdentifier: "com.example.runner",
+            launchReceipt: NativeLaunchReceipt(
+                bundleIdentifier: "com.example.runner",
+                pid: 42,
+                processIdentifierVersion: 1,
+                appServiceConnected: true
+            ),
+            observedAt: Date()
+        )
+        XCTAssertTrue(receipt.ready)
+        XCTAssertTrue(receipt.isCurrent(
+            for: device,
+            releaseIdentity: "0.1.0:4",
+            pairingGeneration: 4,
+            targetBundleIdentifier: "com.example.runner"
+        ))
+        XCTAssertFalse(receipt.isCurrent(
+            for: device,
+            releaseIdentity: "0.1.1:5",
+            pairingGeneration: 4,
+            targetBundleIdentifier: "com.example.runner"
+        ))
+        XCTAssertFalse(receipt.isCurrent(
+            for: device,
+            releaseIdentity: "0.1.0:4",
+            pairingGeneration: 4,
+            targetBundleIdentifier: "com.example.runner",
+            now: Date().addingTimeInterval(301)
+        ))
+    }
+
+    func testTransportStatusAloneIsNotOperationalReadiness() {
+        let receipt = DeveloperServicesReadinessReceipt(
+            coreDeviceProxyReady: true,
+            softwareTunnelReady: true,
+            rsdReady: true,
+            remoteXPCReady: true,
+            appServiceReady: true,
+            launchFeatureReady: true,
+            ddiMounted: true
+        )
+        XCTAssertTrue(receipt.transportReady)
+        XCTAssertFalse(receipt.ready)
+    }
+
+    func testDeveloperServicesReceiptRejectsWrongAppAndStaleConnection() throws {
+        let device = try IOSSimDeviceIdentity(
+            udid: "PHONE-0001", usbmuxIdentifier: 7,
+            connection: .usb, connectionGeneration: 12
+        )
+        let wrongApp = DeveloperServicesReadinessReceipt(
+            coreDeviceProxyReady: true, softwareTunnelReady: true, rsdReady: true,
+            remoteXPCReady: true, appServiceReady: true, launchFeatureReady: true,
+            ddiMounted: true,
+            schemaVersion: 2,
+            deviceUDIDHash: DeveloperServicesReadinessReceipt.hash(device.udid),
+            usbmuxIdentifier: 7, connection: .usb, connectionGeneration: 11,
+            developerSupportIdentity: "23A1:active-device-service-map",
+            pairingGeneration: nil, releaseIdentity: "0.1.0:4",
+            sessionIdentifier: UUID().uuidString,
+            targetBundleIdentifier: "com.example.runner",
+            launchReceipt: NativeLaunchReceipt(
+                bundleIdentifier: "com.example.other", pid: 1,
+                processIdentifierVersion: 1, appServiceConnected: true
+            ),
+            observedAt: Date()
+        )
+        XCTAssertFalse(wrongApp.ready)
+        XCTAssertFalse(wrongApp.isCurrent(
+            for: device, releaseIdentity: "0.1.0:4",
+            pairingGeneration: nil, targetBundleIdentifier: "com.example.runner"
+        ))
+    }
+
     private func descriptor(_ id: String, connection: DeviceConnectionKind, mux: UInt32) throws -> NativeDeviceDescriptor {
-        NativeDeviceDescriptor(identity: try IOSSimDeviceIdentity(udid: id, usbmuxIdentifier: mux), connection: connection)
+        NativeDeviceDescriptor(
+            identity: try IOSSimDeviceIdentity(
+                udid: id,
+                usbmuxIdentifier: mux,
+                connection: connection
+            ),
+            connection: connection
+        )
     }
 }
 

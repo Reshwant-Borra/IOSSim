@@ -1,0 +1,33 @@
+{
+  "components": [
+    {
+      "bundleIdentifier": "com.iossim.on-device-dvt-poc",
+      "relativePath": "DeviceArtifacts/IOSSim DVT POC.app",
+      "role": "iosMain",
+      "sha256": "9d1b8bf65cdd3ea9ea0ef52082e94465704d38d88d6348055e2964e87e150cdb",
+      "version": "0.1"
+    },
+    {
+      "bundleIdentifier": "com.iossim.location-witness",
+      "relativePath": "DeviceArtifacts/IOSSimLocationWitness.app",
+      "role": "locationWitness",
+      "sha256": "1e0bef626c852248350b45ebb0d6722457a8d2c1807e67685d1a47e704dea3bb",
+      "version": "0.1"
+    },
+    {
+      "bundleIdentifier": "com.iossim.location-control-uitests.xctrunner",
+      "relativePath": "DeviceArtifacts/IOSSimLocationControlUITests-Runner.app",
+      "role": "locationControlRunner",
+      "sha256": "07413bd61de82cfa1d78a22051592fb1e6a65dbb767715767578238c3f6693a2",
+      "version": "1.0"
+    }
+  ],
+  "release": {
+    "buildTimestamp": "2026-09-03T13:19:24.727601Z",
+    "helperSchemaVersion": 1,
+    "macVersion": "0.1",
+    "sourceCommit": "f88d7a5b3fd500b2362678a683d9c4bb09dbe07e",
+    "sourceDirty": true
+  },
+  "schemaVersion": 1
+}

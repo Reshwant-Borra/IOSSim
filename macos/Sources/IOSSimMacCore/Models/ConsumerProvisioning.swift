@@ -39,6 +39,28 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
     case installInventoryRefresh = "INSTALL_INVENTORY_REFRESH"
     case installInventoryPending = "INSTALL_INVENTORY_PENDING"
     case installationVerified = "INSTALLATION_VERIFIED"
+    case developerServicesReconciliationStarted = "DEVELOPER_SERVICES_RECONCILIATION_STARTED"
+    case coreDeviceProxyReady = "COREDEVICE_PROXY_READY"
+    case softwareTunnelReady = "SOFTWARE_TUNNEL_READY"
+    case ddiNotRequired = "DDI_NOT_REQUIRED"
+    case ddiRequired = "DDI_REQUIRED"
+    case ddiAcquisitionStarted = "DDI_ACQUISITION_STARTED"
+    case ddiAcquisitionSucceeded = "DDI_ACQUISITION_SUCCEEDED"
+    case ddiPersonalizationStarted = "DDI_PERSONALIZATION_STARTED"
+    case ddiPersonalizationSucceeded = "DDI_PERSONALIZATION_SUCCEEDED"
+    case ddiMountStarted = "DDI_MOUNT_STARTED"
+    case ddiMountSucceeded = "DDI_MOUNT_SUCCEEDED"
+    case rsdReady = "RSD_READY"
+    case remoteXPCReady = "REMOTEXPC_READY"
+    case appServiceReady = "APPSERVICE_READY"
+    case mainNativeLaunchStarted = "MAIN_NATIVE_LAUNCH_STARTED"
+    case mainNativeLaunchSucceeded = "MAIN_NATIVE_LAUNCH_SUCCEEDED"
+    case runtimeConfigurationReconciliationStarted = "RUNTIME_CONFIG_RECONCILIATION_STARTED"
+    case houseArrestReady = "HOUSE_ARREST_READY"
+    case tryAgainRequested = "TRY_AGAIN_REQUESTED"
+    case physicalReconciliationStarted = "PHYSICAL_RECONCILIATION_STARTED"
+    case physicalReconciliationResult = "PHYSICAL_RECONCILIATION_RESULT"
+    case componentInstallSkipped = "COMPONENT_INSTALL_SKIPPED"
     case developerProfileTrustRequired = "DEVELOPER_PROFILE_TRUST_REQUIRED"
     case verifyingDeveloperProfileTrust = "VERIFYING_DEVELOPER_PROFILE_TRUST"
     case developerProfileTrusted = "DEVELOPER_PROFILE_TRUSTED"
@@ -46,6 +68,18 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
     case runtimeConfigurationWritten = "RUNTIME_CONFIGURATION_WRITTEN"
     case verifyingRuntimeConfiguration = "VERIFYING_RUNTIME_CONFIGURATION"
     case runtimeConfigurationVerified = "RUNTIME_CONFIGURATION_VERIFIED"
+    case pairingReconciliationStarted = "PAIRING_RECONCILIATION_STARTED"
+    case pairingCreated = "PAIRING_CREATED"
+    case pairingReused = "PAIRING_REUSED"
+    case pairingDeliveryStarted = "PAIRING_DELIVERY_STARTED"
+    case pairingDeliverySucceeded = "PAIRING_DELIVERY_SUCCEEDED"
+    case pairingReceiptVerified = "PAIRING_RECEIPT_VERIFIED"
+    case localDevVPNReadinessStarted = "LOCALDEVVPN_READINESS_STARTED"
+    case localDevVPNLaunchStarted = "LOCALDEVVPN_LAUNCH_STARTED"
+    case localDevVPNLaunchSucceeded = "LOCALDEVVPN_LAUNCH_SUCCEEDED"
+    case localDevVPNUserActionRequired = "LOCALDEVVPN_USER_ACTION_REQUIRED"
+    case localDevVPNReady = "LOCALDEVVPN_READY"
+    case setupReadyForRuntime = "SETUP_READY_FOR_RUNTIME"
     case checkingProfileExpiration = "CHECKING_PROFILE_EXPIRATION"
     case waitingForIPhoneSetup = "WAITING_FOR_IPHONE_SETUP"
     case verifyingRuntimeReadiness = "VERIFYING_RUNTIME_READINESS"
@@ -64,22 +98,40 @@ public enum ConsumerProvisioningStage: String, Codable, CaseIterable, Equatable,
              .keychainIdentityFound, .secIdentityResolutionSucceeded, .codesignIdentityVisible,
              .codesignSignTestSucceeded, .signingIdentityResolved, .preparingArtifacts,
              .installCommandsPrepared, .runtimeConfigurationPrepared, .waitingForDevice:
-            return "Preparing IOSSim"
-        case .signingNestedComponents, .signingMain, .signingRunner: return "Signing IOSSim"
+            return "Preparing Veya"
+        case .signingNestedComponents, .signingMain, .signingRunner: return "Signing Veya"
         case .verifyingSignatures, .artifactValidationComplete: return "Verifying signed components"
-        case .installingMain, .mainInstallCommandSucceeded: return "Installing IOSSim"
+        case .installingMain, .mainInstallCommandSucceeded: return "Installing Veya"
         case .installingRunner, .runnerInstallCommandSucceeded: return "Installing support components"
         case .verifyingInstallation, .installInventoryRefresh, .installInventoryPending,
-             .installationVerified: return "Checking installation"
-        case .developerProfileTrustRequired: return "Trust IOSSim on your iPhone"
+             .installationVerified, .tryAgainRequested, .physicalReconciliationStarted,
+             .physicalReconciliationResult, .componentInstallSkipped: return "Checking installation"
+        case .developerServicesReconciliationStarted, .coreDeviceProxyReady, .softwareTunnelReady,
+             .ddiNotRequired, .ddiRequired, .ddiAcquisitionStarted,
+             .ddiAcquisitionSucceeded, .ddiPersonalizationStarted, .ddiPersonalizationSucceeded,
+             .ddiMountStarted, .ddiMountSucceeded, .rsdReady, .remoteXPCReady,
+             .appServiceReady:
+            return "Preparing iPhone developer services"
+        case .developerProfileTrustRequired: return "Trust Veya on your iPhone"
         case .verifyingDeveloperProfileTrust, .developerProfileTrusted,
+             .mainNativeLaunchStarted, .mainNativeLaunchSucceeded,
+             .runtimeConfigurationReconciliationStarted, .houseArrestReady,
              .writingRuntimeConfiguration, .runtimeConfigurationWritten,
              .verifyingRuntimeConfiguration, .runtimeConfigurationVerified:
             return "Finishing setup"
+        case .pairingReconciliationStarted, .pairingCreated, .pairingReused,
+             .pairingDeliveryStarted, .pairingDeliverySucceeded, .pairingReceiptVerified:
+            return "Preparing secure device connection"
+        case .localDevVPNReadinessStarted, .localDevVPNLaunchStarted,
+             .localDevVPNLaunchSucceeded, .localDevVPNReady:
+            return "Starting LocalDevVPN"
+        case .localDevVPNUserActionRequired:
+            return "Finish LocalDevVPN on your iPhone"
+        case .setupReadyForRuntime: return "Setup complete"
         case .checkingProfileExpiration: return "Checking refresh schedule"
         case .waitingForIPhoneSetup: return "Finish setup on your iPhone"
-        case .verifyingRuntimeReadiness: return "Checking IOSSim readiness"
-        case .complete: return "IOSSim is ready"
+        case .verifyingRuntimeReadiness: return "Checking Veya readiness"
+        case .complete: return "Veya is ready"
         case .failed: return "Setup needs attention"
         }
     }
@@ -106,6 +158,9 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case signingCertificateKeyMismatch = "SIGNING_CERTIFICATE_KEY_MISMATCH"
     case signingIdentityNotFound = "SIGNING_IDENTITY_NOT_FOUND"
     case signingKeyAccessDenied = "SIGNING_KEY_ACCESS_DENIED"
+    case signingKeychainUnavailable = "SIGNING_KEYCHAIN_UNAVAILABLE"
+    case signingACLRepairFailed = "SIGNING_ACL_REPAIR_FAILED"
+    case signingProbeFailed = "SIGNING_PROBE_FAILED"
     case signingIdentityAccessDenied = "SIGNING_IDENTITY_ACCESS_DENIED"
     case signOperationFailed = "SIGN_OPERATION_FAILED"
     case nestedSigningFailed = "NESTED_SIGNING_FAILED"
@@ -133,8 +188,32 @@ public enum ConsumerProvisioningErrorCode: String, Codable, CaseIterable, Equata
     case profileNearExpiry = "PROFILE_NEAR_EXPIRY"
     case deviceNotIncluded = "DEVICE_NOT_INCLUDED"
     case runtimeVerificationFailed = "RUNTIME_VERIFICATION_FAILED"
+    case runtimeProofFailed = "RUNTIME_PROOF_FAILED"
     case runtimeConfigurationWriteFailed = "RUNTIME_CONFIGURATION_WRITE_FAILED"
     case runtimeConfigurationReadbackFailed = "RUNTIME_CONFIGURATION_READBACK_FAILED"
+    case nativeLaunchUnavailable = "NATIVE_LAUNCH_UNAVAILABLE"
+    case deviceResolutionFailed = "DEVICE_RESOLUTION_FAILED"
+    case coreDeviceProxyFailed = "COREDEVICE_PROXY_FAILED"
+    case softwareTunnelFailed = "SOFTWARE_TUNNEL_FAILED"
+    case rsdUnavailable = "RSD_UNAVAILABLE"
+    case remoteXPCFailed = "REMOTEXPC_FAILED"
+    case appServiceUnavailable = "APPSERVICE_UNAVAILABLE"
+    case featureUnavailable = "FEATURE_UNAVAILABLE"
+    case applicationNotFound = "APPLICATION_NOT_FOUND"
+    case ddiRequired = "DDI_REQUIRED"
+    case ddiPersonalizationFailed = "DDI_PERSONALIZATION_FAILED"
+    case ddiMountFailed = "DDI_MOUNT_FAILED"
+    case developerServicesNotReady = "DEVELOPER_SERVICES_NOT_READY"
+    case launchRejected = "LAUNCH_REJECTED"
+    case nativeProtocolError = "PROTOCOL_ERROR"
+    case houseArrestUnavailable = "HOUSE_ARREST_UNAVAILABLE"
+    case remotePairingFailed = "REMOTE_PAIRING_FAILED"
+    case pairingDeliveryFailed = "PAIRING_DELIVERY_FAILED"
+    case pairingReceiptFailed = "PAIRING_RECEIPT_FAILED"
+    case localDevVPNMissing = "LOCALDEVVPN_MISSING"
+    case localDevVPNUserActionRequired = "LOCALDEVVPN_USER_ACTION_REQUIRED"
+    case localDevVPNReadinessFailed = "LOCALDEVVPN_READINESS_FAILED"
+    case nativeContainerReadFailed = "NATIVE_CONTAINER_READ_FAILED"
     case staleTeamState = "STALE_TEAM_STATE"
     case crossTeamInstallConflict = "CROSS_TEAM_INSTALL_CONFLICT"
     case artifactInvalid = "ARTIFACT_INVALID"
@@ -166,7 +245,7 @@ public struct ConsumerProvisioningFailure: Error, Codable, Equatable, Sendable, 
     }
 
     public var description: String {
-        "\(code.rawValue): \(developerDetail)"
+        "\(diagnosticDescriptor.code) [\(code.rawValue)]: \(developerDetail)"
     }
 }
 
@@ -218,6 +297,12 @@ public enum ConsumerProvisioningOperation: String, Codable, Equatable, Sendable 
     case repair = "REPAIR"
 }
 
+public enum ConsumerReconciliationTrigger: String, Codable, Equatable, Sendable {
+    case setupStart = "SETUP_START"
+    case tryAgain = "TRY_AGAIN"
+    case resumeBoundary = "RESUME_BOUNDARY"
+}
+
 enum ConsumerInstalledIdentityPolicy {
     static func isIOSSimOwnedMain(_ bundleIdentifier: String) -> Bool {
         if bundleIdentifier == ProtectedSourceBundleIdentifiers.default.main { return true }
@@ -250,14 +335,16 @@ public struct ConsumerProvisioningRequest: Codable, Equatable, Sendable {
     public let allowFreshInstallAfterCrossTeamConflict: Bool
     public let backend: ConsumerProvisioningBackendIdentifier
     public let generation: UInt64?
+    public let reconciliationTrigger: ConsumerReconciliationTrigger?
 
     public init(
         operation: ConsumerProvisioningOperation,
         selectedDeviceIdentifier: String,
         selectedTeamIdentifier: String,
         allowFreshInstallAfterCrossTeamConflict: Bool = false,
-        backend: ConsumerProvisioningBackendIdentifier = .xcodeFallback,
-        generation: UInt64? = nil
+        backend: ConsumerProvisioningBackendIdentifier = .nativePersonalTeam,
+        generation: UInt64? = nil,
+        reconciliationTrigger: ConsumerReconciliationTrigger? = nil
     ) {
         self.operation = operation
         self.selectedDeviceIdentifier = selectedDeviceIdentifier
@@ -265,6 +352,7 @@ public struct ConsumerProvisioningRequest: Codable, Equatable, Sendable {
         self.allowFreshInstallAfterCrossTeamConflict = allowFreshInstallAfterCrossTeamConflict
         self.backend = backend
         self.generation = generation
+        self.reconciliationTrigger = reconciliationTrigger
     }
 }
 
@@ -321,6 +409,10 @@ public enum ConsumerSetupCheckpoint: String, Codable, Equatable, Sendable, CaseI
     case developerProfileTrustRequired = "DEVELOPER_PROFILE_TRUST_REQUIRED"
     case runtimeConfigurationWritten = "RUNTIME_CONFIGURATION_WRITTEN"
     case runtimeConfigurationVerified = "RUNTIME_CONFIGURATION_VERIFIED"
+    case remotePairingVerified = "REMOTE_PAIRING_VERIFIED"
+    case localDevVPNReady = "LOCALDEVVPN_READY"
+    case setupReadyForRuntime = "SETUP_READY_FOR_RUNTIME"
+    /// Legacy schema-1/2 value. It proved runtime mapping only, never pairing.
     case complete = "COMPLETE"
 
     public var installationIsVerified: Bool {
@@ -328,7 +420,19 @@ public enum ConsumerSetupCheckpoint: String, Codable, Equatable, Sendable, CaseI
     }
 
     public var runtimeConfigurationIsVerified: Bool {
-        self == .runtimeConfigurationVerified || self == .complete
+        [.runtimeConfigurationVerified, .remotePairingVerified, .localDevVPNReady, .setupReadyForRuntime, .complete].contains(self)
+    }
+
+    public var remotePairingIsVerified: Bool {
+        self == .remotePairingVerified || self == .localDevVPNReady || self == .setupReadyForRuntime
+    }
+
+    public var localDevVPNIsVerified: Bool {
+        self == .localDevVPNReady || self == .setupReadyForRuntime
+    }
+
+    public var setupIsReadyForRuntime: Bool {
+        self == .setupReadyForRuntime
     }
 }
 
@@ -387,7 +491,7 @@ public struct InstallationInventoryResult: Codable, Equatable, Sendable {
 }
 
 public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 4
 
     public let schemaVersion: Int
     public let deviceIdentifierSafe: String
@@ -477,10 +581,53 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
         self.operationGeneration = operationGeneration
     }
 
-    /// Legacy manifests were only written after launch and runtime mapping
-    /// readback succeeded, so their deepest safe checkpoint is runtime verified.
+    /// A missing legacy checkpoint is never proof of current device state.
+    /// Migration conservatively returns to installation verification.
     public var effectiveSetupCheckpoint: ConsumerSetupCheckpoint {
-        setupCheckpoint ?? (runtimeSetupStatus == .ready ? .complete : .runtimeConfigurationVerified)
+        setupCheckpoint ?? .installationVerified
+    }
+
+    public func migratedToCurrentSchema() -> ConsumerProvisioningManifest {
+        let migratedCheckpoint: ConsumerSetupCheckpoint
+        if schemaVersion >= 3, effectiveSetupCheckpoint.remotePairingIsVerified {
+            // Schema 3 could claim readiness before LocalDevVPN had been
+            // functionally verified. Preserve pairing proof, then run the new
+            // setup-only VPN gate.
+            migratedCheckpoint = .remotePairingVerified
+        } else if effectiveSetupCheckpoint.runtimeConfigurationIsVerified {
+            migratedCheckpoint = .runtimeConfigurationVerified
+        } else {
+            migratedCheckpoint = effectiveSetupCheckpoint
+        }
+        return ConsumerProvisioningManifest(
+            schemaVersion: Self.currentSchemaVersion,
+            deviceIdentifierSafe: deviceIdentifierSafe,
+            deviceIdentifierHash: deviceIdentifierHash,
+            deviceName: deviceName,
+            deviceModel: deviceModel,
+            deviceOSVersion: deviceOSVersion,
+            teamID: teamID,
+            sourceMainBundleID: sourceMainBundleID,
+            installedMainBundleID: installedMainBundleID,
+            sourceUITestBundleID: sourceUITestBundleID,
+            installedUITestBundleID: installedUITestBundleID,
+            sourceRunnerBundleID: sourceRunnerBundleID,
+            installedRunnerBundleID: installedRunnerBundleID,
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: lastInstallDate,
+            lastRefreshAttempt: lastRefreshAttempt,
+            lastRefreshSuccess: lastRefreshSuccess,
+            runtimeSetupStatus: .userActionRequired,
+            lastRuntimeHealthCheck: lastRuntimeHealthCheck,
+            appVersion: appVersion,
+            provisionerVersion: provisionerVersion,
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
+            setupCheckpoint: migratedCheckpoint,
+            installationInventory: installationInventory,
+            developerProfileTrustStatus: developerProfileTrustStatus,
+            operationGeneration: operationGeneration
+        )
     }
 
     public var earliestExpiration: Date? {
@@ -515,7 +662,7 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
             appVersion: appVersion,
             provisionerVersion: provisionerVersion,
             trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
-            setupCheckpoint: status == .ready ? .complete : setupCheckpoint,
+            setupCheckpoint: setupCheckpoint,
             installationInventory: installationInventory,
             developerProfileTrustStatus: developerProfileTrustStatus,
             operationGeneration: operationGeneration
@@ -542,6 +689,38 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
             lastInstallDate: lastInstallDate,
             lastRefreshAttempt: date,
             lastRefreshSuccess: lastRefreshSuccess,
+            runtimeSetupStatus: runtimeSetupStatus,
+            lastRuntimeHealthCheck: lastRuntimeHealthCheck,
+            appVersion: appVersion,
+            provisionerVersion: provisionerVersion,
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
+            setupCheckpoint: setupCheckpoint,
+            installationInventory: installationInventory,
+            developerProfileTrustStatus: developerProfileTrustStatus,
+            operationGeneration: operationGeneration
+        )
+    }
+
+    public func recordingRefreshSuccess(at date: Date) -> ConsumerProvisioningManifest {
+        ConsumerProvisioningManifest(
+            schemaVersion: schemaVersion,
+            deviceIdentifierSafe: deviceIdentifierSafe,
+            deviceIdentifierHash: deviceIdentifierHash,
+            deviceName: deviceName,
+            deviceModel: deviceModel,
+            deviceOSVersion: deviceOSVersion,
+            teamID: teamID,
+            sourceMainBundleID: sourceMainBundleID,
+            installedMainBundleID: installedMainBundleID,
+            sourceUITestBundleID: sourceUITestBundleID,
+            installedUITestBundleID: installedUITestBundleID,
+            sourceRunnerBundleID: sourceRunnerBundleID,
+            installedRunnerBundleID: installedRunnerBundleID,
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: lastInstallDate,
+            lastRefreshAttempt: lastRefreshAttempt,
+            lastRefreshSuccess: date,
             runtimeSetupStatus: runtimeSetupStatus,
             lastRuntimeHealthCheck: lastRuntimeHealthCheck,
             appVersion: appVersion,
@@ -588,6 +767,84 @@ public struct ConsumerProvisioningManifest: Codable, Equatable, Sendable {
             developerProfileTrustStatus: developerProfileTrustStatus ?? self.developerProfileTrustStatus,
             operationGeneration: operationGeneration
         )
+    }
+
+    public func updatingInstallationInventory(_ inventory: InstallationInventoryResult) -> ConsumerProvisioningManifest {
+        ConsumerProvisioningManifest(
+            schemaVersion: schemaVersion,
+            deviceIdentifierSafe: deviceIdentifierSafe,
+            deviceIdentifierHash: deviceIdentifierHash,
+            deviceName: deviceName,
+            deviceModel: deviceModel,
+            deviceOSVersion: deviceOSVersion,
+            teamID: teamID,
+            sourceMainBundleID: sourceMainBundleID,
+            installedMainBundleID: installedMainBundleID,
+            sourceUITestBundleID: sourceUITestBundleID,
+            installedUITestBundleID: installedUITestBundleID,
+            sourceRunnerBundleID: sourceRunnerBundleID,
+            installedRunnerBundleID: installedRunnerBundleID,
+            mainProfile: mainProfile,
+            runnerProfile: runnerProfile,
+            lastInstallDate: lastInstallDate,
+            lastRefreshAttempt: lastRefreshAttempt,
+            lastRefreshSuccess: lastRefreshSuccess,
+            runtimeSetupStatus: runtimeSetupStatus,
+            lastRuntimeHealthCheck: lastRuntimeHealthCheck,
+            appVersion: appVersion,
+            provisionerVersion: provisionerVersion,
+            trueRenewalPhysicallyValidated: trueRenewalPhysicallyValidated,
+            setupCheckpoint: setupCheckpoint,
+            installationInventory: inventory,
+            developerProfileTrustStatus: developerProfileTrustStatus,
+            operationGeneration: operationGeneration
+        )
+    }
+}
+
+public struct ConsumerSetupReconciliationResult: Codable, Equatable, Sendable {
+    public let trigger: ConsumerReconciliationTrigger
+    public let persistedCheckpoint: ConsumerSetupCheckpoint
+    public let derivedCheckpoint: ConsumerSetupCheckpoint?
+    public let inventory: InstallationInventoryResult
+    public let mainInstallRequired: Bool
+    public let runnerInstallRequired: Bool
+    public let repairScope: SetupRepairScope
+    public let renewalRequired: Bool
+    public let releaseUpgradeRequired: Bool
+    public let checkpointSource: String
+    public let selectedDeviceIdentityType: String
+    public let legacyFallbackUsed: Bool
+    public let consumerBuildAttempted: Bool
+
+    public init(
+        trigger: ConsumerReconciliationTrigger,
+        persistedCheckpoint: ConsumerSetupCheckpoint,
+        derivedCheckpoint: ConsumerSetupCheckpoint?,
+        inventory: InstallationInventoryResult,
+        mainInstallRequired: Bool,
+        runnerInstallRequired: Bool,
+        repairScope: SetupRepairScope = .none,
+        renewalRequired: Bool = false,
+        releaseUpgradeRequired: Bool = false
+    ) {
+        self.trigger = trigger
+        self.persistedCheckpoint = persistedCheckpoint
+        self.derivedCheckpoint = derivedCheckpoint
+        self.inventory = inventory
+        self.mainInstallRequired = mainInstallRequired
+        self.runnerInstallRequired = runnerInstallRequired
+        self.repairScope = repairScope
+        self.renewalRequired = renewalRequired
+        self.releaseUpgradeRequired = releaseUpgradeRequired
+        self.checkpointSource = "PHYSICAL_DERIVED"
+        self.selectedDeviceIdentityType = "LOCKDOWN_UDID"
+        self.legacyFallbackUsed = false
+        self.consumerBuildAttempted = false
+    }
+
+    public var repairRequired: Bool {
+        mainInstallRequired || runnerInstallRequired || renewalRequired || releaseUpgradeRequired
     }
 }
 
@@ -700,7 +957,8 @@ public enum ConsumerProvisioningErrorClassifier {
             return .computerTrustRequired
         }
         if lower.contains("mismatchedapplicationidentifierentitlement")
-            || lower.contains("application-identifier") && lower.contains("does not match") {
+            || lower.contains("application-identifier") && lower.contains("does not match")
+            || lower.contains("native_ownership_conflict") {
             return .crossTeamUpgradeBlocked
         }
         if lower.contains("device") && lower.contains("not") && lower.contains("profile") {
@@ -722,6 +980,27 @@ public enum ConsumerProvisioningErrorClassifier {
     /// launch denial is deliberately not enough.
     public static func launchErrorCode(output: String) -> ConsumerProvisioningErrorCode {
         let lower = output.lowercased()
+        let typedPrefixes: [(String, ConsumerProvisioningErrorCode)] = [
+            ("device_resolution_failed:", .deviceResolutionFailed),
+            ("coredevice_proxy_failed:", .coreDeviceProxyFailed),
+            ("software_tunnel_failed:", .softwareTunnelFailed),
+            ("rsd_unavailable:", .rsdUnavailable),
+            ("remotexpc_failed:", .remoteXPCFailed),
+            ("appservice_unavailable:", .appServiceUnavailable),
+            ("feature_unavailable:", .featureUnavailable),
+            ("application_not_found:", .applicationNotFound),
+            ("ddi_required:", .ddiRequired),
+            ("developer_services_not_ready:", .developerServicesNotReady),
+            ("launch_rejected:", .launchRejected),
+            ("protocol_error:", .nativeProtocolError),
+        ]
+        if let match = typedPrefixes.first(where: { lower.hasPrefix($0.0) }) {
+            if match.1 == .launchRejected,
+               lower.contains("profile has not been explicitly trusted") {
+                return .developerProfileTrustRequired
+            }
+            return match.1
+        }
         if lower.contains("coredeviceerror error 10002")
             && lower.contains("fbsopenapplicationerrordomain error 3")
             && lower.contains("bserrorcodedescription = security")

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct NativeInstalledApplication: Codable, Equatable, Sendable {
@@ -12,9 +13,111 @@ public struct NativeInstalledApplication: Codable, Equatable, Sendable {
     }
 }
 
+public struct NativeLaunchReceipt: Codable, Equatable, Sendable {
+    public let bundleIdentifier: String
+    public let pid: UInt32
+    public let processIdentifierVersion: UInt32
+    public let appServiceConnected: Bool
+
+    public init(
+        bundleIdentifier: String,
+        pid: UInt32,
+        processIdentifierVersion: UInt32,
+        appServiceConnected: Bool
+    ) {
+        self.bundleIdentifier = bundleIdentifier
+        self.pid = pid
+        self.processIdentifierVersion = processIdentifierVersion
+        self.appServiceConnected = appServiceConnected
+    }
+}
+
 public enum NativeApplicationInstallMode: String, Codable, Equatable, Sendable {
     case fresh
     case upgrade
+}
+
+public struct NativeApplicationInstallReceipt: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public let schemaVersion: Int
+    public let operationIdentifier: UUID
+    public let deviceUDIDHash: String
+    public let usbmuxIdentifier: UInt32?
+    public let connection: DeviceConnectionKind?
+    public let connectionGeneration: UInt64
+    public let mode: NativeApplicationInstallMode
+    public let bundleIdentifier: String
+    public let version: String
+    public let teamIdentifier: String
+    public let artifactSHA256: String
+    public let reconciledAfterInterruptedResponse: Bool
+    public let completedAt: Date
+
+    public init(
+        schemaVersion: Int = currentSchemaVersion,
+        operationIdentifier: UUID = UUID(),
+        deviceUDIDHash: String,
+        usbmuxIdentifier: UInt32?,
+        connection: DeviceConnectionKind?,
+        connectionGeneration: UInt64,
+        mode: NativeApplicationInstallMode,
+        bundleIdentifier: String,
+        version: String,
+        teamIdentifier: String,
+        artifactSHA256: String,
+        reconciledAfterInterruptedResponse: Bool,
+        completedAt: Date = Date()
+    ) {
+        self.schemaVersion = schemaVersion
+        self.operationIdentifier = operationIdentifier
+        self.deviceUDIDHash = deviceUDIDHash
+        self.usbmuxIdentifier = usbmuxIdentifier
+        self.connection = connection
+        self.connectionGeneration = connectionGeneration
+        self.mode = mode
+        self.bundleIdentifier = bundleIdentifier
+        self.version = version
+        self.teamIdentifier = teamIdentifier
+        self.artifactSHA256 = artifactSHA256
+        self.reconciledAfterInterruptedResponse = reconciledAfterInterruptedResponse
+        self.completedAt = completedAt
+    }
+}
+
+public enum RuntimeConfigurationReconciliationResult: String, Codable, Equatable, Sendable {
+    case alreadyCurrent = "ALREADY_CURRENT"
+    case writtenAndVerified = "WRITTEN_AND_VERIFIED"
+}
+
+public struct RuntimeMappingPayload: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 1
+    public let schemaVersion: Int
+    public let deviceUDIDHash: String
+    public let teamIdentifier: String?
+    public let mainBundleIdentifier: String
+    public let runnerBundleIdentifier: String
+
+    public init(
+        schemaVersion: Int = currentSchemaVersion,
+        deviceUDIDHash: String,
+        teamIdentifier: String? = nil,
+        mainBundleIdentifier: String,
+        runnerBundleIdentifier: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.deviceUDIDHash = deviceUDIDHash
+        self.teamIdentifier = teamIdentifier
+        self.mainBundleIdentifier = mainBundleIdentifier
+        self.runnerBundleIdentifier = runnerBundleIdentifier
+    }
+
+    public var semanticallyValid: Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && !deviceUDIDHash.isEmpty
+            && NativeApplicationPathPolicy.isValidBundleIdentifier(mainBundleIdentifier)
+            && NativeApplicationPathPolicy.isValidBundleIdentifier(runnerBundleIdentifier)
+    }
 }
 
 public enum NativeApplicationManagementError: String, Error, Codable, Equatable, Sendable {
@@ -32,6 +135,7 @@ public enum NativeApplicationManagementError: String, Error, Codable, Equatable,
     case deviceLocked
     case developerModeRequired
     case serviceUnavailable
+    case ownershipConflict
 }
 
 public enum NativeApplicationPathPolicy {
@@ -65,13 +169,25 @@ public protocol NativeApplicationServicing: Sendable {
 }
 
 public protocol NativeRSDApplicationLaunching: Sendable {
-    func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws
+    func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws -> NativeLaunchReceipt
 }
 
 public struct AwaitingPhysicalAppServiceLauncher: NativeRSDApplicationLaunching {
     public init() {}
-    public func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws {
+    public func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws -> NativeLaunchReceipt {
         throw NativeApplicationManagementError.serviceUnavailable
+    }
+}
+
+public struct NativeAppServiceLauncher: NativeRSDApplicationLaunching {
+    private let transport: DynamicNativeDeviceTransport
+
+    public init(transport: DynamicNativeDeviceTransport = DynamicNativeDeviceTransport()) {
+        self.transport = transport
+    }
+
+    public func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws -> NativeLaunchReceipt {
+        try transport.launchApplication(on: device, bundleIdentifier: bundleIdentifier)
     }
 }
 
@@ -81,10 +197,10 @@ public struct NativeApplicationService: NativeApplicationServicing {
 
     public init(
         transport: DynamicNativeDeviceTransport = DynamicNativeDeviceTransport(),
-        launcher: any NativeRSDApplicationLaunching = AwaitingPhysicalAppServiceLauncher()
+        launcher: (any NativeRSDApplicationLaunching)? = nil
     ) {
         self.transport = transport
-        self.launcher = launcher
+        self.launcher = launcher ?? NativeAppServiceLauncher(transport: transport)
     }
 
     public func inventory(on device: IOSSimDeviceIdentity) async throws -> [NativeInstalledApplication] {
@@ -100,7 +216,7 @@ public struct NativeApplicationService: NativeApplicationServicing {
     }
 
     public func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws {
-        try await launcher.launch(bundleIdentifier: bundleIdentifier, on: device)
+        _ = try await launcher.launch(bundleIdentifier: bundleIdentifier, on: device)
     }
 
     public func writeContainer(
@@ -130,23 +246,63 @@ public actor NativeApplicationManager {
         expectedTeamIdentifier: String,
         on device: IOSSimDeviceIdentity
     ) async throws -> NativeApplicationInstallMode {
+        try await installOrUpgradeReceipt(
+            appURL: appURL,
+            expectedBundleIdentifier: expectedBundleIdentifier,
+            expectedTeamIdentifier: expectedTeamIdentifier,
+            on: device
+        ).mode
+    }
+
+    public func installOrUpgradeReceipt(
+        appURL: URL,
+        expectedBundleIdentifier: String,
+        expectedTeamIdentifier: String,
+        on device: IOSSimDeviceIdentity
+    ) async throws -> NativeApplicationInstallReceipt {
         try Self.validateSignedApp(
             at: appURL,
             expectedBundleIdentifier: expectedBundleIdentifier,
             expectedTeamIdentifier: expectedTeamIdentifier
         )
+        let expectedVersion = try Self.applicationVersion(at: appURL)
+        let artifactSHA256 = try Self.applicationTreeSHA256(at: appURL)
         let before = try await service.inventory(on: device)
-        let mode: NativeApplicationInstallMode = before.contains { $0.bundleIdentifier == expectedBundleIdentifier }
-            ? .upgrade : .fresh
-        try await service.install(appURL: appURL, mode: mode, on: device)
+        let existing = before.first { $0.bundleIdentifier == expectedBundleIdentifier }
+        if let existing, existing.teamIdentifier != expectedTeamIdentifier {
+            throw NativeApplicationManagementError.ownershipConflict
+        }
+        let mode: NativeApplicationInstallMode = existing == nil ? .fresh : .upgrade
+        var reconciledAfterInterruptedResponse = false
+        do {
+            try await service.install(appURL: appURL, mode: mode, on: device)
+        } catch {
+            let reconciled = try? await service.inventory(on: device).first {
+                $0.bundleIdentifier == expectedBundleIdentifier
+                    && $0.teamIdentifier == expectedTeamIdentifier
+                    && $0.version == expectedVersion
+            }
+            guard reconciled != nil else { throw error }
+            reconciledAfterInterruptedResponse = true
+        }
         let after = try await service.inventory(on: device)
-        guard let installed = after.first(where: { $0.bundleIdentifier == expectedBundleIdentifier }) else {
+        guard let installed = after.first(where: { $0.bundleIdentifier == expectedBundleIdentifier }),
+              installed.teamIdentifier == expectedTeamIdentifier,
+              installed.version == expectedVersion else {
             throw NativeApplicationManagementError.inventoryMismatch
         }
-        if let team = installed.teamIdentifier, team != expectedTeamIdentifier {
-            throw NativeApplicationManagementError.inventoryMismatch
-        }
-        return mode
+        return NativeApplicationInstallReceipt(
+            deviceUDIDHash: PersonalTeamProvisioningPOC.deviceIdentifierHash(device.udid),
+            usbmuxIdentifier: device.usbmuxIdentifier,
+            connection: device.connection,
+            connectionGeneration: device.connectionGeneration,
+            mode: mode,
+            bundleIdentifier: expectedBundleIdentifier,
+            version: expectedVersion,
+            teamIdentifier: expectedTeamIdentifier,
+            artifactSHA256: artifactSHA256,
+            reconciledAfterInterruptedResponse: reconciledAfterInterruptedResponse
+        )
     }
 
     public func verifyInstallation(
@@ -162,7 +318,7 @@ public actor NativeApplicationManager {
         guard let runner = inventory.first(where: { $0.bundleIdentifier == runnerBundleIdentifier }) else {
             throw NativeApplicationManagementError.runnerMissing
         }
-        guard [main, runner].allSatisfy({ $0.teamIdentifier == nil || $0.teamIdentifier == expectedTeamIdentifier }) else {
+        guard [main, runner].allSatisfy({ $0.teamIdentifier == expectedTeamIdentifier }) else {
             throw NativeApplicationManagementError.inventoryMismatch
         }
         return [main, runner]
@@ -171,13 +327,23 @@ public actor NativeApplicationManager {
     public func uninstallIOSSimOwned(
         bundleIdentifiers: Set<String>,
         allowedBundleIdentifiers: Set<String>,
+        expectedTeamIdentifier: String,
         on device: IOSSimDeviceIdentity
     ) async throws {
-        guard bundleIdentifiers.isSubset(of: allowedBundleIdentifiers) else {
+        guard bundleIdentifiers.isSubset(of: allowedBundleIdentifiers), !expectedTeamIdentifier.isEmpty else {
             throw NativeApplicationManagementError.wrongBundleIdentifier
         }
+        let before = try await service.inventory(on: device)
         for identifier in bundleIdentifiers.sorted() {
+            guard let installed = before.first(where: { $0.bundleIdentifier == identifier }) else { continue }
+            guard installed.teamIdentifier == expectedTeamIdentifier else {
+                throw NativeApplicationManagementError.ownershipConflict
+            }
             try await service.uninstall(bundleIdentifier: identifier, on: device)
+        }
+        let after = try await service.inventory(on: device)
+        guard !after.contains(where: { bundleIdentifiers.contains($0.bundleIdentifier) }) else {
+            throw NativeApplicationManagementError.inventoryMismatch
         }
     }
 
@@ -191,17 +357,29 @@ public actor NativeApplicationManager {
     public func writeAndVerifyRuntimeMapping(
         mainBundleIdentifier: String,
         runnerBundleIdentifier: String,
+        teamIdentifier: String? = nil,
         on device: IOSSimDeviceIdentity
-    ) async throws {
-        let mapping = RuntimeMappingPayload(
-            schemaVersion: 1,
-            deviceUDIDHash: PersonalTeamProvisioningPOC.deviceIdentifierHash(device.udid),
+    ) async throws -> RuntimeConfigurationReconciliationResult {
+        let mapping = Self.expectedRuntimeMapping(
             mainBundleIdentifier: mainBundleIdentifier,
-            runnerBundleIdentifier: runnerBundleIdentifier
+            runnerBundleIdentifier: runnerBundleIdentifier,
+            teamIdentifier: teamIdentifier,
+            device: device
         )
+        guard mapping.semanticallyValid else {
+            throw NativeApplicationManagementError.readbackMismatch
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(mapping)
+        if (try? await verifyRuntimeMapping(
+            mainBundleIdentifier: mainBundleIdentifier,
+            runnerBundleIdentifier: runnerBundleIdentifier,
+            teamIdentifier: teamIdentifier,
+            on: device
+        )) == true {
+            return .alreadyCurrent
+        }
         try await service.writeContainer(
             bundleIdentifier: mainBundleIdentifier,
             relativePath: Self.runtimeMappingPath,
@@ -213,7 +391,48 @@ public actor NativeApplicationManager {
             relativePath: Self.runtimeMappingPath,
             on: device
         )
-        guard receipt == data else { throw NativeApplicationManagementError.readbackMismatch }
+        guard let decoded = try? JSONDecoder().decode(RuntimeMappingPayload.self, from: receipt),
+              decoded == mapping, decoded.semanticallyValid else {
+            throw NativeApplicationManagementError.readbackMismatch
+        }
+        return .writtenAndVerified
+    }
+
+    public func verifyRuntimeMapping(
+        mainBundleIdentifier: String,
+        runnerBundleIdentifier: String,
+        teamIdentifier: String? = nil,
+        on device: IOSSimDeviceIdentity
+    ) async throws -> Bool {
+        let expected = Self.expectedRuntimeMapping(
+            mainBundleIdentifier: mainBundleIdentifier,
+            runnerBundleIdentifier: runnerBundleIdentifier,
+            teamIdentifier: teamIdentifier,
+            device: device
+        )
+        let data = try await service.readContainer(
+            bundleIdentifier: mainBundleIdentifier,
+            relativePath: Self.runtimeMappingPath,
+            on: device
+        )
+        guard let decoded = try? JSONDecoder().decode(RuntimeMappingPayload.self, from: data) else {
+            return false
+        }
+        return decoded == expected && decoded.semanticallyValid
+    }
+
+    private static func expectedRuntimeMapping(
+        mainBundleIdentifier: String,
+        runnerBundleIdentifier: String,
+        teamIdentifier: String?,
+        device: IOSSimDeviceIdentity
+    ) -> RuntimeMappingPayload {
+        RuntimeMappingPayload(
+            deviceUDIDHash: PersonalTeamProvisioningPOC.deviceIdentifierHash(device.udid),
+            teamIdentifier: teamIdentifier,
+            mainBundleIdentifier: mainBundleIdentifier,
+            runnerBundleIdentifier: runnerBundleIdentifier
+        )
     }
 
     public static func validateSignedApp(
@@ -232,24 +451,75 @@ public actor NativeApplicationManager {
             throw NativeApplicationManagementError.invalidSignedApplication
         }
     }
-}
 
-private struct RuntimeMappingPayload: Codable, Equatable, Sendable {
-    let schemaVersion: Int
-    let deviceUDIDHash: String
-    let mainBundleIdentifier: String
-    let runnerBundleIdentifier: String
+    private static func applicationVersion(at appURL: URL) throws -> String {
+        guard let info = NSDictionary(contentsOf: appURL.appendingPathComponent("Info.plist")),
+              let version = (info["CFBundleShortVersionString"] as? String)
+                ?? (info["CFBundleVersion"] as? String),
+              !version.isEmpty else {
+            throw NativeApplicationManagementError.invalidSignedApplication
+        }
+        return version
+    }
+
+    private static func applicationTreeSHA256(at appURL: URL) throws -> String {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: appURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw NativeApplicationManagementError.invalidSignedApplication
+        }
+        let entries = enumerator.compactMap { $0 as? URL }.sorted { $0.path < $1.path }
+        var hasher = SHA256()
+        for entry in entries {
+            let relative = String(entry.path.dropFirst(appURL.path.count + 1))
+            hasher.update(data: Data(relative.utf8))
+            hasher.update(data: Data([0]))
+            let values = try entry.resourceValues(forKeys: Set(keys))
+            if values.isSymbolicLink == true {
+                hasher.update(data: Data("symlink".utf8))
+                hasher.update(data: Data((try FileManager.default.destinationOfSymbolicLink(atPath: entry.path)).utf8))
+            } else if values.isRegularFile == true {
+                hasher.update(data: Data("file".utf8))
+                let handle = try FileHandle(forReadingFrom: entry)
+                defer { try? handle.close() }
+                while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                    hasher.update(data: chunk)
+                }
+            } else {
+                hasher.update(data: Data("directory".utf8))
+            }
+            hasher.update(data: Data([0]))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 public struct NativeApplicationInventoryReader: DeviceApplicationInventoryReading {
     private let service: any NativeApplicationServicing
+    private let deviceBackend: (any DeviceProvisioningBackend)?
 
-    public init(service: any NativeApplicationServicing = NativeApplicationService()) {
+    public init(
+        service: any NativeApplicationServicing = NativeApplicationService(),
+        deviceBackend: (any DeviceProvisioningBackend)? = nil
+    ) {
         self.service = service
+        self.deviceBackend = deviceBackend
     }
 
     public func read(rawDeviceIdentifier: String, context: RuntimeProvisioningContext) async -> DeviceApplicationInventory {
-        guard let identity = try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier) else {
+        let identity: IOSSimDeviceIdentity?
+        if let deviceBackend {
+            identity = await deviceBackend.nativeDeviceIdentity(
+                matching: rawDeviceIdentifier,
+                context: context
+            )
+        } else {
+            identity = try? IOSSimDeviceIdentity(udid: rawDeviceIdentifier)
+        }
+        guard let identity else {
             return DeviceApplicationInventory(
                 selectedDeviceMatches: false, bundleIdentifiers: [], failureCode: .deviceUnavailable,
                 safeReason: "selected device identity is invalid"

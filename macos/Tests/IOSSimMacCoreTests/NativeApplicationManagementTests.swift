@@ -23,6 +23,120 @@ final class NativeApplicationManagementTests: XCTestCase {
         XCTAssertEqual(modes, [.fresh, .upgrade])
     }
 
+    func testInstallReceiptBindsExactDeviceArtifactTeamAndVersion() async throws {
+        let fixture = try makeSignedApp(bundleID: "com.example.main")
+        defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
+        let service = FakeApplicationService()
+        let device = try IOSSimDeviceIdentity(
+            udid: "PHONE-0001",
+            usbmuxIdentifier: 42,
+            connection: .usb,
+            connectionGeneration: 7
+        )
+
+        let receipt = try await NativeApplicationManager(service: service).installOrUpgradeReceipt(
+            appURL: fixture,
+            expectedBundleIdentifier: "com.example.main",
+            expectedTeamIdentifier: "TEAM1",
+            on: device
+        )
+
+        XCTAssertEqual(receipt.schemaVersion, NativeApplicationInstallReceipt.currentSchemaVersion)
+        XCTAssertEqual(receipt.mode, .fresh)
+        XCTAssertEqual(receipt.usbmuxIdentifier, 42)
+        XCTAssertEqual(receipt.connection, .usb)
+        XCTAssertEqual(receipt.connectionGeneration, 7)
+        XCTAssertEqual(receipt.bundleIdentifier, "com.example.main")
+        XCTAssertEqual(receipt.version, "1")
+        XCTAssertEqual(receipt.teamIdentifier, "TEAM1")
+        XCTAssertEqual(receipt.artifactSHA256.count, 64)
+        XCTAssertFalse(receipt.reconciledAfterInterruptedResponse)
+        XCTAssertFalse(receipt.deviceUDIDHash.contains("PHONE-0001"))
+    }
+
+    func testWrongOrUnknownInstalledTeamIsNeverOverwritten() async throws {
+        let fixture = try makeSignedApp(bundleID: "com.example.main")
+        defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
+        for team in ["OTHER", nil] as [String?] {
+            let service = FakeApplicationService(apps: [
+                NativeInstalledApplication(bundleIdentifier: "com.example.main", version: "1", teamIdentifier: team)
+            ])
+            do {
+                _ = try await NativeApplicationManager(service: service).installOrUpgradeReceipt(
+                    appURL: fixture,
+                    expectedBundleIdentifier: "com.example.main",
+                    expectedTeamIdentifier: "TEAM1",
+                    on: try IOSSimDeviceIdentity(udid: "PHONE-0001")
+                )
+                XCTFail("expected ownership conflict")
+            } catch let error as NativeApplicationManagementError {
+                XCTAssertEqual(error, .ownershipConflict)
+            }
+            let modes = await service.installModes
+            XCTAssertTrue(modes.isEmpty)
+        }
+    }
+
+    func testInterruptedInstallResponseReconcilesOnlyExactInventory() async throws {
+        let fixture = try makeSignedApp(bundleID: "com.example.main")
+        defer { try? FileManager.default.removeItem(at: fixture.deletingLastPathComponent()) }
+        let applied = FakeApplicationService(failInstallAfterMutation: true)
+        let receipt = try await NativeApplicationManager(service: applied).installOrUpgradeReceipt(
+            appURL: fixture,
+            expectedBundleIdentifier: "com.example.main",
+            expectedTeamIdentifier: "TEAM1",
+            on: try IOSSimDeviceIdentity(udid: "PHONE-0001")
+        )
+        XCTAssertTrue(receipt.reconciledAfterInterruptedResponse)
+
+        let notApplied = FakeApplicationService(failInstallBeforeMutation: true)
+        do {
+            _ = try await NativeApplicationManager(service: notApplied).installOrUpgradeReceipt(
+                appURL: fixture,
+                expectedBundleIdentifier: "com.example.main",
+                expectedTeamIdentifier: "TEAM1",
+                on: try IOSSimDeviceIdentity(udid: "PHONE-0001")
+            )
+            XCTFail("expected original install failure")
+        } catch let error as NativeApplicationManagementError {
+            XCTAssertEqual(error, .serviceUnavailable)
+        }
+    }
+
+    func testUninstallRequiresExactTeamAndVerifiesAbsence() async throws {
+        let device = try IOSSimDeviceIdentity(udid: "PHONE-0001")
+        let unknown = FakeApplicationService(apps: [
+            NativeInstalledApplication(bundleIdentifier: "com.example.main", version: "1", teamIdentifier: nil)
+        ])
+        do {
+            try await NativeApplicationManager(service: unknown).uninstallIOSSimOwned(
+                bundleIdentifiers: ["com.example.main"],
+                allowedBundleIdentifiers: ["com.example.main"],
+                expectedTeamIdentifier: "TEAM1",
+                on: device
+            )
+            XCTFail("expected ownership conflict")
+        } catch let error as NativeApplicationManagementError {
+            XCTAssertEqual(error, .ownershipConflict)
+        }
+        let unknownUninstallCount = await unknown.uninstallCount
+        XCTAssertEqual(unknownUninstallCount, 0)
+
+        let owned = FakeApplicationService(apps: [
+            NativeInstalledApplication(bundleIdentifier: "com.example.main", version: "1", teamIdentifier: "TEAM1")
+        ])
+        try await NativeApplicationManager(service: owned).uninstallIOSSimOwned(
+            bundleIdentifiers: ["com.example.main"],
+            allowedBundleIdentifiers: ["com.example.main"],
+            expectedTeamIdentifier: "TEAM1",
+            on: device
+        )
+        let ownedUninstallCount = await owned.uninstallCount
+        let remainingApps = await owned.apps
+        XCTAssertEqual(ownedUninstallCount, 1)
+        XCTAssertTrue(remainingApps.isEmpty)
+    }
+
     func testRunnerMissingAndTeamMismatchAreRejected() async throws {
         let device = try IOSSimDeviceIdentity(udid: "PHONE-0001")
         let missing = NativeApplicationManager(service: FakeApplicationService(apps: [
@@ -96,6 +210,37 @@ final class NativeApplicationManagementTests: XCTestCase {
         }
     }
 
+    func testRuntimeMappingIsIdempotentAndRepairsStaleValues() async throws {
+        let device = try IOSSimDeviceIdentity(udid: "PHONE-0001")
+        let service = FakeApplicationService()
+        let manager = NativeApplicationManager(service: service)
+
+        let first = try await manager.writeAndVerifyRuntimeMapping(
+            mainBundleIdentifier: "com.example.main",
+            runnerBundleIdentifier: "com.example.runner",
+            teamIdentifier: "TEAM1",
+            on: device
+        )
+        let second = try await manager.writeAndVerifyRuntimeMapping(
+            mainBundleIdentifier: "com.example.main",
+            runnerBundleIdentifier: "com.example.runner",
+            teamIdentifier: "TEAM1",
+            on: device
+        )
+        let repaired = try await manager.writeAndVerifyRuntimeMapping(
+            mainBundleIdentifier: "com.example.main",
+            runnerBundleIdentifier: "com.example.runner.v2",
+            teamIdentifier: "TEAM1",
+            on: device
+        )
+
+        XCTAssertEqual(first, .writtenAndVerified)
+        XCTAssertEqual(second, .alreadyCurrent)
+        XCTAssertEqual(repaired, .writtenAndVerified)
+        let writeCount = await service.writeCount
+        XCTAssertEqual(writeCount, 2)
+    }
+
     func testUninstallIsScopedAndLaunchFailurePropagates() async throws {
         let service = FakeApplicationService(launchFailure: true)
         let manager = NativeApplicationManager(service: service)
@@ -103,7 +248,9 @@ final class NativeApplicationManagementTests: XCTestCase {
         do {
             try await manager.uninstallIOSSimOwned(
                 bundleIdentifiers: ["com.unrelated.app"],
-                allowedBundleIdentifiers: ["com.example.main", "com.example.runner"], on: device
+                allowedBundleIdentifiers: ["com.example.main", "com.example.runner"],
+                expectedTeamIdentifier: "TEAM1",
+                on: device
             )
             XCTFail("expected scoped uninstall rejection")
         } catch let error as NativeApplicationManagementError {
@@ -118,7 +265,9 @@ final class NativeApplicationManagementTests: XCTestCase {
     }
 
     private func makeSignedApp(bundleID: String) throws -> URL {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent(".build/iossim/v7-native-tests/\(UUID().uuidString)", isDirectory: true)
         let app = root.appendingPathComponent("Fixture.app", isDirectory: true)
         try FileManager.default.createDirectory(at: app.appendingPathComponent("_CodeSignature"), withIntermediateDirectories: true)
         let info: NSDictionary = ["CFBundleIdentifier": bundleID, "CFBundleVersion": "1"]
@@ -133,30 +282,41 @@ private actor FakeApplicationService: NativeApplicationServicing {
     var apps: [NativeInstalledApplication]
     var installModes: [NativeApplicationInstallMode] = []
     var container: [String: Data] = [:]
+    var writeCount = 0
+    var uninstallCount = 0
     let corruptReadback: Bool
     let launchFailure: Bool
+    let failInstallBeforeMutation: Bool
+    let failInstallAfterMutation: Bool
 
     init(
         apps: [NativeInstalledApplication] = [],
         corruptReadback: Bool = false,
-        launchFailure: Bool = false
+        launchFailure: Bool = false,
+        failInstallBeforeMutation: Bool = false,
+        failInstallAfterMutation: Bool = false
     ) {
         self.apps = apps
         self.corruptReadback = corruptReadback
         self.launchFailure = launchFailure
+        self.failInstallBeforeMutation = failInstallBeforeMutation
+        self.failInstallAfterMutation = failInstallAfterMutation
     }
 
     func inventory(on device: IOSSimDeviceIdentity) async throws -> [NativeInstalledApplication] { apps }
 
     func install(appURL: URL, mode: NativeApplicationInstallMode, on device: IOSSimDeviceIdentity) async throws {
         installModes.append(mode)
+        if failInstallBeforeMutation { throw NativeApplicationManagementError.serviceUnavailable }
         let info = NSDictionary(contentsOf: appURL.appendingPathComponent("Info.plist"))
         let bundle = info?["CFBundleIdentifier"] as? String ?? "missing"
         apps.removeAll { $0.bundleIdentifier == bundle }
         apps.append(NativeInstalledApplication(bundleIdentifier: bundle, version: "1", teamIdentifier: "TEAM1"))
+        if failInstallAfterMutation { throw NativeApplicationManagementError.serviceUnavailable }
     }
 
     func uninstall(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws {
+        uninstallCount += 1
         apps.removeAll { $0.bundleIdentifier == bundleIdentifier }
     }
 
@@ -166,7 +326,10 @@ private actor FakeApplicationService: NativeApplicationServicing {
 
     func writeContainer(
         bundleIdentifier: String, relativePath: String, data: Data, on device: IOSSimDeviceIdentity
-    ) async throws { container["\(bundleIdentifier):\(relativePath)"] = data }
+    ) async throws {
+        writeCount += 1
+        container["\(bundleIdentifier):\(relativePath)"] = data
+    }
 
     func readContainer(
         bundleIdentifier: String, relativePath: String, on device: IOSSimDeviceIdentity

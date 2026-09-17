@@ -15,7 +15,7 @@ struct SetupWizardView: View {
                 case .macActionRequired:
                     ActionRequiredView(
                         title: "Action required on this Mac",
-                        message: "IOSSim needs this Mac to be ready before it can continue.",
+                        message: "Veya needs this Mac to be ready before it can continue.",
                         checks: store.status?.macBlockingChecks ?? []
                     )
                 case .waitingForDevice:
@@ -25,7 +25,7 @@ struct SetupWizardView: View {
                 case .deviceActionRequired:
                     ActionRequiredView(
                         title: "Action required on your iPhone",
-                        message: "Complete the iPhone steps below, then check again.",
+                        message: deviceActionMessage,
                         checks: store.status?.deviceActionChecks ?? []
                     )
                 case .appleAccount:
@@ -48,6 +48,21 @@ struct SetupWizardView: View {
             WizardControls()
         }
         .padding(32)
+    }
+
+    private var deviceActionMessage: String {
+        switch store.lockdownPairingReceipt?.state {
+        case .waitingForUnlock:
+            return "Unlock your iPhone, then check again. Veya will never enter your passcode."
+        case .waitingForUserTrust:
+            return "Tap Trust on your iPhone, enter its passcode if Apple asks, then check again."
+        case .denied:
+            return "Computer trust was declined. Check again when you are ready to approve Apple's Trust prompt."
+        case .disconnected:
+            return "Reconnect this iPhone by USB, unlock it, then check again."
+        default:
+            return "Complete the iPhone steps below, then check again."
+        }
     }
 }
 
@@ -83,10 +98,12 @@ struct WizardControls: View {
 
     private var buttonTitle: String {
         switch store.phase {
-        case .macActionRequired, .deviceActionRequired:
+        case .macActionRequired:
             return "Check Again"
+        case .deviceActionRequired:
+            return store.selectedDevice?.pairingState == "paired" ? "Check Again" : "Request Trust"
         case .runtimeSetup:
-            return "I Finished Setup"
+            return "Try Again"
         case .developerProfileTrust:
             return "Continue"
         case .waitingForDevice:
@@ -106,8 +123,10 @@ struct WizardControls: View {
         switch store.phase {
         case .complete:
             store.showDashboard()
-        case .macActionRequired, .deviceActionRequired:
+        case .macActionRequired:
             store.refresh()
+        case .deviceActionRequired:
+            store.continueDeviceSecurityAction()
         case .runtimeSetup:
             store.confirmRuntimeSetup()
         case .developerProfileTrust:
@@ -134,11 +153,11 @@ struct WelcomeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Spacer()
-            Text("IOSSim")
+            Text(ProductBrand.migrationDisplayName)
                 .font(.largeTitle.weight(.semibold))
-            Text("Set up IOSSim on your iPhone.")
+            Text("Set up Veya on your iPhone.")
                 .font(.title3)
-            Text("IOSSim prepares your iPhone automatically. You only need to unlock it and approve Apple’s security prompts.")
+            Text("Veya prepares your iPhone automatically. You only need to unlock it and approve Apple’s security prompts.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Get Started") {
@@ -164,7 +183,7 @@ struct MacCheckView: View {
                 .font(.title2.weight(.semibold))
             FriendlyCheckRow(title: "macOS supported", state: rowState(component: "Mac"))
             FriendlyCheckRow(title: "Native device bridge ready", state: rowState(component: "Apple Tooling"))
-            FriendlyCheckRow(title: "IOSSim components ready", state: componentReadiness)
+            FriendlyCheckRow(title: "Veya components ready", state: componentReadiness)
         }
     }
 
@@ -227,13 +246,13 @@ struct DeviceConnectView: View {
         if store.status?.device.devices.isEmpty == true {
             return deviceDiscoveryFailure == nil
                 ? "Connect and unlock an iPhone to continue."
-                : "IOSSim could not query its native device bridge. Open Diagnostics for details."
+                : "Veya could not query its native device bridge. Open Diagnostics for details."
         }
         if let name = store.disconnectedDeviceName {
             return "Reconnect \(name) or choose another device."
         }
         if store.deviceSelectionRequired {
-            return "Select the iPhone IOSSim should set up."
+            return "Select the iPhone Veya should set up."
         }
         return "Connect your iPhone to this Mac using a USB cable and unlock it."
     }
@@ -262,7 +281,7 @@ struct DeviceRequirementsView: View {
                eligibility != .installable {
                 FriendlyCheckRow(
                     title: "iPhone authorization",
-                    detail: "This iPhone is not yet authorized for this IOSSim build.",
+                    detail: "This iPhone is not yet authorized for this Veya build.",
                     state: .action
                 )
             }
@@ -318,9 +337,9 @@ struct InstallationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Installing IOSSim")
+            Text("Installing Veya")
                 .font(.title2.weight(.semibold))
-            Text("Installing the components IOSSim needs on your iPhone.")
+            Text("Installing the components Veya needs on your iPhone.")
                 .foregroundStyle(.secondary)
             ForEach(InstallStage.allCases) { stage in
                 FriendlyCheckRow(
@@ -360,7 +379,7 @@ struct AppleAccountView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(verificationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isRunning)
             } else if store.personalTeams.isEmpty {
-                Text("IOSSim uses your Apple Account to authorize its on-device components.")
+                Text("Veya uses your Apple Account to authorize its on-device components.")
                     .foregroundStyle(.secondary)
                 TextField("Apple Account", text: $appleAccount)
                     .textContentType(.username)
@@ -378,7 +397,7 @@ struct AppleAccountView: View {
                     )
                 FriendlyCheckRow(
                     title: "Your account stays private",
-                    detail: "Your credentials are used locally to authenticate with Apple and are never sent to IOSSim servers. Apple may require two-factor verification. Free Apple authorization needs periodic refresh.",
+                    detail: "Your credentials are used locally to authenticate with Apple and are never sent to Veya servers. Apple may require two-factor verification. Free Apple authorization needs periodic refresh.",
                     state: .pass
                 )
             } else {
@@ -427,15 +446,22 @@ struct RuntimeSetupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("Finish setup on your iPhone")
+            Text("Preparing LocalDevVPN")
                 .font(.title2.weight(.semibold))
-            Text("Open IOSSim, tap Set Up IOSSim, and run Setup until the iPhone shows Setup Complete. Keep LocalDevVPN enabled while setup runs.")
+            Text("Veya opens the installed LocalDevVPN app and verifies its existing developer route automatically. If Apple asks, approve the VPN configuration or tap Connect in LocalDevVPN, then choose Try Again.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let error = store.lastError {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(error.headline).font(.headline)
+                    Text(error.recovery).foregroundStyle(.secondary)
+                    Text(error.details).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+            }
             ForEach(store.status?.runtimeActionChecks ?? []) { check in
                 runtimeBlock(for: check)
             }
-            Text("After the iPhone shows Setup Complete, return here and confirm below.")
+            Text("Setup completes after LocalDevVPN is reachable and Veya runs one bounded Rich location check through TestManager/XCTest. The check clears location and closes its setup session; it never starts a Drive route.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -445,16 +471,16 @@ struct RuntimeSetupView: View {
     private func runtimeBlock(for check: DoctorCheck) -> some View {
         if check.name.localizedCaseInsensitiveContains("LocalDevVPN") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enable IOSSim Connection")
+                Text("Enable Veya Connection")
                     .font(.headline)
-                Text("Open LocalDevVPN on your iPhone, approve Apple's VPN configuration prompt, and turn it on.")
+                Text("Veya opens LocalDevVPN automatically. If required, approve Apple's VPN prompt or tap Connect, then choose Try Again.")
                     .foregroundStyle(.secondary)
             }
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Finish Device Pairing")
                     .font(.headline)
-                Text("Keep your iPhone unlocked while IOSSim prepares and verifies the secure connection.")
+                Text("Keep your iPhone unlocked while Veya prepares and verifies the secure connection.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -464,7 +490,7 @@ struct RuntimeSetupView: View {
 struct DeveloperProfileTrustView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Trust IOSSim on your iPhone")
+            Text("Trust Veya on your iPhone")
                 .font(.title2.weight(.semibold))
             Text("Apple requires you to trust apps installed with your Personal Team before they can open.")
                 .foregroundStyle(.secondary)
@@ -473,13 +499,13 @@ struct DeveloperProfileTrustView: View {
                 Text("1. Open Settings on your iPhone.")
                 Text("2. Go to General.")
                 Text("3. Open VPN & Device Management.")
-                Text("4. Select the developer profile for the Apple Account you used with IOSSim.")
+                Text("4. Select the developer profile for the Apple Account you used with Veya.")
                 Text("5. Tap Trust, then confirm.")
-                Text("6. Return to IOSSim on your Mac.")
+                Text("6. Return to Veya on your Mac.")
                 Text("7. Click Continue.")
             }
             .fixedSize(horizontal: false, vertical: true)
-            Text("If IOSSim was already trusted, Continue will verify it without reinstalling anything.")
+            Text("If Veya was already trusted, Continue will verify it without reinstalling anything.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -491,7 +517,7 @@ struct VerifyingView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Verifying setup...")
                 .font(.title2.weight(.semibold))
-            Text("IOSSim is checking that installation and device setup are ready.")
+            Text("Veya is checking that installation and device setup are ready.")
                 .foregroundStyle(.secondary)
             ProgressView()
                 .accessibilityLabel("Verifying setup")
@@ -506,7 +532,7 @@ struct CompletionView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Setup Complete")
                 .font(.title2.weight(.semibold))
-            Text("IOSSim is ready to manage setup, repair, and component updates from this Mac.")
+            Text("Veya is ready to manage setup, repair, and component updates from this Mac.")
                 .foregroundStyle(.secondary)
             if store.nativeProvisioningExperiment {
                 FriendlyCheckRow(

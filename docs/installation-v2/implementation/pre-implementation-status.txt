@@ -1,0 +1,88 @@
+ M ios/App/IOSSimOnDeviceDVTPOCApp.swift
+ M ios/IOSSimOnDevicePOC.xcodeproj/project.pbxproj
+ M ios/Sources/IOSSimOnDeviceDVTPOC/AutomaticPairingInbox.swift
+ M ios/Sources/IOSSimOnDeviceDVTPOC/DvtLocationClient.swift
+ M ios/Sources/POCUnitChecks/main.swift
+ M macos/Package.swift
+ M macos/Sources/IOSSimMac/Views/SetupWizardView.swift
+ M macos/Sources/IOSSimMacCore/Models/ArtifactManifest.swift
+ M macos/Sources/IOSSimMacCore/Models/ConsumerProvisioning.swift
+ M macos/Sources/IOSSimMacCore/Models/DoctorStatus.swift
+ M macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamExperimental.swift
+ M macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamLive.swift
+ M macos/Sources/IOSSimMacCore/Services/BundledProvisioningEngine.swift
+ M macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift
+ M macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningBackend.swift
+ M macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningStateStore.swift
+ M macos/Sources/IOSSimMacCore/Services/DeveloperSupportCoordinator.swift
+ M macos/Sources/IOSSimMacCore/Services/IOSSimSetupEngine.swift
+ M macos/Sources/IOSSimMacCore/Services/MockIOSSimSetupEngine.swift
+ M macos/Sources/IOSSimMacCore/Services/NativeApplicationManagement.swift
+ M macos/Sources/IOSSimMacCore/Services/NativeDeviceBridge.swift
+ M macos/Sources/IOSSimMacCore/Services/NativeSigningIdentityResolver.swift
+ M macos/Sources/IOSSimMacCore/Services/RemotePairingLifecycle.swift
+ M macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift
+ M macos/Sources/IOSSimMacCore/Services/SupportBundleExporter.swift
+ M macos/Sources/IOSSimMacCore/SetupStore.swift
+ M macos/Sources/IOSSimProvisioner/main.swift
+ M macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamExperimentalTests.swift
+ M macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamLiveTests.swift
+ M macos/Tests/IOSSimMacCoreTests/ArtifactManifestTests.swift
+ M macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift
+ M macos/Tests/IOSSimMacCoreTests/NativeApplicationManagementTests.swift
+ M macos/Tests/IOSSimMacCoreTests/NativeDeviceBridgeTests.swift
+ M macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift
+ M macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift
+ M macos/Tests/IOSSimMacCoreTests/RemotePairingLifecycleTests.swift
+ M macos/Tests/IOSSimMacCoreTests/SetupStoreTests.swift
+ M macos/scripts/build_app.sh
+ M native/iossim-device-bridge/Cargo.lock
+ M native/iossim-device-bridge/Cargo.toml
+ M native/iossim-device-bridge/include/iossim_device_bridge.h
+ M native/iossim-device-bridge/src/lib.rs
+ M scripts/bootstrap/iossim_cli.py
+ M scripts/checks/check_no_xcode_consumer_runtime.py
+?? CURRENT_WORKTREE_SNAPSHOT.md
+?? FINAL_IPHONE_PAYLOAD_REBUILD_AND_HANDOFF_REPORT.md
+?? FINAL_NO_XCODE_SETUP_ARCHITECTURE.md
+?? FINAL_NO_XCODE_SETUP_GAP_AUDIT.md
+?? FINAL_NO_XCODE_SETUP_IMPLEMENTATION_REPORT.md
+?? GPT_ASTRA_ARCHITECTURE_COMPLIANCE_AUDIT.md
+?? IOSSim-SelfContained.app/
+?? IOSSim-SelfContained.previous.20260903091935.app/
+?? IOSSim-SelfContained.previous.20260903092533.app/
+?? IOSSim-Support-1789416447.zip
+?? IOSSim-Support-1789431940.zip
+?? IOSSim-pre-reorg.bundle
+?? IOSSim-untracked-Sep-2-2026.txt
+?? IOSSim-working-tree-Sep-2-2026-binary.patch
+?? IOSSim-working-tree-Sep-2-2026.patch
+?? IOSSim.app/
+?? IPHONE_SETUP_INGRESS_CALL_GRAPH.md
+?? NO_XCODE_APPSERVICE_DEVICE_NOT_FOUND_INVESTIGATION.md
+?? NO_XCODE_DEVICE_DISCOVERY_INVESTIGATION.md
+?? NO_XCODE_INSTALLATION_ROOT_CAUSE_INVESTIGATION.md
+?? NO_XCODE_NATIVE_APP_LAUNCH_INVESTIGATION.md
+?? SETUP_ENGINE_INVENTORY.md
+?? SETUP_LEGACY_INTERFERENCE_INVESTIGATION.md
+?? VanishedResearch.mSgdHk/
+?? docs/IOSSim_BUILD_AND_PACKAGING.md
+?? docs/IOSSim_CURRENT_ENGINEERING_STATE.md
+?? docs/IOSSim_ENGINEERING_HANDOFF.md
+?? docs/IOSSim_FIRST_TIME_SETUP.md
+?? docs/IOSSim_HANDOFF_SNAPSHOT_2026-09-15.md
+?? docs/IOSSim_IPHONE_PAYLOAD.md
+?? docs/IOSSim_NATIVE_DEVICE_STACK.md
+?? docs/IOSSim_PHYSICAL_VALIDATION_MATRIX.md
+?? docs/IOSSim_SECURITY_MODEL.md
+?? docs/IOSSim_TROUBLESHOOTING.md
+?? docs/README.md
+?? docs/installation-v2/
+?? ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/IOSSimPayloadRunner.xcscheme
+?? ios/Sources/IOSSimOnDeviceDVTPOC/LocalDevVPNSetupInbox.swift
+?? macos/Sources/IOSSimMacCore/Services/LocalDevVPNSetupCoordinator.swift
+?? macos/Sources/IOSSimMacCore/Services/NativeDeveloperServicesCoordinator.swift
+?? macos/Sources/IOSSimSigningKeyTestHelper/
+?? macos/Tests/IOSSimMacCoreTests/LocalDevVPNSetupCoordinatorTests.swift
+?? scripts/checks/check_no_xcode_install_routing.py
+?? scripts/checks/test_device_discovery_cli.py

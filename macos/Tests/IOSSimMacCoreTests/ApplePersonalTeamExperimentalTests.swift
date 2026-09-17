@@ -251,13 +251,71 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         ))
     }
 
+    func testVersionedAdapterKillSwitchFailsBeforeCredentialServiceInvocation() async throws {
+        let backend = ExperimentalBackendMock(auth: .success)
+        let adapter = VersionedPrivateAppleProvisioningAdapter(
+            service: backend,
+            policy: PrivateAppleProvisioningAdapterPolicy(
+                enabled: false,
+                allowedAdapterVersions: [backend.clientIdentityVersion]
+            )
+        )
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: adapter)
+        do {
+            _ = try await coordinator.begin(
+                account: "fixture@example.invalid",
+                password: SensitiveInput("sentinel-password")
+            )
+            XCTFail("expected adapter kill switch")
+        } catch let error as ExperimentalBackendError {
+            XCTAssertEqual(error, .adapterDisabled)
+        }
+        let events = await backend.events
+        let authorization = await coordinator.authorization
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(authorization.safeErrorCode, "APPLE_PRIVATE_ADAPTER_DISABLED")
+    }
+
+    func testVersionedAdapterRejectsUnapprovedProtocolVersionWithoutRetry() async throws {
+        let backend = ExperimentalBackendMock(auth: .success)
+        let adapter = VersionedPrivateAppleProvisioningAdapter(
+            service: backend,
+            policy: PrivateAppleProvisioningAdapterPolicy(
+                enabled: true,
+                allowedAdapterVersions: ["another-adapter-version"]
+            )
+        )
+        let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: adapter)
+        do {
+            _ = try await coordinator.begin(
+                account: "fixture@example.invalid",
+                password: SensitiveInput("sentinel-password")
+            )
+            XCTFail("expected protocol incompatibility")
+        } catch let error as ExperimentalBackendError {
+            XCTAssertEqual(error, .authenticationProtocolMismatch)
+        }
+        let attempts = await backend.observedAuthorizationAttempts()
+        let authorization = await coordinator.authorization
+        XCTAssertEqual(attempts, 0)
+        XCTAssertEqual(authorization.safeErrorCode, "APPLE_AUTH_PROTOCOL_MISMATCH")
+    }
+
+    func testAdapterPolicyEnvironmentKillSwitchIsExplicit() {
+        XCTAssertFalse(PrivateAppleProvisioningAdapterPolicy.current(environment: [
+            "VEYA_DISABLE_PRIVATE_APPLE_PROVISIONING": "true"
+        ]).enabled)
+        XCTAssertTrue(PrivateAppleProvisioningAdapterPolicy.current(environment: [:]).enabled)
+    }
+
     @MainActor
     func testSetupStoreOwnsAppleAuthorizationAndTwoFactorState() async throws {
         let backend = ExperimentalBackendMock(auth: .verification)
         let coordinator = ExperimentalConsumerProvisioningCoordinator(backend: backend)
         let store = SetupStore(
             engine: MockIOSSimSetupEngine(scenario: .ready),
-            authorizationCoordinator: coordinator
+            authorizationCoordinator: coordinator,
+            nativeProvisioningExperiment: false
         )
 
         store.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
@@ -362,7 +420,7 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         XCTAssertEqual(store.phase, .failed)
         XCTAssertEqual(
             store.lastError?.headline,
-            "Apple authorization succeeded, but IOSSim couldn't prepare Personal Team provisioning."
+            "Apple authorization succeeded, but Veya couldn't prepare Personal Team provisioning."
         )
         XCTAssertEqual(store.lastError?.details, "CERTIFICATE_LIMIT_REACHED")
         XCTAssertEqual(store.appleAuthorization.stage, .authorized)
@@ -396,7 +454,7 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         try await waitUntilIdle(store)
 
         XCTAssertEqual(store.phase, .failed)
-        XCTAssertEqual(store.lastError?.headline, "IOSSim could not use its prepared iPhone signing profiles.")
+        XCTAssertEqual(store.lastError?.headline, "Veya could not use its prepared iPhone signing profiles.")
         XCTAssertFalse(store.lastError?.headline.localizedCaseInsensitiveContains("authorization") == true)
         XCTAssertEqual(store.appleAuthorization.stage, .authorized)
         XCTAssertTrue(store.appleAuthorization.sessionValid)
@@ -407,7 +465,7 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
     }
 
     @MainActor
-    func testResumedAuthorizedGenerationReusesValidPreparedNativeProfilesWithoutAppleProvisioning() async throws {
+    func testResumedAuthorizedGenerationDoesNotTreatUninstalledCandidateProfilesAsActive() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("iossim-resumed-native-state-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -441,7 +499,51 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
         XCTAssertEqual(resumed.appleAuthorization.stage, .authorized)
         XCTAssertTrue(resumed.appleAuthorization.sessionValid)
         let resumedEvents = await resumedBackend.events
-        XCTAssertEqual(resumedEvents, ["resume"])
+        XCTAssertEqual(resumedEvents, ["resume", "identity", "device", "identifiers", "profiles"])
+    }
+
+    @MainActor
+    func testUninstalledCandidateProfilesDoNotTriggerActiveIdentityAccessRepair() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-cached-key-repair-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nativeStore = NativeProvisioningArtifactStore(directoryURL: root.appendingPathComponent("native"))
+        let first = SetupStore(
+            engine: DownstreamFailureEngine(),
+            authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator(
+                backend: ExperimentalBackendMock(auth: .success)
+            ),
+            nativeProvisioningExperiment: true,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(url: root.appendingPathComponent("first.json")),
+            nativeArtifactStore: nativeStore
+        )
+        first.getStarted()
+        try await waitUntilIdle(first)
+        first.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
+        try await waitUntilIdle(first)
+        XCTAssertEqual(first.liveProvisioningCheckpoint, .provisioningReady)
+
+        let recoveredBackend = ExperimentalBackendMock(
+            auth: .success,
+            resumedTeams: [.personal],
+            repairAccessFailure: .missingPrivateKey
+        )
+        let recovered = SetupStore(
+            engine: DownstreamFailureEngine(),
+            authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator(backend: recoveredBackend),
+            nativeProvisioningExperiment: true,
+            stateDiagnostics: ApplePersonalTeamDiagnosticsStore(url: root.appendingPathComponent("recovered.json")),
+            nativeArtifactStore: nativeStore
+        )
+        recovered.getStarted()
+        try await waitUntilIdle(recovered)
+
+        XCTAssertEqual(recovered.liveProvisioningCheckpoint, .provisioningReady)
+        let recoveredEvents = await recoveredBackend.events
+        XCTAssertEqual(
+            recoveredEvents,
+            ["resume", "identity", "device", "identifiers", "profiles"]
+        )
     }
 
     func testSlowerStaleAuthorizationCannotOverwriteNewerSuccess() async throws {
@@ -524,11 +626,17 @@ final class ApplePersonalTeamExperimentalTests: XCTestCase {
 
     @MainActor
     func testUnavailableLiveBoundaryShowsConsumerSafeAuthorizationError() async throws {
-        let store = SetupStore(engine: MockIOSSimSetupEngine(scenario: .ready))
+        let store = SetupStore(
+            engine: MockIOSSimSetupEngine(scenario: .ready),
+            authorizationCoordinator: ExperimentalConsumerProvisioningCoordinator(
+                backend: UnavailableExperimentalPersonalTeamBackend()
+            ),
+            nativeProvisioningExperiment: false
+        )
         store.beginAppleAuthorization(account: "fixture@example.invalid", password: "secret")
         try await waitUntilIdle(store)
         XCTAssertEqual(store.phase, .failed)
-        XCTAssertEqual(store.lastError?.headline, "IOSSim couldn't prepare Apple authorization.")
+        XCTAssertEqual(store.lastError?.headline, "Veya couldn't prepare Apple authorization.")
         XCTAssertEqual(store.lastError?.details, "UNAVAILABLE")
         XCTAssertFalse(store.lastError?.details.contains("secret") == true)
     }
@@ -561,6 +669,7 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
     private let resumedTeams: [ExperimentalAppleTeam]?
     private let resumeFailure: ExperimentalBackendError?
     private let verificationFailure: ExperimentalBackendError?
+    private let repairAccessFailure: ExperimentalBackendError?
     private let operationFailure: ExperimentalBackendError?
     private let profileMode: ProfileMode
     private(set) var events: [String] = []
@@ -571,6 +680,7 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
         resumedTeams: [ExperimentalAppleTeam]? = nil,
         resumeFailure: ExperimentalBackendError? = nil,
         verificationFailure: ExperimentalBackendError? = nil,
+        repairAccessFailure: ExperimentalBackendError? = nil,
         operationFailure: ExperimentalBackendError? = nil,
         profileMode: ProfileMode = .valid
     ) {
@@ -578,6 +688,7 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
         self.resumedTeams = resumedTeams
         self.resumeFailure = resumeFailure
         self.verificationFailure = verificationFailure
+        self.repairAccessFailure = repairAccessFailure
         self.operationFailure = operationFailure
         self.profileMode = profileMode
     }
@@ -618,6 +729,11 @@ private actor ExperimentalBackendMock: ExperimentalPersonalTeamBackend {
     }
 
     func invalidateSession() async { events.append("invalidate") }
+
+    func repairSigningIdentityAccess(team: ExperimentalAppleTeam) async throws {
+        events.append("repair-identity-access")
+        if let repairAccessFailure { throw repairAccessFailure }
+    }
 
     func prepareIdentity(team: ExperimentalAppleTeam) async throws -> ExperimentalSigningIdentity {
         events.append("identity")

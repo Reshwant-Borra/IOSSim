@@ -28,9 +28,9 @@ struct RootView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("IOSSim")
+                Text(ProductBrand.migrationDisplayName)
                     .font(.title2.weight(.semibold))
-                Text(store.phase == .complete ? "Setup and device status" : "Set up IOSSim on your iPhone")
+                Text(store.phase == .complete ? "Setup and device status" : "Set up Veya on your iPhone")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

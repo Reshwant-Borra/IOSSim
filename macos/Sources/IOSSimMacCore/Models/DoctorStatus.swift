@@ -386,7 +386,7 @@ public enum StatusInterpreter {
 
     public static func friendlyAction(for check: DoctorCheck) -> String {
         if check.component == "Xcode" || check.component == "Apple Tooling" {
-            return "Install or select Apple's developer tools required for iPhone discovery and app installation."
+            return "This is a build-only developer-tool check. Consumer iPhone discovery uses Veya's native bridge."
         }
         if check.name.localizedCaseInsensitiveContains("Developer Mode") {
             return "On your iPhone, open Settings > Privacy & Security > Developer Mode, enable it, then return here."
@@ -401,8 +401,8 @@ public enum StatusInterpreter {
             return "Open LocalDevVPN on your iPhone and approve Apple's VPN configuration prompt."
         }
         if check.name.localizedCaseInsensitiveContains("PAIRING") {
-            return "Keep your iPhone unlocked while IOSSim prepares the secure connection."
+            return "Keep your iPhone unlocked while Veya prepares the secure connection."
         }
-        return check.action ?? "Complete this step, then check again."
+        return ProductBrand.userFacing(check.action ?? "Complete this step, then check again.")
     }
 }

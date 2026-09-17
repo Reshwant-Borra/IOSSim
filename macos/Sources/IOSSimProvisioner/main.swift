@@ -12,6 +12,15 @@ struct InfoOutput: Encodable {
     let components: [DeviceArtifactComponent]
 }
 
+struct ProtocolInfoOutput: Encodable {
+    let helperSchemaVersion: Int
+    let setupStateSchemaVersion: Int
+    let provisioningManifestSchemaVersion: Int
+    let artifactManifestSchemaVersion: Int
+    let nativeBridgeABIExpected: UInt32
+    let developerSupportProviderClassification: String
+}
+
 struct VerificationOutput: Encodable {
     let results: [ArtifactVerificationResult]
 }
@@ -31,6 +40,7 @@ struct InstallOutput: Encodable {
 struct DeviceDiagnosticOutput: Encodable {
     let rawDeviceCount: Int
     let returnedDeviceCount: Int
+    let devices: [DetectedDevice]
     let diagnostics: [DeviceDiscoveryDiagnostic]
 }
 
@@ -38,6 +48,25 @@ struct ConsumerFailureOutput: Encodable {
     let ok: Bool
     let schemaVersion: Int
     let error: ConsumerProvisioningFailure
+    let diagnostic: VeyaDiagnosticDescriptor
+
+    init(ok: Bool, schemaVersion: Int, error: ConsumerProvisioningFailure) {
+        self.ok = ok
+        self.schemaVersion = schemaVersion
+        self.error = error
+        diagnostic = error.diagnosticDescriptor
+    }
+}
+
+struct DeveloperServicesDiagnosticOutput: Encodable {
+    let selectedDevice: String
+    let receipt: DeveloperServicesReadinessReceipt
+}
+
+private struct KeyedProvisioningState: Sendable {
+    let identity: SetupIdentity
+    let coordinator: KeyedSetupStateStore
+    let domainStore: ConsumerProvisioningStateStore
 }
 
 @main
@@ -62,6 +91,20 @@ struct ProvisionerTool {
         }
         do {
             switch command {
+            case "protocol-info":
+                try printJSON(ProvisionerOutput(
+                    ok: true,
+                    schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: ProtocolInfoOutput(
+                        helperSchemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                        setupStateSchemaVersion: SetupStateSnapshot.currentSchemaVersion,
+                        provisioningManifestSchemaVersion: ConsumerProvisioningManifest.currentSchemaVersion,
+                        artifactManifestSchemaVersion: ArtifactManifest.currentSchemaVersion,
+                        nativeBridgeABIExpected: DynamicNativeDeviceTransport.requiredABIVersion,
+                        developerSupportProviderClassification: Self.developerSupportProviderClassification
+                    )
+                ))
+                return 0
             case "doctor":
                 let json = args.contains("--json")
                 let status = await doctor(context: context)
@@ -75,6 +118,8 @@ struct ProvisionerTool {
                 let devices = await AppleDeviceTool.discoverDevices(context: context)
                 try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: devices))
                 return 0
+            case "pair-device":
+                return await pairDevice(arguments: Array(args.dropFirst()), context: context)
             case "device-diagnostics":
                 let snapshot = await AppleDeviceTool.discoverDeviceSnapshot(context: context)
                 try printJSON(ProvisionerOutput(
@@ -88,10 +133,13 @@ struct ProvisionerTool {
                     data: DeviceDiagnosticOutput(
                         rawDeviceCount: snapshot.rawDeviceCount,
                         returnedDeviceCount: snapshot.devices.count,
+                        devices: snapshot.devices,
                         diagnostics: snapshot.diagnostics
                     )
                 ))
                 return 0
+            case "developer-services-debug":
+                return await developerServicesDebug(arguments: Array(args.dropFirst()))
             case "verify-artifacts":
                 let manifest = try context.loadManifest()
                 let results = ArtifactManifestLoader.verify(resourcesURL: context.resourcesURL, manifest: manifest)
@@ -129,7 +177,7 @@ struct ProvisionerTool {
                 try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: report))
                 return 0
             case "consumer-teams":
-                let provisioner = ConsumerArtifactProvisioner(context: context)
+                let provisioner = nativeConsumerProvisioner(context: context)
                 let teams = await provisioner.availableTeams(
                     selectedDeviceIdentifier: optionValue("--device", in: Array(args.dropFirst()))
                 )
@@ -140,8 +188,20 @@ struct ProvisionerTool {
                 ))
                 return 0
             case "consumer-status":
-                let provisioner = ConsumerArtifactProvisioner(context: context)
-                let manifest = try await provisioner.currentManifest()
+                let commandArguments = Array(args.dropFirst())
+                let manifest: ConsumerProvisioningManifest?
+                if let device = optionValue("--device", in: commandArguments), !device.isEmpty,
+                   let team = optionValue("--team", in: commandArguments), !team.isEmpty {
+                    manifest = try await keyedProvisioningState(
+                        context: context,
+                        device: device,
+                        team: team
+                    ).domainStore.loadManifest()
+                } else if let device = optionValue("--device", in: commandArguments), !device.isEmpty {
+                    manifest = try await currentManifestForDevice(context: context, device: device)
+                } else {
+                    manifest = try await ConsumerProvisioningStateStore().loadManifest()
+                }
                 try printJSON(ProvisionerOutput(
                     ok: true,
                     schemaVersion: RuntimeProvisioning.helperSchemaVersion,
@@ -149,7 +209,118 @@ struct ProvisionerTool {
                 ))
                 return 0
             case "consumer-runtime-ready":
-                let manifest = try await ConsumerProvisioningStateStore().markRuntimeSetupReady()
+                let commandArguments = Array(args.dropFirst())
+                guard let device = optionValue("--device", in: commandArguments), !device.isEmpty,
+                      let team = optionValue("--team", in: commandArguments), !team.isEmpty else {
+                    throw ConsumerProvisioningFailure(
+                        code: .deviceSelectionRequired,
+                        stage: .verifyingRuntimeReadiness,
+                        userMessage: "IOSSim needs the current iPhone and Personal Team to confirm runtime setup.",
+                        remediation: "Return to setup, select the iPhone and Personal Team, then try again.",
+                        developerDetail: "consumer-runtime-ready requires --device and --team for keyed state."
+                    )
+                }
+                let keyed = try keyedProvisioningState(context: context, device: device, team: team)
+                let result: SetupMutationResult<ConsumerProvisioningManifest> = try await keyed.coordinator.withMutation(
+                    identity: keyed.identity,
+                    domain: "runtimeReadiness",
+                    safeDetail: "Recorded bound AppService, XCTest, Rich location, clear, and cleanup readiness evidence."
+                ) { _ in
+                    guard let manifest = try await keyed.domainStore.loadManifest() else {
+                        throw ConsumerProvisioningFailure(
+                            code: .runnerMappingMissing,
+                            stage: .verifyingRuntimeReadiness,
+                            userMessage: "IOSSim installation information is missing.",
+                            remediation: "Choose Repair before completing iPhone setup.",
+                            developerDetail: "Runtime proof requires the selected keyed manifest."
+                        )
+                    }
+                    let transport = DynamicNativeDeviceTransport()
+                    let applicationService = NativeApplicationService(transport: transport)
+                    let deviceBackend = IdeviceProvisioningBackend(applicationService: applicationService)
+                    guard let identity = await deviceBackend.nativeDeviceIdentity(
+                        matching: device, context: context
+                    ) else {
+                        throw ConsumerProvisioningFailure(
+                            code: .deviceUnavailable,
+                            stage: .verifyingRuntimeReadiness,
+                            userMessage: "IOSSim cannot find the selected iPhone connection.",
+                            remediation: "Reconnect and unlock the same iPhone, then click Try Again.",
+                            developerDetail: "VEYA-RUNTIME-001: exact device identity unavailable."
+                        )
+                    }
+                    guard let pairing = try KeychainRemotePairingStore().load(
+                        deviceUDID: identity.udid, teamIdentifier: team
+                    ), let pairingGeneration = pairing.metadata.pairingGeneration,
+                       pairingGeneration > 0 else {
+                        throw ConsumerProvisioningFailure(
+                            code: .remotePairingFailed,
+                            stage: .verifyingRuntimeReadiness,
+                            userMessage: "IOSSim needs to repair its secure device connection.",
+                            remediation: "Run Repair with the same unlocked iPhone, then try again.",
+                            developerDetail: "VEYA-RUNTIME-001: current pairing generation unavailable."
+                        )
+                    }
+                    #if IOSSIM_LOCAL_TEST_ONLY
+                    let developerServices = NativeDeveloperServicesCoordinator(
+                        transport: transport,
+                        providers: [ThirdPartyMirrorDevelopmentProvider()],
+                        providerPolicy: .localTest
+                    )
+                    #else
+                    let developerServices = NativeDeveloperServicesCoordinator(
+                        transport: transport,
+                        providers: [ExistingAppleCacheProvider()],
+                        providerPolicy: .publicProduction
+                    )
+                    #endif
+                    let releaseIdentity = "\(manifest.appVersion):\(manifest.provisionerVersion)"
+                    let proofContext = DeveloperServicesProofContext(
+                        releaseIdentity: releaseIdentity,
+                        pairingGeneration: pairingGeneration,
+                        targetBundleIdentifier: manifest.installedRunnerBundleID
+                    )
+                    let developerReceipt = try await developerServices.prepare(
+                        device: identity, context: proofContext
+                    ) { _ in }
+                    guard developerReceipt.isCurrent(
+                        for: identity,
+                        releaseIdentity: releaseIdentity,
+                        pairingGeneration: pairingGeneration,
+                        targetBundleIdentifier: manifest.installedRunnerBundleID
+                    ), let developerSession = developerReceipt.sessionIdentifier,
+                       let developerSupportIdentity = developerReceipt.developerSupportIdentity else {
+                        throw ConsumerProvisioningFailure(
+                            code: .developerServicesNotReady,
+                            stage: .verifyingRuntimeReadiness,
+                            userMessage: "IOSSim could not verify current iPhone developer services.",
+                            remediation: "Keep the same iPhone unlocked with LocalDevVPN running, then try again.",
+                            developerDetail: "VEYA-RUNTIME-001: developer-services receipt not current."
+                        )
+                    }
+                    let request = RichRuntimeProofRequest(
+                        deviceUDID: identity.udid,
+                        teamIdentifier: team,
+                        releaseIdentity: releaseIdentity,
+                        artifactSetIdentity: RichRuntimeProofIdentity.artifactSet(manifest: manifest),
+                        profileSetIdentity: RichRuntimeProofIdentity.profiles(manifest: manifest),
+                        pairingGeneration: pairingGeneration,
+                        developerServicesSession: developerSession,
+                        developerSupportIdentity: developerSupportIdentity,
+                        runnerBundleIdentifier: manifest.installedRunnerBundleID
+                    )
+                    let receipt = try await RichRuntimeReadinessCoordinator(
+                        service: applicationService
+                    ).prove(
+                        request: request,
+                        device: identity,
+                        appBundleIdentifier: manifest.installedMainBundleID
+                    )
+                    return try await keyed.domainStore.markRuntimeSetupReady(
+                        receipt: receipt, request: request
+                    )
+                }
+                let manifest = result.value
                 try printJSON(ProvisionerOutput(
                     ok: true,
                     schemaVersion: RuntimeProvisioning.helperSchemaVersion,
@@ -160,6 +331,8 @@ struct ProvisionerTool {
                 return await consumerProvision(arguments: Array(args.dropFirst()), context: context)
             case "consumer-resume-setup":
                 return await consumerProvision(arguments: Array(args.dropFirst()), context: context, resume: true)
+            case "consumer-reconcile":
+                return await consumerReconcile(arguments: Array(args.dropFirst()), context: context)
             case "support-bundle":
                 guard let output = optionValue("--output", in: Array(args.dropFirst())) else {
                     fputs("SUPPORT_OUTPUT_REQUIRED: provide --output <path>.\n", stderr)
@@ -186,6 +359,14 @@ struct ProvisionerTool {
             fputs("\(Redactor.redact(String(describing: error)))\n", stderr)
             return 1
         }
+    }
+
+    private static var developerSupportProviderClassification: String {
+        #if IOSSIM_LOCAL_TEST_ONLY
+        "THIRD_PARTY_MIRROR_DEVELOPMENT_PINNED_V030"
+        #else
+        "UNRESOLVED_PRODUCTION_PROVIDER"
+        #endif
     }
 
     private func install(command: String, arguments: [String], context: RuntimeProvisioningContext) async -> Int32 {
@@ -505,6 +686,8 @@ struct ProvisionerTool {
         IOSSimProvisioner commands:
           doctor --json
           device-status --json
+          device-diagnostics
+          pair-device --device <id> --json
           install [--device <id>]
           repair [--device <id>]
           verify [--device <id>]
@@ -516,6 +699,7 @@ struct ProvisionerTool {
           consumer-runtime-ready --json
           consumer-provision --operation install|refresh|repair --device <id> --team <team-id> [--backend NATIVE_PERSONAL_TEAM|XCODE_FALLBACK]
           consumer-resume-setup --operation install|refresh|repair --device <id> --team <team-id> [--generation <id>]
+          consumer-reconcile --json --device <id> --team <team-id> [--trigger SETUP_START|TRY_AGAIN|RESUME_BOUNDARY]
           support-bundle --output <zip-path> --json
         """)
     }
@@ -557,7 +741,16 @@ struct ProvisionerTool {
                 }
                 backend = parsed
             } else {
-                backend = .xcodeFallback
+                backend = .nativePersonalTeam
+            }
+            guard backend == .nativePersonalTeam else {
+                throw ConsumerProvisioningFailure(
+                    code: .unsupported,
+                    stage: .preparingIdentities,
+                    userMessage: "This IOSSim consumer build supports only native Personal Team setup.",
+                    remediation: "Use the bundled IOSSim app; Xcode fallback is developer tooling only.",
+                    developerDetail: "LEGACY_CONSUMER_BACKEND_FORBIDDEN: \(backend.rawValue)"
+                )
             }
             let request = ConsumerProvisioningRequest(
                 operation: operation,
@@ -565,17 +758,38 @@ struct ProvisionerTool {
                 selectedTeamIdentifier: team,
                 allowFreshInstallAfterCrossTeamConflict: arguments.contains("--confirm-fresh-install"),
                 backend: backend,
-                generation: optionValue("--generation", in: arguments).flatMap(UInt64.init)
+                generation: optionValue("--generation", in: arguments).flatMap(UInt64.init),
+                reconciliationTrigger: optionValue("--trigger", in: arguments).flatMap(ConsumerReconciliationTrigger.init(rawValue:))
             )
-            let provisioner = ConsumerArtifactProvisioner(context: context)
-            let result = try await (resume ? provisioner.resumeSetup(request) : provisioner.provision(request))
+            let keyed = try keyedProvisioningState(context: context, device: device, team: team)
+            let result: SetupMutationResult<ConsumerProvisioningResult> = try await keyed.coordinator.withMutation(
+                identity: keyed.identity,
+                domain: resume ? "consumerResume" : "consumerProvision",
+                safeDetail: "Provisioner mutation for the selected release, team, device, and artifact set."
+            ) { _ in
+                try await migrateMatchingLegacyStateIfNeeded(
+                    into: keyed.domainStore,
+                    device: device,
+                    team: team
+                )
+                let provisioner = nativeConsumerProvisioner(context: context, stateStore: keyed.domainStore)
+                return try await (resume ? provisioner.resumeSetup(request) : provisioner.provision(request))
+            }
             try printJSON(ProvisionerOutput(
                 ok: true,
                 schemaVersion: RuntimeProvisioning.helperSchemaVersion,
-                data: result
+                data: result.value
             ))
             return 0
         } catch let failure as ConsumerProvisioningFailure {
+            try? printJSON(ConsumerFailureOutput(
+                ok: false,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                error: failure
+            ))
+            return 1
+        } catch let stateError as SetupStateError {
+            let failure = setupStateFailure(stateError, stage: .failed)
             try? printJSON(ConsumerFailureOutput(
                 ok: false,
                 schemaVersion: RuntimeProvisioning.helperSchemaVersion,
@@ -595,6 +809,307 @@ struct ProvisionerTool {
                 schemaVersion: RuntimeProvisioning.helperSchemaVersion,
                 error: failure
             ))
+            return 1
+        }
+    }
+
+    private func pairDevice(
+        arguments: [String],
+        context: RuntimeProvisioningContext
+    ) async -> Int32 {
+        guard let selectedIdentifier = optionValue("--device", in: arguments),
+              !selectedIdentifier.isEmpty else {
+            fputs("VEYA-DEVICE-001: choose one connected iPhone before requesting Trust.\n", stderr)
+            return 2
+        }
+        do {
+            let transport = DynamicNativeDeviceTransport()
+            let bridge = IOSSimDeviceBridge(transport: transport)
+            let matches = try await bridge.listDevices(timeout: .seconds(8)).filter {
+                $0.identity.udid == selectedIdentifier
+            }
+            guard matches.count == 1, let descriptor = matches.first else {
+                fputs("VEYA-DEVICE-002: the selected iPhone connection is missing or ambiguous.\n", stderr)
+                return 2
+            }
+            guard descriptor.connection == .usb,
+                  descriptor.identity.usbmuxIdentifier != nil else {
+                fputs("VEYA-TRUST-001: connect the selected iPhone using USB for first computer Trust.\n", stderr)
+                return 2
+            }
+            let artifactManifest = try context.loadManifest()
+            let setupIdentity = try SetupIdentity.provisioning(
+                manifest: artifactManifest,
+                teamIdentifier: "preauthorization",
+                deviceIdentifier: descriptor.identity.udid
+            )
+            let state = KeyedSetupStateStore()
+            let result: SetupMutationResult<LockdownPairingReceipt> = try await state.withMutation(
+                identity: setupIdentity,
+                domain: "lockdownTrust",
+                safeDetail: "Performed one Apple Lockdown Trust request on the exact USB connection."
+            ) { _ in
+                try await NativeLockdownPairingCoordinator(service: transport).pairOnce(
+                    descriptor: descriptor
+                )
+            }
+            try printJSON(ProvisionerOutput(
+                ok: true,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                data: result.value
+            ))
+            return 0
+        } catch let stateError as SetupStateError {
+            fputs("\(stateError.description)\n", stderr)
+            return 1
+        } catch NativeDeviceBridgeError.trustDenied {
+            fputs("VEYA-TRUST-003: computer Trust was declined on the iPhone.\n", stderr)
+            return 1
+        } catch {
+            fputs("VEYA-TRUST-005: \(Redactor.redact(String(describing: error)))\n", stderr)
+            return 1
+        }
+    }
+
+    private func consumerReconcile(
+        arguments: [String],
+        context: RuntimeProvisioningContext
+    ) async -> Int32 {
+        guard let device = optionValue("--device", in: arguments), !device.isEmpty,
+              let team = optionValue("--team", in: arguments), !team.isEmpty else {
+            let failure = ConsumerProvisioningFailure(
+                code: .deviceSelectionRequired,
+                stage: .physicalReconciliationStarted,
+                userMessage: "IOSSim needs the selected iPhone and Personal Team to inspect setup.",
+                remediation: "Reconnect the selected iPhone and try again.",
+                developerDetail: "consumer-reconcile requires --device and --team."
+            )
+            try? printJSON(ConsumerFailureOutput(ok: false, schemaVersion: RuntimeProvisioning.helperSchemaVersion, error: failure))
+            return 2
+        }
+        do {
+            if let backend = optionValue("--backend", in: arguments),
+               backend != ConsumerProvisioningBackendIdentifier.nativePersonalTeam.rawValue {
+                throw ConsumerProvisioningFailure(
+                    code: .unsupported,
+                    stage: .physicalReconciliationStarted,
+                    userMessage: "IOSSim physical reconciliation requires the native device backend.",
+                    remediation: "Use the bundled IOSSim app.",
+                    developerDetail: "LEGACY_CONSUMER_BACKEND_FORBIDDEN: \(backend)"
+                )
+            }
+            let request = ConsumerProvisioningRequest(
+                operation: .repair,
+                selectedDeviceIdentifier: device,
+                selectedTeamIdentifier: team,
+                backend: .nativePersonalTeam,
+                generation: optionValue("--generation", in: arguments).flatMap(UInt64.init),
+                reconciliationTrigger: optionValue("--trigger", in: arguments)
+                    .flatMap(ConsumerReconciliationTrigger.init(rawValue:)) ?? .setupStart
+            )
+            let keyed = try keyedProvisioningState(context: context, device: device, team: team)
+            let result: SetupMutationResult<ConsumerSetupReconciliationResult> = try await keyed.coordinator.withMutation(
+                identity: keyed.identity,
+                domain: "consumerReconcile",
+                safeDetail: "Reconciled exact physical inventory for the selected setup domain."
+            ) { _ in
+                try await migrateMatchingLegacyStateIfNeeded(
+                    into: keyed.domainStore,
+                    device: device,
+                    team: team
+                )
+                return try await nativeConsumerProvisioner(
+                    context: context,
+                    stateStore: keyed.domainStore
+                ).reconcileSetup(request)
+            }
+            try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: result.value))
+            return 0
+        } catch let failure as ConsumerProvisioningFailure {
+            try? printJSON(ConsumerFailureOutput(ok: false, schemaVersion: RuntimeProvisioning.helperSchemaVersion, error: failure))
+            return 1
+        } catch let stateError as SetupStateError {
+            let failure = setupStateFailure(stateError, stage: .physicalReconciliationResult)
+            try? printJSON(ConsumerFailureOutput(ok: false, schemaVersion: RuntimeProvisioning.helperSchemaVersion, error: failure))
+            return 1
+        } catch {
+            let failure = ConsumerProvisioningFailure(
+                code: .unknown,
+                stage: .physicalReconciliationResult,
+                userMessage: "IOSSim could not reconcile setup.",
+                remediation: "Reconnect the selected iPhone and try again.",
+                developerDetail: String(describing: error)
+            )
+            try? printJSON(ConsumerFailureOutput(ok: false, schemaVersion: RuntimeProvisioning.helperSchemaVersion, error: failure))
+            return 1
+        }
+    }
+
+    private func nativeConsumerProvisioner(
+        context: RuntimeProvisioningContext,
+        stateStore: ConsumerProvisioningStateStore = ConsumerProvisioningStateStore()
+    ) -> ConsumerArtifactProvisioner {
+        let transport = DynamicNativeDeviceTransport()
+        let applicationService = NativeApplicationService(transport: transport)
+        let deviceBackend = IdeviceProvisioningBackend(applicationService: applicationService)
+        let localDevVPNCoordinator = LocalDevVPNSetupCoordinator(service: applicationService)
+        #if IOSSIM_LOCAL_TEST_ONLY
+        let developerSupportCoordinator = NativeDeveloperServicesCoordinator(
+            transport: transport,
+            providers: [ThirdPartyMirrorDevelopmentProvider()],
+            providerPolicy: .localTest
+        )
+        #else
+        let developerSupportCoordinator = NativeDeveloperServicesCoordinator(
+            transport: transport,
+            providers: [ExistingAppleCacheProvider()],
+            providerPolicy: .publicProduction
+        )
+        #endif
+        let nativePairingOperations = NativeRemotePairingOperations(transport: transport)
+        let pairingCoordinator = RemotePairingCoordinator(
+            native: nativePairingOperations,
+            delivery: NativeRemotePairingContainerDelivery(service: applicationService),
+            proof: NativeDeveloperServicesRemotePairingProof(
+                native: nativePairingOperations,
+                developerServices: developerSupportCoordinator
+            )
+        )
+        return ConsumerArtifactProvisioner(
+            context: context,
+            stateStore: stateStore,
+            inventoryReader: NativeApplicationInventoryReader(
+                service: applicationService,
+                deviceBackend: deviceBackend
+            ),
+            deviceBackend: deviceBackend,
+            runtimeConfigurationManager: NativeApplicationManager(service: applicationService),
+            remotePairingCoordinator: pairingCoordinator,
+            localDevVPNCoordinator: localDevVPNCoordinator,
+            developerServicesCoordinator: developerSupportCoordinator
+        )
+    }
+
+    private func keyedProvisioningState(
+        context: RuntimeProvisioningContext,
+        device: String,
+        team: String
+    ) throws -> KeyedProvisioningState {
+        let artifactManifest = try context.loadManifest()
+        let identity = try SetupIdentity.provisioning(
+            manifest: artifactManifest,
+            teamIdentifier: team,
+            deviceIdentifier: device
+        )
+        let coordinator = KeyedSetupStateStore()
+        let domainDirectory = coordinator.directory(for: identity)
+            .appendingPathComponent("provisioning-domain-v4", isDirectory: true)
+        return KeyedProvisioningState(
+            identity: identity,
+            coordinator: coordinator,
+            domainStore: ConsumerProvisioningStateStore(directoryURL: domainDirectory)
+        )
+    }
+
+    private func migrateMatchingLegacyStateIfNeeded(
+        into destination: ConsumerProvisioningStateStore,
+        device: String,
+        team: String
+    ) async throws {
+        guard try await destination.loadManifest() == nil,
+              let legacy = try await ConsumerProvisioningStateStore().loadManifest(),
+              legacy.teamID == team,
+              legacy.deviceIdentifierHash == PersonalTeamProvisioningPOC.deviceIdentifierHash(device) else {
+            return
+        }
+        try await destination.saveManifest(legacy)
+    }
+
+    private func currentManifestForDevice(
+        context: RuntimeProvisioningContext,
+        device: String
+    ) async throws -> ConsumerProvisioningManifest? {
+        let expectedDeviceHash = PersonalTeamProvisioningPOC.deviceIdentifierHash(device)
+        let root = KeyedSetupStateStore.defaultRootURL()
+        let directories = (try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var matches: [ConsumerProvisioningManifest] = []
+        let artifactManifest = try context.loadManifest()
+        for directory in directories {
+            let domain = ConsumerProvisioningStateStore(
+                directoryURL: directory.appendingPathComponent("provisioning-domain-v4", isDirectory: true)
+            )
+            guard let candidate = try? await domain.loadManifest(),
+                  candidate.deviceIdentifierHash == expectedDeviceHash,
+                  let expectedIdentity = try? SetupIdentity.provisioning(
+                    manifest: artifactManifest,
+                    teamIdentifier: candidate.teamID,
+                    deviceIdentifier: device
+                  ),
+                  directory.lastPathComponent == expectedIdentity.key else {
+                continue
+            }
+            matches.append(candidate)
+        }
+        if matches.count == 1 { return matches[0] }
+        guard matches.isEmpty,
+              let legacy = try await ConsumerProvisioningStateStore().loadManifest(),
+              legacy.deviceIdentifierHash == expectedDeviceHash else {
+            return nil
+        }
+        return legacy
+    }
+
+    private func setupStateFailure(
+        _ error: SetupStateError,
+        stage: ConsumerProvisioningStage
+    ) -> ConsumerProvisioningFailure {
+        ConsumerProvisioningFailure(
+            code: error == .leaseHeld ? .operationInProgress : .manifestCorrupt,
+            stage: stage,
+            userMessage: error == .leaseHeld
+                ? "IOSSim setup is already changing this iPhone."
+                : "IOSSim setup state needs a safe repair.",
+            remediation: error == .leaseHeld
+                ? "Wait for the current setup operation to finish, then try again."
+                : "Open Diagnostics and use Repair; IOSSim stopped before overwriting uncertain state.",
+            developerDetail: error.description
+        )
+    }
+
+    private func developerServicesDebug(arguments: [String]) async -> Int32 {
+        let transport = DynamicNativeDeviceTransport()
+        do {
+            let devices = try await transport.listDevices(timeout: .seconds(8))
+            let selector = optionValue("--device", in: arguments)
+            let selected: NativeDeviceDescriptor?
+            if let selector {
+                selected = devices.first {
+                    $0.identity.udid == selector
+                        || RuntimeProvisioning.shortIdentifier($0.identity.udid) == selector
+                }
+            } else {
+                selected = devices.count == 1 ? devices[0] : nil
+            }
+            guard let selected else {
+                fputs("DEVICE_SELECTION_REQUIRED: connect exactly one iPhone or pass --device.\n", stderr)
+                return 2
+            }
+            let receipt = try transport.developerServicesReadiness(on: selected.identity)
+            try printJSON(ProvisionerOutput(
+                ok: receipt.transportReady,
+                schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                data: DeveloperServicesDiagnosticOutput(
+                    selectedDevice: RuntimeProvisioning.shortIdentifier(selected.identity.udid),
+                    receipt: receipt
+                )
+            ))
+            return receipt.transportReady ? 0 : 1
+        } catch {
+            fputs("\(Redactor.redact(String(describing: error)))\n", stderr)
             return 1
         }
     }

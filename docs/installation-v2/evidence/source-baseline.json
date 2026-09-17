@@ -1,0 +1,2071 @@
+{
+  "root": "/Users/rishiborra/Desktop/IOSSim",
+  "head": "1259da507ecded222022cc86bf82863c15640db9",
+  "branch": "work/final-no-xcode-setup-v1",
+  "status": " M ios/App/IOSSimOnDeviceDVTPOCApp.swift\n M ios/IOSSimOnDevicePOC.xcodeproj/project.pbxproj\n M ios/Sources/IOSSimOnDeviceDVTPOC/AutomaticPairingInbox.swift\n M ios/Sources/IOSSimOnDeviceDVTPOC/DvtLocationClient.swift\n M ios/Sources/POCUnitChecks/main.swift\n M macos/Package.swift\n M macos/Sources/IOSSimMac/Views/SetupWizardView.swift\n M macos/Sources/IOSSimMacCore/Models/ArtifactManifest.swift\n M macos/Sources/IOSSimMacCore/Models/ConsumerProvisioning.swift\n M macos/Sources/IOSSimMacCore/Models/DoctorStatus.swift\n M macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamExperimental.swift\n M macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamLive.swift\n M macos/Sources/IOSSimMacCore/Services/BundledProvisioningEngine.swift\n M macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift\n M macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningBackend.swift\n M macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningStateStore.swift\n M macos/Sources/IOSSimMacCore/Services/DeveloperSupportCoordinator.swift\n M macos/Sources/IOSSimMacCore/Services/IOSSimSetupEngine.swift\n M macos/Sources/IOSSimMacCore/Services/MockIOSSimSetupEngine.swift\n M macos/Sources/IOSSimMacCore/Services/NativeApplicationManagement.swift\n M macos/Sources/IOSSimMacCore/Services/NativeDeviceBridge.swift\n M macos/Sources/IOSSimMacCore/Services/NativeSigningIdentityResolver.swift\n M macos/Sources/IOSSimMacCore/Services/RemotePairingLifecycle.swift\n M macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift\n M macos/Sources/IOSSimMacCore/Services/SupportBundleExporter.swift\n M macos/Sources/IOSSimMacCore/SetupStore.swift\n M macos/Sources/IOSSimProvisioner/main.swift\n M macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamExperimentalTests.swift\n M macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamLiveTests.swift\n M macos/Tests/IOSSimMacCoreTests/ArtifactManifestTests.swift\n M macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift\n M macos/Tests/IOSSimMacCoreTests/NativeApplicationManagementTests.swift\n M macos/Tests/IOSSimMacCoreTests/NativeDeviceBridgeTests.swift\n M macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift\n M macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift\n M macos/Tests/IOSSimMacCoreTests/RemotePairingLifecycleTests.swift\n M macos/Tests/IOSSimMacCoreTests/SetupStoreTests.swift\n M macos/scripts/build_app.sh\n M native/iossim-device-bridge/Cargo.lock\n M native/iossim-device-bridge/Cargo.toml\n M native/iossim-device-bridge/include/iossim_device_bridge.h\n M native/iossim-device-bridge/src/lib.rs\n M scripts/bootstrap/iossim_cli.py\n M scripts/checks/check_no_xcode_consumer_runtime.py\n?? CURRENT_WORKTREE_SNAPSHOT.md\n?? FINAL_IPHONE_PAYLOAD_REBUILD_AND_HANDOFF_REPORT.md\n?? FINAL_NO_XCODE_SETUP_ARCHITECTURE.md\n?? FINAL_NO_XCODE_SETUP_GAP_AUDIT.md\n?? FINAL_NO_XCODE_SETUP_IMPLEMENTATION_REPORT.md\n?? GPT_ASTRA_ARCHITECTURE_COMPLIANCE_AUDIT.md\n?? IOSSim-SelfContained.app/\n?? IOSSim-SelfContained.previous.20260903091935.app/\n?? IOSSim-SelfContained.previous.20260903092533.app/\n?? IOSSim-Support-1789416447.zip\n?? IOSSim-Support-1789431940.zip\n?? IOSSim-pre-reorg.bundle\n?? IOSSim-untracked-Sep-2-2026.txt\n?? IOSSim-working-tree-Sep-2-2026-binary.patch\n?? IOSSim-working-tree-Sep-2-2026.patch\n?? IOSSim.app/\n?? IPHONE_SETUP_INGRESS_CALL_GRAPH.md\n?? NO_XCODE_APPSERVICE_DEVICE_NOT_FOUND_INVESTIGATION.md\n?? NO_XCODE_DEVICE_DISCOVERY_INVESTIGATION.md\n?? NO_XCODE_INSTALLATION_ROOT_CAUSE_INVESTIGATION.md\n?? NO_XCODE_NATIVE_APP_LAUNCH_INVESTIGATION.md\n?? SETUP_ENGINE_INVENTORY.md\n?? SETUP_LEGACY_INTERFERENCE_INVESTIGATION.md\n?? VanishedResearch.mSgdHk/\n?? docs/IOSSim_BUILD_AND_PACKAGING.md\n?? docs/IOSSim_CURRENT_ENGINEERING_STATE.md\n?? docs/IOSSim_ENGINEERING_HANDOFF.md\n?? docs/IOSSim_FIRST_TIME_SETUP.md\n?? docs/IOSSim_HANDOFF_SNAPSHOT_2026-09-15.md\n?? docs/IOSSim_IPHONE_PAYLOAD.md\n?? docs/IOSSim_NATIVE_DEVICE_STACK.md\n?? docs/IOSSim_PHYSICAL_VALIDATION_MATRIX.md\n?? docs/IOSSim_SECURITY_MODEL.md\n?? docs/IOSSim_TROUBLESHOOTING.md\n?? docs/README.md\n?? docs/installation-v2/\n?? ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/IOSSimPayloadRunner.xcscheme\n?? ios/Sources/IOSSimOnDeviceDVTPOC/LocalDevVPNSetupInbox.swift\n?? macos/Sources/IOSSimMacCore/Services/LocalDevVPNSetupCoordinator.swift\n?? macos/Sources/IOSSimMacCore/Services/NativeDeveloperServicesCoordinator.swift\n?? macos/Sources/IOSSimSigningKeyTestHelper/\n?? macos/Tests/IOSSimMacCoreTests/LocalDevVPNSetupCoordinatorTests.swift\n?? scripts/checks/check_no_xcode_install_routing.py\n?? scripts/checks/test_device_discovery_cli.py\n",
+  "remotes": "origin\thttps://github.com/Reshwant-Borra/IOSSim.git (fetch)\norigin\thttps://github.com/Reshwant-Borra/IOSSim.git (push)\n",
+  "branches": "  desktop-legacy                                           70a925b [origin/desktop-legacy] Improve one-command launchers\n  main                                                     ed233af [origin/main] Merge physical install state stabilization\n  work/automated-xcode-rppairing-bootstrap                 ae0bf62 [origin/work/automated-xcode-rppairing-bootstrap] Harden bootstrap release qualification\n* work/final-no-xcode-setup-v1                             1259da5 Document no-Xcode discovery fix\n  work/fix-apple-srp-503                                   0a18e98 [origin/work/fix-apple-srp-503] Fix Apple GrandSlam SRP 503 rejection\n  work/fix-no-xcode-device-discovery                       1259da5 Document no-Xcode discovery fix\n  work/investigate-native-app-launch-v1                    1259da5 Document no-Xcode discovery fix\n  work/investigate-no-xcode-device-discovery-v2            1259da5 Document no-Xcode discovery fix\n  work/investigate-no-xcode-installation-v1                1259da5 Document no-Xcode discovery fix\n  work/live-personal-team-provisioning                     e43aa18 Stabilize native Personal Team signing pipeline\n  work/no-xcode-productization-v1                          c98b7b5 Polish implementation report\n  work/physical-install-state-stabilization                f4b719f [origin/work/physical-install-state-stabilization] Document current IOSSim engineering state\n  work/production-release-candidate                        87b0d6a Derive Personal Team main app identity\n  work/zero-xcode-consumer-provisioning                    82225be Remove manual pairing import from consumer diagnostics\n  remotes/origin/HEAD                                      -> origin/main\n  remotes/origin/desktop-legacy                            70a925b Improve one-command launchers\n  remotes/origin/main                                      ed233af Merge physical install state stabilization\n  remotes/origin/work/automated-xcode-rppairing-bootstrap  ae0bf62 Harden bootstrap release qualification\n  remotes/origin/work/fix-apple-srp-503                    0a18e98 Fix Apple GrandSlam SRP 503 rejection\n  remotes/origin/work/physical-install-state-stabilization f4b719f Document current IOSSim engineering state\n",
+  "tags": "",
+  "files": [
+    {
+      "path": ".env.example",
+      "bytes": 743,
+      "sha256": "302a73db577eb82d0388e21a3ae8ece3c47b3eb10dde134bd6b16df64085e8b4"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 1201,
+      "sha256": "68b04c82dcb9460f04abcca8fc973419f0a98945401c337958c25cab13b5c674"
+    },
+    {
+      "path": "CURRENT_WORKTREE_SNAPSHOT.md",
+      "bytes": 6988,
+      "sha256": "3b2319649cfec887403fe709796086efea6dcb863ee24bc0809f35240052a618"
+    },
+    {
+      "path": "DEBUG_REPORT_NO_XCODE_DEVICE_DISCOVERY.md",
+      "bytes": 16092,
+      "sha256": "c606232e22f00bbd766fe7030f8a3b0af0beeef4504318bfc4e5c3587ddc041f"
+    },
+    {
+      "path": "FINAL_IPHONE_PAYLOAD_REBUILD_AND_HANDOFF_REPORT.md",
+      "bytes": 15684,
+      "sha256": "a0d3f7d2b086f059d3dcc45ccc43eb5e827de3d866f750ab3be78ce66e560e86"
+    },
+    {
+      "path": "FINAL_NO_XCODE_SETUP_ARCHITECTURE.md",
+      "bytes": 9181,
+      "sha256": "2a41ce193c812e88213a97bd43f952186f6cc1519b5c015e6cc1df5042644239"
+    },
+    {
+      "path": "FINAL_NO_XCODE_SETUP_GAP_AUDIT.md",
+      "bytes": 14739,
+      "sha256": "dd30c0aa1a9564b6ca8f42b6ea4e5f7f9e567e0e960a22a0bc0f95758b707e1f"
+    },
+    {
+      "path": "FINAL_NO_XCODE_SETUP_IMPLEMENTATION_REPORT.md",
+      "bytes": 6033,
+      "sha256": "b9525fa657cf77315adaae7bb23bee68d5d58c7bf0dd0c2aca3dbab9780178f4"
+    },
+    {
+      "path": "GPT_ASTRA_ARCHITECTURE_COMPLIANCE_AUDIT.md",
+      "bytes": 14411,
+      "sha256": "a0bcdcf798377466e18043b465b49734be6cacf5729abdec4f7b03c3679a3fc2"
+    },
+    {
+      "path": "IMPLEMENTATION_REPORT_NO_XCODE_V1.md",
+      "bytes": 11079,
+      "sha256": "9493e160539a1046ef6a6fbf0c8491638252424e08593edc47e5a561588ef73a"
+    },
+    {
+      "path": "IOSSim-untracked-Sep-2-2026.txt",
+      "bytes": 196,
+      "sha256": "0fa0c0ae9a6b442bc06f125c31a99fca3bfa65f61387cbf2b4caf7fb38198b49"
+    },
+    {
+      "path": "IPHONE_SETUP_INGRESS_CALL_GRAPH.md",
+      "bytes": 5025,
+      "sha256": "ea99ab6233b47a21f525cdf798bcefd9b36023db3841ba97b4c107f503b8ff1b"
+    },
+    {
+      "path": "NO_XCODE_APPSERVICE_DEVICE_NOT_FOUND_INVESTIGATION.md",
+      "bytes": 3097,
+      "sha256": "8fd35fb1bc5fbf492e9434fe2922dab223a14ae676106768fea203b1a7ba410b"
+    },
+    {
+      "path": "NO_XCODE_DEVICE_DISCOVERY_INVESTIGATION.md",
+      "bytes": 44316,
+      "sha256": "fda6f53416cc1a3436d19272c2e1cf445c55ba267a181989f22a3bca6f52ef6d"
+    },
+    {
+      "path": "NO_XCODE_INSTALLATION_ROOT_CAUSE_INVESTIGATION.md",
+      "bytes": 45368,
+      "sha256": "f6cf6711053d5c2d0c5ede140f88edd2fac41bb49f70c184fc566986e0b1ed9b"
+    },
+    {
+      "path": "NO_XCODE_NATIVE_APP_LAUNCH_INVESTIGATION.md",
+      "bytes": 13791,
+      "sha256": "5d320274e84e6739a23ca3477584c79384b2f2c55e58f74fca089c756a5acce3"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1180,
+      "sha256": "5c4a079d12d0e3726502bfbdf90962e44a4cb67c6468123f46088e8176ae2cb3"
+    },
+    {
+      "path": "RUN_EVERYTHING.ps1",
+      "bytes": 6777,
+      "sha256": "c9d53b8073457b2603565b663edae9a6e5498fa4e75919a88e2378fbe6ad1fff"
+    },
+    {
+      "path": "RUN_EVERYTHING.sh",
+      "bytes": 6053,
+      "sha256": "8fa50c4972ee3198f5f0dd836d8b6860cd53a97f5885489b6777d3f1cfbf8919"
+    },
+    {
+      "path": "SETUP_ENGINE_INVENTORY.md",
+      "bytes": 6447,
+      "sha256": "9eefb3d770011a8ed2817aeae7e7e64c1b0ee6c0bdd258f6ad4c44d62e3df900"
+    },
+    {
+      "path": "SETUP_FROM_SCRATCH.md",
+      "bytes": 4799,
+      "sha256": "6994698f4c5a75866433d6c133fa9c3f299b3bc8964cbc1d7a0007a9224397bc"
+    },
+    {
+      "path": "SETUP_LEGACY_INTERFERENCE_INVESTIGATION.md",
+      "bytes": 34036,
+      "sha256": "8448c92580532a2b8e73ae6d74e13a3c2e4c5fcf2ffcfc1fa58e3fc8d3a4f30f"
+    },
+    {
+      "path": "SETUP_MAC.md",
+      "bytes": 5555,
+      "sha256": "327bc9b92a04f23b4fe64242c36f038c6e4cd922be45a281c606d585270386ee"
+    },
+    {
+      "path": "STABILITY.md",
+      "bytes": 4261,
+      "sha256": "a35ec53ae36921174bf756f4c63f37216478e01649cb5aff50f7977d01aab62d"
+    },
+    {
+      "path": "backend/debug/userspace_dvt_location_probe.py",
+      "bytes": 4599,
+      "sha256": "f20f7c32b05fcf51f98d8cfa666aad70869348cddf620eb6b1929d0589eed975"
+    },
+    {
+      "path": "backend/debug/userspace_location_compatibility_probe.py",
+      "bytes": 36031,
+      "sha256": "dc3098a5fff7814d644ba6a104bf59b991d0691f9ec942fed64fe819f8d5e465"
+    },
+    {
+      "path": "backend/debug/userspace_location_diagnostic.py",
+      "bytes": 29484,
+      "sha256": "8eba32f4ea5ba0765fe5d25c1a746901001db662187b0143075f14f3c16b5903"
+    },
+    {
+      "path": "backend/device_manager.py",
+      "bytes": 11096,
+      "sha256": "9a6db2911ecec48d44cf9f9c6d24832c1b3d65b5ccef8308c3d39a5c337cbd6e"
+    },
+    {
+      "path": "backend/drive_controller.py",
+      "bytes": 10748,
+      "sha256": "e5beb3c986531fb20ee86462ecb8d375fc823285e14a1fe983a61ff0c1e9a178"
+    },
+    {
+      "path": "backend/drive_routing.py",
+      "bytes": 3919,
+      "sha256": "d272a0d45b22bb45cd735f294d05e071496a2b9e0b760ac6d71381e67695cf00"
+    },
+    {
+      "path": "backend/drive_testing/__init__.py",
+      "bytes": 161,
+      "sha256": "b2597d2c57d81d8db273c8c287026dea69e532c97b587c88182a1586851892f6"
+    },
+    {
+      "path": "backend/drive_testing/experiment_controller.py",
+      "bytes": 30165,
+      "sha256": "d6ee8ef602cf8dfcedd0ae70643eb0dc4fcc511513aec446070c765bf14848f2"
+    },
+    {
+      "path": "backend/drive_testing/experiment_queue.py",
+      "bytes": 6036,
+      "sha256": "71155d0d39ebb3789fd56b980c0f31573ad2077150d17608b970c851c614bbcf"
+    },
+    {
+      "path": "backend/drive_testing/experiment_store.py",
+      "bytes": 9949,
+      "sha256": "4ce2cafb3448223f62af41413cc246347b458218f883452af02e44d28ead4143"
+    },
+    {
+      "path": "backend/drive_testing/flags.py",
+      "bytes": 719,
+      "sha256": "abd488c2b456a059291a547651fe3b07f3885f9f817695bc2328ce064c893c2c"
+    },
+    {
+      "path": "backend/drive_testing/gpx_generator.py",
+      "bytes": 1707,
+      "sha256": "6368a8a46fd84fbdaea1159d3a9685e59b191eb0206a0a7c20376482276b6287"
+    },
+    {
+      "path": "backend/drive_testing/metrics.py",
+      "bytes": 4570,
+      "sha256": "af970b796ac18cf65d6279a862e020cefb48a5545ca0b05e675605f55921bdd1"
+    },
+    {
+      "path": "backend/drive_testing/models.py",
+      "bytes": 756,
+      "sha256": "d641b0592fef34ea8b8f6d188599cc32f607e57c0573a9ec0a4cfeb540bb9740"
+    },
+    {
+      "path": "backend/drive_testing/profile_generator.py",
+      "bytes": 12327,
+      "sha256": "526c6f70d12344a391bc23fa75f25fc1b6f51373e4a5160d4626080822d39372"
+    },
+    {
+      "path": "backend/drive_testing/quality_control.py",
+      "bytes": 4520,
+      "sha256": "8d4babb5127dfc71b4075212ca59b14acae08695ec634c25e6435e4cbcad49e4"
+    },
+    {
+      "path": "backend/drive_testing/report_generator.py",
+      "bytes": 4043,
+      "sha256": "16c37fd400697c8896ec396974f17344d70399447ca2d5ce749f926c960a8fd5"
+    },
+    {
+      "path": "backend/drive_testing/route_sampler.py",
+      "bytes": 3260,
+      "sha256": "561148d3403cbdc48990f9b4367a824f3d5009e0ccbd12e7a1aebc5eb14c7b6b"
+    },
+    {
+      "path": "backend/drive_testing/router.py",
+      "bytes": 19162,
+      "sha256": "faec7d6d5dcb756f96e95a2165dee9545638b957ef1763e0c4d5b8a1ca95843b"
+    },
+    {
+      "path": "backend/drive_testing/schemas.py",
+      "bytes": 3622,
+      "sha256": "375d105673bf80a0fe3581ba9d7796b3e3e0c615c9fe06b9a6173aea40ccde25"
+    },
+    {
+      "path": "backend/favorites.py",
+      "bytes": 1297,
+      "sha256": "2d922cd2a0e69bbfd509093677748f7d6f4ac7e033d910a4d79d8e4fa9636e71"
+    },
+    {
+      "path": "backend/geocoding.py",
+      "bytes": 9690,
+      "sha256": "d4237115d428fc52e8dc3b31b403d0682e70321e0816f48ca4200b62737a205a"
+    },
+    {
+      "path": "backend/location_service.py",
+      "bytes": 11311,
+      "sha256": "5c57447f3679ebe37e6c8c525f0d0b4cd2ffc2cc2c9cf7966d3424a8e7277e0b"
+    },
+    {
+      "path": "backend/main.py",
+      "bytes": 16765,
+      "sha256": "28e7e34cb65b539b9d9fc3a197f10a969abfffb158a303e8d3feda757e7b734d"
+    },
+    {
+      "path": "backend/requirements-dev.txt",
+      "bytes": 12,
+      "sha256": "7976e5b8f70089d046ac7aeb74c405be06913d4eb236f4e1bd4df4d2d160f36f"
+    },
+    {
+      "path": "backend/requirements.txt",
+      "bytes": 116,
+      "sha256": "fb071d79dc6b065b7c8bbd4d0db757c0304da7f0ebf83fddda22f9699badfb28"
+    },
+    {
+      "path": "backend/test_device_manager_pmd3.py",
+      "bytes": 6320,
+      "sha256": "290c43583d16559f469b9606948d8dd5d8ba754edd1f14a4be0cd9af638d7445"
+    },
+    {
+      "path": "backend/test_drive_controller.py",
+      "bytes": 3228,
+      "sha256": "f26725053940183d300557f587e17658a85b0968193cb0d51995a82d38c87cad"
+    },
+    {
+      "path": "backend/test_drive_experiment_controller.py",
+      "bytes": 9320,
+      "sha256": "8188de944edc6a88b7be285b2145b373dcbcc6b9e1782a2f68e94f96ab640886"
+    },
+    {
+      "path": "backend/test_drive_routing.py",
+      "bytes": 2629,
+      "sha256": "b994e83e818658ea37e28d4a3d676e8909f9a27f4a07f8fb50951bc201eb1443"
+    },
+    {
+      "path": "backend/test_drive_testing_api.py",
+      "bytes": 7994,
+      "sha256": "0a015c24d7c1dafec4fc2dffe027254f51bdd7648fc0c2227d74d838bcc88aef"
+    },
+    {
+      "path": "backend/test_drive_testing_core.py",
+      "bytes": 6716,
+      "sha256": "c366b0308d0ed2bd272c6b80a3496876ffca5982c7fa5e9ef93de0b5d230878a"
+    },
+    {
+      "path": "backend/test_geocoding.py",
+      "bytes": 10103,
+      "sha256": "ca920f9899303a8c5add96a7de89104f161a90879d4e596968b7d2ea7bac2993"
+    },
+    {
+      "path": "backend/test_location_clear_api.py",
+      "bytes": 1934,
+      "sha256": "89c78eb77558da8c7c473c2c2878a94b0cfc01c9dbda2bcaa3bb3d9bd950f09c"
+    },
+    {
+      "path": "backend/test_location_service_regression.py",
+      "bytes": 1581,
+      "sha256": "c53af0a3c2443cabbfb4b3994d30985f39586bbc845957f585fcbc202a739d45"
+    },
+    {
+      "path": "backend/test_userspace_location_compatibility_probe.py",
+      "bytes": 12436,
+      "sha256": "ea974f4ffa663a3fa3692f39aa4227bae9d1a04169342ae8ded9b6139a7a5c2e"
+    },
+    {
+      "path": "backend/test_userspace_location_diagnostic.py",
+      "bytes": 9204,
+      "sha256": "f556caa538c6664e1a38aa376d67c5b8f00e24404a66d8e1dcbcadfbe1e54f68"
+    },
+    {
+      "path": "backend/test_wireless_location.py",
+      "bytes": 12248,
+      "sha256": "4887f85fdcc9866eed340e2a375c782594d40f552fe7afc802eb5220d567291c"
+    },
+    {
+      "path": "backend/test_wireless_testing.py",
+      "bytes": 37376,
+      "sha256": "a46cc0c52bd953e863a82928bebc620fba76a9c891cef768fe4290b81a413f00"
+    },
+    {
+      "path": "backend/wireless_location/__init__.py",
+      "bytes": 365,
+      "sha256": "adf15ba8b635dd9b488783003331525c3dbeb5d981ffe3b7ced9d821e59c585c"
+    },
+    {
+      "path": "backend/wireless_location/controller.py",
+      "bytes": 19532,
+      "sha256": "95b8c567ffe70a5e3ba98247f4d18e328a377edc6b9d7ff77b5335a2fadb1856"
+    },
+    {
+      "path": "backend/wireless_location/discovery.py",
+      "bytes": 6566,
+      "sha256": "e5652a69a4de76e4a72c2adc4a4461b9231eba5ac013fb74b6acf6c2d4f5d4f4"
+    },
+    {
+      "path": "backend/wireless_location/models.py",
+      "bytes": 2931,
+      "sha256": "3f93076235004070367dd165d3ef4203107e5ac2c6fd047d622311fc118b65fd"
+    },
+    {
+      "path": "backend/wireless_location/router.py",
+      "bytes": 2384,
+      "sha256": "32da2c91a07f9a40756cc6ec349046754a2fa308444733f943139c71e8759f0f"
+    },
+    {
+      "path": "backend/wireless_location/session.py",
+      "bytes": 9936,
+      "sha256": "4382fee918529354dbc62930c3aed5052534e13ffb0608027fedefdb2cad9ad4"
+    },
+    {
+      "path": "backend/wireless_location/store.py",
+      "bytes": 4705,
+      "sha256": "901de7c5080475a584ceae26155419d8d4f8394ff8ece406b7bd71f388d75ae7"
+    },
+    {
+      "path": "backend/wireless_testing/__init__.py",
+      "bytes": 66,
+      "sha256": "cbd3097a0c6eb2fcb2c3b4fd4ded793ab9070cc6c0cc6cff7f5571da80710a4b"
+    },
+    {
+      "path": "backend/wireless_testing/command_runner.py",
+      "bytes": 15694,
+      "sha256": "4cc5ce536ed4a0125a537c65801c26b402e5286bd42c6aeaae7a4303fbba8978"
+    },
+    {
+      "path": "backend/wireless_testing/controller.py",
+      "bytes": 69356,
+      "sha256": "cc1fe36bb40a4c8bdbdff10f4ed340ac8f5570f65f60a9e42e1c2b46ab490096"
+    },
+    {
+      "path": "backend/wireless_testing/experiment_store.py",
+      "bytes": 9560,
+      "sha256": "228a3f627c988dc4da77aacaf64a7baeafe164722aefa5f23ab3ee49bc35493a"
+    },
+    {
+      "path": "backend/wireless_testing/flags.py",
+      "bytes": 744,
+      "sha256": "69d5d60c885985aa4de72e251fb4d821cea6d45b6de3c7d3a9e25edede686c27"
+    },
+    {
+      "path": "backend/wireless_testing/report_generator.py",
+      "bytes": 4010,
+      "sha256": "807c6f529e1a498bd7fef785625b899a97ba956bc929b36896f77ccbed811b97"
+    },
+    {
+      "path": "backend/wireless_testing/router.py",
+      "bytes": 9058,
+      "sha256": "d5eafaed2ebaee0c90ca8eda03b7f9f27e44c76da446ee78e8b0678288f29248"
+    },
+    {
+      "path": "config/bundle-identifiers.json",
+      "bytes": 2243,
+      "sha256": "2f7741422cd69a11a05ed792abcd75357f23c2cc4751a3440d26057f88390af9"
+    },
+    {
+      "path": "config/release.json",
+      "bytes": 258,
+      "sha256": "293912a364f78f71599fceee77f390c5ebd0531fa0935d6c456c605b002a61ed"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "bytes": 6272,
+      "sha256": "b910b1edc4094d87980e7c6dfa6e542a8aaa2b99d24236aa7ac68867ff6fa2af"
+    },
+    {
+      "path": "docs/AUTOMATIC_PAIRING.md",
+      "bytes": 1172,
+      "sha256": "55225d9cb692aac7d8c0ff910b5588c8566617fae8e93301a84de7a348b41507"
+    },
+    {
+      "path": "docs/CURRENT_STATE.md",
+      "bytes": 4957,
+      "sha256": "164468b514c234439d0b4204b8a0729e3ba56c9b60885582fe26997226127d5f"
+    },
+    {
+      "path": "docs/ENGINEERING_HISTORY.md",
+      "bytes": 3009,
+      "sha256": "c03c1a78ed9eacf2eb73e444b17ade7fa930258ab5e83e961137336043b9096e"
+    },
+    {
+      "path": "docs/IMPLEMENTATIONS.md",
+      "bytes": 2052,
+      "sha256": "f27a411583c508332186c58c8e96e144fe33f932846bd1815714c85c4964c080"
+    },
+    {
+      "path": "docs/IMPLEMENTATION_STATUS_NO_XCODE_V1.md",
+      "bytes": 1082,
+      "sha256": "8e2afcc09f2d7e590b05b11722b14a0f3881c54243dc217dc7968021f19474f2"
+    },
+    {
+      "path": "docs/IOSSim_BUILD_AND_PACKAGING.md",
+      "bytes": 9014,
+      "sha256": "e582bcf90dcfa4b00eee3cbb1fdba0dda322017eb565f812efddbb56a90685b9"
+    },
+    {
+      "path": "docs/IOSSim_CURRENT_ENGINEERING_STATE.md",
+      "bytes": 7671,
+      "sha256": "eef93f7375c691c3386f06667f291b4603dd67432d6ef208e25862fbd424823a"
+    },
+    {
+      "path": "docs/IOSSim_ENGINEERING_HANDOFF.md",
+      "bytes": 6285,
+      "sha256": "c6978fdc3418fea3b521a38edbc048664202862d609f5b5c874252e1d21703ab"
+    },
+    {
+      "path": "docs/IOSSim_FIRST_TIME_SETUP.md",
+      "bytes": 7623,
+      "sha256": "176df6798145e13a61cb4942eaed4481c623b3ed87e1ff5fcf006684ccb88cff"
+    },
+    {
+      "path": "docs/IOSSim_HANDOFF_SNAPSHOT_2026-09-15.md",
+      "bytes": 3790,
+      "sha256": "ca1c0e3b8684f1c70a9f6f461acec98d42e47a3dd708e4793ba3cdee4fad50ae"
+    },
+    {
+      "path": "docs/IOSSim_IPHONE_PAYLOAD.md",
+      "bytes": 5585,
+      "sha256": "37c1d6b9c4da0049688e3f5ffc895d599251183307bb0ece9aa90911c1ee1255"
+    },
+    {
+      "path": "docs/IOSSim_NATIVE_DEVICE_STACK.md",
+      "bytes": 5178,
+      "sha256": "14c1891c348eecf425229e4578d2c52bde13989bbdc4042db6cddb9608b35072"
+    },
+    {
+      "path": "docs/IOSSim_PHYSICAL_VALIDATION_MATRIX.md",
+      "bytes": 6157,
+      "sha256": "1afc4586a5119f4d6cc78bd2f40c1bbce72831d7f11d711033820816b2096156"
+    },
+    {
+      "path": "docs/IOSSim_SECURITY_MODEL.md",
+      "bytes": 5908,
+      "sha256": "3b9ff5739808d98dcb29d4a24c16fb857aaeb5287d297fd410115640f74878c7"
+    },
+    {
+      "path": "docs/IOSSim_TROUBLESHOOTING.md",
+      "bytes": 7462,
+      "sha256": "2bc4844c4bff92d10852258420972fa963d19f17eb92be923818a2b86a0c3a83"
+    },
+    {
+      "path": "docs/NEXT_STEPS.md",
+      "bytes": 4266,
+      "sha256": "509e3173422619774ae478b38558a0d541c0e15eb04949a195b9e7058c32e1a7"
+    },
+    {
+      "path": "docs/NO_XCODE_DEVICE_BRIDGE.md",
+      "bytes": 1201,
+      "sha256": "61f32eeb497bcd06255e49748a8a25132c0fc3efbcf0ff51f606122ab165d67f"
+    },
+    {
+      "path": "docs/PHYSICAL_VALIDATION.md",
+      "bytes": 9098,
+      "sha256": "c3c35dea60085d1ceaee93ce9bb10f3a64458f0819831d5cd4a81aaed9ac2c14"
+    },
+    {
+      "path": "docs/PROVISIONING_AND_SIGNING.md",
+      "bytes": 10573,
+      "sha256": "c5079639491199781209855977646061d0b5f43453c37af0c1de30a33990bbce"
+    },
+    {
+      "path": "docs/READINESS_RECOVERY.md",
+      "bytes": 946,
+      "sha256": "adb1f4b8f77f0119ebeb65fb37d91febed46c5a09cb150e861b969fb43731c1e"
+    },
+    {
+      "path": "docs/README.md",
+      "bytes": 3758,
+      "sha256": "05cb61a6e7e4a3081b1bfde210dd6dc100c17007197d803a44a292e7862a936e"
+    },
+    {
+      "path": "docs/RELEASE_AND_DISTRIBUTION.md",
+      "bytes": 5665,
+      "sha256": "ff57e3d7ef30be1920944ebb11a451659cc5427a1c90b77667bec5bdb5c97eaf"
+    },
+    {
+      "path": "docs/RENEWAL.md",
+      "bytes": 774,
+      "sha256": "5aef2b4d039aea39c63a400deed5f04e49c51f936e9174f1b0e5a725feaa6db2"
+    },
+    {
+      "path": "docs/RICH_RUNTIME_BASELINE_NO_XCODE_V1.md",
+      "bytes": 1598,
+      "sha256": "02e33ad1ac7aaca1208b34e9ef2976d7fe88a6af1b8d89c24bf3e915b2c02880"
+    },
+    {
+      "path": "docs/SETUP.md",
+      "bytes": 2993,
+      "sha256": "54aa2e9bfd386598ef032eba748e65429a55fed5563b0035cbd4ffec68929d33"
+    },
+    {
+      "path": "docs/drive_testing/00_REPOSITORY_AUDIT.md",
+      "bytes": 2411,
+      "sha256": "d40a67e104e2901b868b8ead6f6f7c1cdf5907ca000d5936b753b6065b278df2"
+    },
+    {
+      "path": "docs/drive_testing/01_EXISTING_ARCHITECTURE.md",
+      "bytes": 593,
+      "sha256": "d81e98ceb702d53c645598ab7591256a739a89f320b199c18667f282fc954289"
+    },
+    {
+      "path": "docs/drive_testing/02_PURPOSE_AND_RESEARCH_QUESTION.md",
+      "bytes": 490,
+      "sha256": "a8537c193550586800335f104ee8f19a9737b1965f1ee9472057c8359099b1b0"
+    },
+    {
+      "path": "docs/drive_testing/03_TECHNICAL_LIMITS.md",
+      "bytes": 856,
+      "sha256": "0ff46a4d3c9c904f6bedb3bb7835c494fe5e73996860fea4d2d3ed78590bba2c"
+    },
+    {
+      "path": "docs/drive_testing/04_FEATURE_FLAGS.md",
+      "bytes": 521,
+      "sha256": "769e8f267511c25ac30aed7b31c67842c5cdb547c3b91dab92f3d34e74886d61"
+    },
+    {
+      "path": "docs/drive_testing/05_DRIVE_TESTING_UI.md",
+      "bytes": 512,
+      "sha256": "f8ea81c67c66e592af1c75de3fb11e50fa6f225858bd40a5343916812af6ec91"
+    },
+    {
+      "path": "docs/drive_testing/06_DEVICE_SETUP.md",
+      "bytes": 526,
+      "sha256": "358b2b6a7e43c7420bc3a093ba388e26a688dc12ef105f9722baa8b89bd6cf65"
+    },
+    {
+      "path": "docs/drive_testing/07_DEVELOPER_MODE_SETUP.md",
+      "bytes": 427,
+      "sha256": "5ff2c1dfe207ea9e24ed34952fc3826dc62ae8fdc140024098cf97bda696f3b4"
+    },
+    {
+      "path": "docs/drive_testing/08_MACOS_SETUP.md",
+      "bytes": 605,
+      "sha256": "e8c134481c9fb22aada0637a343f62b320f79d62b04a3efba3921d7065295a37"
+    },
+    {
+      "path": "docs/drive_testing/09_WINDOWS_SETUP.md",
+      "bytes": 371,
+      "sha256": "f987e9949a57717300249fa5049320b2d2b88d756bf23dce01190e4ef9475c22"
+    },
+    {
+      "path": "docs/drive_testing/10_QUICK_TEST.md",
+      "bytes": 690,
+      "sha256": "a4e85de9391fefb60c2a566fb84c451cd2834bc239c1445350c0d03d7074ee25"
+    },
+    {
+      "path": "docs/drive_testing/11_CUSTOM_PROFILES.md",
+      "bytes": 612,
+      "sha256": "947dbf7c92b1ba7d10445d4f99dfa290d058eff1ccff2443958cfa5476dac9f4"
+    },
+    {
+      "path": "docs/drive_testing/12_GPX_COMPARISON.md",
+      "bytes": 698,
+      "sha256": "44f0a60c403f04e0cddbe24bfbad0fe56b7e2969f3c68579d53a71b439b69969"
+    },
+    {
+      "path": "docs/drive_testing/13_EXPERIMENT_QUEUE.md",
+      "bytes": 571,
+      "sha256": "2203a668722461c2ca531ab99d7fa634b1e1ad74e8816289ec1774b9b9166502"
+    },
+    {
+      "path": "docs/drive_testing/14_LIVE_METRICS.md",
+      "bytes": 562,
+      "sha256": "4d69bf10b7119a273231107c47ce69784b6738ab7573c54c07d923d12ea3acbb"
+    },
+    {
+      "path": "docs/drive_testing/15_RECORDING_RESULTS.md",
+      "bytes": 661,
+      "sha256": "d5b4806b9a81d5c03fce56afb57cc6078170f02abf6c83f249c046fae6062013"
+    },
+    {
+      "path": "docs/drive_testing/16_HISTORY_AND_COMPARISON.md",
+      "bytes": 632,
+      "sha256": "5588534ee19e4d481c7bdaaa351ac1735fb5b7de7c3da97767beba8194c59de2"
+    },
+    {
+      "path": "docs/drive_testing/17_EXPORTS_AND_REPORTS.md",
+      "bytes": 633,
+      "sha256": "b8a9c9d9f735e26a8383cfb703fcb28ec1fa7567db688d85effb5f26582bea45"
+    },
+    {
+      "path": "docs/drive_testing/18_TEST_MATRIX.md",
+      "bytes": 854,
+      "sha256": "8d70e9dc62226963359066ff2ec0c91da645630ff0cf12a41356afd3b476187a"
+    },
+    {
+      "path": "docs/drive_testing/19_INTERPRETATION.md",
+      "bytes": 512,
+      "sha256": "0018052493dc21781da30e47af08dfddcfeeefe6294619417391f5d4b7019ea3"
+    },
+    {
+      "path": "docs/drive_testing/20_TROUBLESHOOTING.md",
+      "bytes": 1480,
+      "sha256": "6ee294ca65a43cba5f96ff677b1978b2436643b729a858456781caaa4043d0cf"
+    },
+    {
+      "path": "docs/drive_testing/21_SAFETY_AND_ETHICS.md",
+      "bytes": 629,
+      "sha256": "2c43dfecc004e05181f0e3a25064be1a7986c0e87f820adacf54604d89c8cca3"
+    },
+    {
+      "path": "docs/drive_testing/22_FINAL_FINDINGS_TEMPLATE.md",
+      "bytes": 1185,
+      "sha256": "9792f0615bbf5a398b3775afdecd63d52c9f1c5b72b5636731ba1b3f8f48fd33"
+    },
+    {
+      "path": "docs/drive_testing/README.md",
+      "bytes": 1410,
+      "sha256": "5d114a498c38ce6e4096e78e5b774a9ee68cb335219bd6de453bb2e282c29ee2"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/.gitignore",
+      "bytes": 222,
+      "sha256": "19f5007a917c96d3cb03d230a4bdd895b61451467682501e446a6d61df1aa1ac"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/00_GOAL_AND_ACCEPTANCE_CRITERIA.md",
+      "bytes": 2258,
+      "sha256": "f8b31b050c9b093c92b31ba28446ce12a9c0ed012d2cab39d850723f25a26745"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md",
+      "bytes": 3880,
+      "sha256": "21d8484209607405587417897919f8413cf45dbf088aebb97d253ecb614594cb"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/02_PRIOR_FINDINGS.md",
+      "bytes": 3106,
+      "sha256": "229ae24101abd0cb989046f4114e13085e07d44ecf373bc0347fe485b6f7b26d"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/03_APPLE_PROTOCOL_STACK.md",
+      "bytes": 2571,
+      "sha256": "0db3b590081ea058a822bcd080474489692b6538fcb0f5671e73a83eef3780ae"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/04_RPPAIRING_RESEARCH.md",
+      "bytes": 2825,
+      "sha256": "f31bece5478ef07ba89cfaee0759c8d3a3d82ce4fde29cdb12443c1bf8d4f3bf"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/05_LOCALDEVVPN_RESEARCH.md",
+      "bytes": 3235,
+      "sha256": "3842ee9d2e4b6284ccdeb7fbdcf8fb1e28773096bb4d257045bc68af507a2f00"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/06_LOCUS_AUDIT.md",
+      "bytes": 3363,
+      "sha256": "a527e377740eadaa0e1bdf5893ace6d48fb515b07bafc9c69f5aa09f966a3046"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/07_MIRAGE_AUDIT.md",
+      "bytes": 1703,
+      "sha256": "25e50cb06cec076837cdb6b53098048e1fc0a2ca96d04afd570621ac486ef13e"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md",
+      "bytes": 3569,
+      "sha256": "7aeed64aaa4bb8b70c8dcf4db26849c6fd52f0ff2c0949e6eaef9d78e16c5934"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/09_COMMERCIAL_ARCHITECTURE_EVIDENCE.md",
+      "bytes": 1992,
+      "sha256": "5d9cf6d2d56940276a7770fcc29e2011d730060c7ecbb90ab01a858da053df36"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/10_CELLULAR_COLD_START.md",
+      "bytes": 2727,
+      "sha256": "abae2daa7ca0f548b16dc69aba366e85a0db34569a8a8d69971252d85519f4aa"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/11_PERSISTENCE_AND_REBOOT.md",
+      "bytes": 1701,
+      "sha256": "6dda8967be3f9c3a5ca702d0375aa11771aedc327c6e45b6288bcaed7078c2a6"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/12_SECURITY_AND_ENTITLEMENTS.md",
+      "bytes": 2408,
+      "sha256": "a00056e3ab7a537eed31c088d20d52b6eaffc29cc44bf776bd80da6d6dd05a04"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/13_ALTERNATIVE_ARCHITECTURES.md",
+      "bytes": 1614,
+      "sha256": "3827df5a199031e29b39b48d9af68e87b603725199f0b30ad3708f08e161f68b"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/14_EXPERIMENT_PLAN.md",
+      "bytes": 2406,
+      "sha256": "a809533439d7f18faa1e936fbe4036e706c3c4cd957388d5f2128fa66145f257"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/15_IMPLEMENTATION_OPTIONS.md",
+      "bytes": 1670,
+      "sha256": "7d7704ada211c31f68d7826ece44f8ac1be195dca50ec711adf7907f0eab1043"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/16_RISK_REGISTER.md",
+      "bytes": 1620,
+      "sha256": "4f7470b1b80c6a668e50a0ef2b9868f74758668a9fcbefd4584aa59e4d692b7c"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md",
+      "bytes": 9657,
+      "sha256": "1561c6db34e4c7d3122cb836591d4b0cfdb9e3d45c0175765b0a9b630e093c8a"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/18_OPEN_QUESTIONS.md",
+      "bytes": 1654,
+      "sha256": "ae079c1e29ce81d27614d27ac24bbfc09979866724ab8b3b4d3ce27c812e3ce0"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/19_RECOMMENDED_POC.md",
+      "bytes": 5416,
+      "sha256": "635f76eacf9d896c487a0f396dffcced154a84455065980b399999f1deb892b1"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/20_POC_IMPLEMENTATION_NOTES.md",
+      "bytes": 7247,
+      "sha256": "c5e888a9b494936397d9a3a72cf00b26d33c6f353e77fff2a4fd9f05992940e7"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/21_POC_TEST_RESULTS.md",
+      "bytes": 16260,
+      "sha256": "b260563858213da7affe27c0fe4fe5a0eddafdc80343b99ae48a6d5b7d2a9a52"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/22_CELLULAR_COLD_START_FINDINGS.md",
+      "bytes": 1343,
+      "sha256": "dc5d81562158c1c13c051e53d4c343dd1a3371e4d2aff8b04e0a489460e68465"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/23_E1_PHYSICAL_TEST_PROCEDURE.md",
+      "bytes": 2597,
+      "sha256": "85d160898c33ff50b0a4f97ee0c5ff462829e8a040b964b397d567c23944d195"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/24_IDEVICE_IOS_BUILD_NOTES.md",
+      "bytes": 3844,
+      "sha256": "a59fb1831953acb398f35f036f6a31f02fe4804e39607ec56a8ac641e7decd4b"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/25_SESSION_PERSISTENCE_FINDINGS.md",
+      "bytes": 7568,
+      "sha256": "288db01924de1e811d5782c5b4f5170daa49a2ca34012d3a62979645e77c2511"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/26_DIAGNOSTIC_RECORDER.md",
+      "bytes": 5403,
+      "sha256": "bfa4bf8d5a57eb635b63958a56a41adc389690f11be096cf15e78b4ef6a9c88e"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md",
+      "bytes": 14595,
+      "sha256": "734bb2282f8ee409efca3516adfcbe75fd6519f72ae35a1f975faa9323d77363"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/ARCHITECTURE.md",
+      "bytes": 7678,
+      "sha256": "41123dee0f120eb0b49667dd380d8c794281bab9d585bf9539fdce7a71d1ffa0"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/DRIVE_CHARACTERIZATION_2026-08-28.md",
+      "bytes": 6787,
+      "sha256": "fa77989e98f1ae2a743e81b85980ee3a371a58683a0ef5af9662dbbd50b0461b"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md",
+      "bytes": 30276,
+      "sha256": "a1c28fdbdf82de4a966e01f7424a362f5f59e7078c394edabb0a73695701efe2"
+    },
+    {
+      "path": "docs/iphone_on_device_dvt/README.md",
+      "bytes": 3464,
+      "sha256": "0a3d7825b66f51d3144309e1635eac6bfccc9d780127b845f2262d4b307f7eb9"
+    },
+    {
+      "path": "docs/mac-host/AUTOMATIC_REFRESH.md",
+      "bytes": 2952,
+      "sha256": "56162ca77d628246438fb4c1bc9deb224648f6fbb3bc64e7e533e34cbba336a4"
+    },
+    {
+      "path": "docs/mac-host/CONSUMER_PROVISIONING_ARCHITECTURE.md",
+      "bytes": 5883,
+      "sha256": "5da4a3f566fc44a23fdfd81a2638844dce96f3482b7fd54cf1b777dfea4d9e5e"
+    },
+    {
+      "path": "docs/mac-host/CONSUMER_SETUP_FLOW.md",
+      "bytes": 3036,
+      "sha256": "233f018764cd6370e6c6f846824fcd6159b5c11b00fb014e687254652ff8c6c4"
+    },
+    {
+      "path": "docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md",
+      "bytes": 12195,
+      "sha256": "dfa88c424d3be1431d91a749637608f7b5418180c7fdabb640a74691c1b72dd0"
+    },
+    {
+      "path": "docs/mac-host/PERSONAL_TEAM_PROVISIONING_POC.md",
+      "bytes": 9549,
+      "sha256": "be408a70c9a2ba41f7fe4430259c0fc3dd2dd4992d2858eb66a71a5506d9035c"
+    },
+    {
+      "path": "docs/mac-host/PHYSICAL_INSTALL_STATE_STABILIZATION.md",
+      "bytes": 4131,
+      "sha256": "1b0fb629373b2025401ff4b8ce59f8b6349dc11912346f0cf5be00395729feaa"
+    },
+    {
+      "path": "docs/mac-host/PRODUCTION_RELEASE.md",
+      "bytes": 11642,
+      "sha256": "6e60992c670485e1b553201d5782b6dc46fbcbb43025af349c102d42b6611830"
+    },
+    {
+      "path": "docs/mac-host/PRODUCTION_VS_DEVELOPMENT.md",
+      "bytes": 2155,
+      "sha256": "e20bdfd3a5c7439e1686a6d5805b741fca8db9c0daaef607c9b6cc35d255b704"
+    },
+    {
+      "path": "docs/mac-host/README.md",
+      "bytes": 2652,
+      "sha256": "0c73281eb96876a12fecda7f47927841ca254b44f8ad800e29e1d225398c92a4"
+    },
+    {
+      "path": "docs/mac-host/SELF_CONTAINED_APP.md",
+      "bytes": 6810,
+      "sha256": "e19cf8b51a6b5c855b949ea8b8a9e14e49cf347606a73cf77f2d2475ca4111be"
+    },
+    {
+      "path": "docs/mac-host/THIRD_PARTY_PROVISIONING_COMPONENTS.md",
+      "bytes": 6585,
+      "sha256": "201e3711b09d104e82367bb6eacb7d33e0492e1463184eadf607ced80154310e"
+    },
+    {
+      "path": "docs/mac-host/ZERO_XCODE_PROVISIONING.md",
+      "bytes": 15891,
+      "sha256": "46a644303e1ca1778aa66ccd19497803d1f62a2832d9aea476af72a063515129"
+    },
+    {
+      "path": "docs/validation_evidence/integration_flow_map.md",
+      "bytes": 3159,
+      "sha256": "4157f7d8e45eb24f54ffbc34e00e9da11fd99b357a08415f531f33c34c579191"
+    },
+    {
+      "path": "docs/validation_evidence/wireless_userspace_location.md",
+      "bytes": 2072,
+      "sha256": "c6e531dbb0b46c3735687696cabeea593f8a3148ca3364edba069dad59620219"
+    },
+    {
+      "path": "docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md",
+      "bytes": 8667,
+      "sha256": "33d9dc1393734caf3abf4761c7a0b527ebb3a139cebdff363b444bf7af4e0189"
+    },
+    {
+      "path": "docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md",
+      "bytes": 5381,
+      "sha256": "ebe383b67f9893470f70473223ba29cc2d788afba6bec40bb29cc1492c749824"
+    },
+    {
+      "path": "docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md",
+      "bytes": 5820,
+      "sha256": "7048b48bb70a9c3c2912e768149ed2e1a591c49ebad63845bab4bb6d89363122"
+    },
+    {
+      "path": "docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md",
+      "bytes": 3372,
+      "sha256": "4bca9eba131bcb9ab4dd41bc65b3b81cef14164fc8cb0a9a6cb8b0c4e805943f"
+    },
+    {
+      "path": "docs/wireless_research/04_REMOTE_MAC_ARCHITECTURE.md",
+      "bytes": 3438,
+      "sha256": "4ea312c23c3e56df251defc2a5a5829681a7daa783d7cbf74a72103e3d11d63e"
+    },
+    {
+      "path": "docs/wireless_research/05_HOSTED_CONTROL_PLANE.md",
+      "bytes": 2842,
+      "sha256": "9dd83a1e493f40db339af802cc4c4d1eeed4c08373be82b259a0f09ce0e8f092"
+    },
+    {
+      "path": "docs/wireless_research/06_MINIMUM_HOST_OPTIONS.md",
+      "bytes": 3217,
+      "sha256": "e714806980e58395c90ee2cf44984f966b626b387f7f99d1fa9fc3140c29c68d"
+    },
+    {
+      "path": "docs/wireless_research/07_IPHONE_ONLY_OPTIONS.md",
+      "bytes": 3792,
+      "sha256": "d6bb8aa7225388443ab224d433d7f4ea20ab48404897e28e3740844df6136253"
+    },
+    {
+      "path": "docs/wireless_research/08_EXTERNAL_GPS_ACCESSORIES.md",
+      "bytes": 3711,
+      "sha256": "586f9d919f9d960b43ed9adfd27c46ada4e12f5badd1db5c40818f0e77107c48"
+    },
+    {
+      "path": "docs/wireless_research/09_JAILBREAK_FEASIBILITY.md",
+      "bytes": 2213,
+      "sha256": "ab90ea8cdf230045b56774f42d721147292838ccd9bb7d1a4bd139a3d43271cc"
+    },
+    {
+      "path": "docs/wireless_research/10_WIRELESS_TEST_MATRIX.md",
+      "bytes": 3455,
+      "sha256": "b78d243b6a1f735e771167b95327385520407769afd8b13f7f89ed3a7a1b7031"
+    },
+    {
+      "path": "docs/wireless_research/11_PROTOCOL_STACK.md",
+      "bytes": 2828,
+      "sha256": "4919260bd54ec3520e9aca190ecb4d0fd3caacf90824789e6beecbbbbf48e104"
+    },
+    {
+      "path": "docs/wireless_research/12_COREDEVICE_AUDIT.md",
+      "bytes": 3192,
+      "sha256": "d0c06e4b75e5d4c55dccaacf70a92f0b5934f117ab67cf8c2ac921d1ce2c56c2"
+    },
+    {
+      "path": "docs/wireless_research/13_COMMERCIAL_TOOL_ARCHITECTURES.md",
+      "bytes": 3585,
+      "sha256": "598a57860ac68e0431b028fc99cc7ea0303c9f7886b709ed034d159a72b51396"
+    },
+    {
+      "path": "docs/wireless_research/14_USB_OVER_IP.md",
+      "bytes": 2490,
+      "sha256": "c70d8132bd57697bd2260bafea2be2e87a579eaef9e6e002f1d89426540e109b"
+    },
+    {
+      "path": "docs/wireless_research/15_LOCAL_RELAY_OPTIONS.md",
+      "bytes": 2077,
+      "sha256": "6ae61ddc53894f57653de5c60bf66e2fff473a877cadcbb1747dda8905ef964b"
+    },
+    {
+      "path": "docs/wireless_research/16_IPHONE_REMOTE_CONTROL_UI.md",
+      "bytes": 2038,
+      "sha256": "6dd75213573027b1a04ba6bdfc9c9ff8779c6b8ac54e448a3bcd76ad07c81e1d"
+    },
+    {
+      "path": "docs/wireless_research/17_SECURITY_MODEL.md",
+      "bytes": 2636,
+      "sha256": "07f98e248782768050a10c3d55b7d660234fd4584751e4edca3ab45dccc3afd1"
+    },
+    {
+      "path": "docs/wireless_research/18_ARCHITECTURE_DECISION_MATRIX.md",
+      "bytes": 2241,
+      "sha256": "3a7cbfb012493c2a7c2c146548a107f968b101d5975b7e3b923be4e31650b779"
+    },
+    {
+      "path": "docs/wireless_research/19_MINIMUM_EXPERIMENTS.md",
+      "bytes": 3018,
+      "sha256": "1172fdf3181b5fe5cb946c1f58350011a0097d1f28660d93da5064791195c84c"
+    },
+    {
+      "path": "docs/wireless_research/20_FINAL_RECOMMENDATION.md",
+      "bytes": 4568,
+      "sha256": "d6b228b0fe5a4dfc3cf084a81f9da42de52541ebfbbe8ae3e0d14c51da1bd603"
+    },
+    {
+      "path": "docs/wireless_research/README.md",
+      "bytes": 9336,
+      "sha256": "51df4ce002da7ab21b444f12827124e1fe8b2f20ccb891c53002c251a5b3cebf"
+    },
+    {
+      "path": "docs/wireless_testing/README.md",
+      "bytes": 11078,
+      "sha256": "b098a6a2bb8991c4d7f151d4a4898d3bbce25b086faafa1919253d73a2031903"
+    },
+    {
+      "path": "frontend/index.html",
+      "bytes": 839,
+      "sha256": "b1236cd56a43bcd10f677cf8328c402442bd83e8c73fd7c982f14970fc5d573e"
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "bytes": 129490,
+      "sha256": "4436b29627b7cf881c637fa5ad47140478bb31b32be35d86a14394c77e9ff221"
+    },
+    {
+      "path": "frontend/package.json",
+      "bytes": 696,
+      "sha256": "95efd69e431bd367aea78d3a679dd1728c8cc0a928f9f6b51d9c09b9a34ae40b"
+    },
+    {
+      "path": "frontend/src/App.test.tsx",
+      "bytes": 6164,
+      "sha256": "8c05c54c1b0ce634400ef44997afe788d3effe4a5511e2c67ff14dbe0c9f811d"
+    },
+    {
+      "path": "frontend/src/App.tsx",
+      "bytes": 26316,
+      "sha256": "ecb7d00d5cc3f167f636a6ab29ae50b52ac5097e2285a6abc2399d86da5855b0"
+    },
+    {
+      "path": "frontend/src/api/client.test.ts",
+      "bytes": 1868,
+      "sha256": "8335a871e1075eaf811f842ae9ff9d0989a77cfe279d55d398e14be2779fc5b7"
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "bytes": 28611,
+      "sha256": "8df692bb1a1ef9db1240953dd9c1f5ee5da00e4536486b7670896f0d9695ce49"
+    },
+    {
+      "path": "frontend/src/components/DevicePanel.test.tsx",
+      "bytes": 4496,
+      "sha256": "f583282c47edd1f2dd3429e383560917d79a8697359abcde9e4f5aa700c6b3e5"
+    },
+    {
+      "path": "frontend/src/components/DevicePanel.tsx",
+      "bytes": 11149,
+      "sha256": "103a3eab7d8d99feaadeb232a10ac8a85b420ff1d56e90ea90094cd465176872"
+    },
+    {
+      "path": "frontend/src/components/FavoritesList.tsx",
+      "bytes": 3747,
+      "sha256": "2e5455caed30474418f17d96915875782a98b63db05ae6fa1ccea83dc01e25ce"
+    },
+    {
+      "path": "frontend/src/components/LocationSearch.test.tsx",
+      "bytes": 7155,
+      "sha256": "8c23be20ec05774bd9341dc873c914c3f930a765459ed48c69e2adb27d491218"
+    },
+    {
+      "path": "frontend/src/components/LocationSearch.tsx",
+      "bytes": 13288,
+      "sha256": "e5d7083f893e331060ebbb142ef72f2d62f5f59d81d43e02686d8af438fb1c24"
+    },
+    {
+      "path": "frontend/src/components/MapController.tsx",
+      "bytes": 516,
+      "sha256": "fb868197532b5a3d2736f8bcc8e64d0526f265f1a63edeffcd5bb390a0a41ab4"
+    },
+    {
+      "path": "frontend/src/components/SelectedLocationCard.tsx",
+      "bytes": 1445,
+      "sha256": "7b42178c074e90b78f3921d1e895f4e8d634e66dfb0b6e8b5895420bd3990045"
+    },
+    {
+      "path": "frontend/src/components/UnplugModal.tsx",
+      "bytes": 3096,
+      "sha256": "3893659b3f2e8b7d57111d0978330f6f927020b12ee92db7aeb8b2afea7d1426"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/DeviceCheckPanel.tsx",
+      "bytes": 5744,
+      "sha256": "5b1dee345f7c16a29cd94732e95c88445cac2b93a40edb7e9aa8bf80974ddc57"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/DriveTestingHelp.tsx",
+      "bytes": 1663,
+      "sha256": "1536667d14e045040fc58514783f5ee5f4294c22e842b9488ad5b3c95bdfbf9f"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/DriveTestingLab.test.tsx",
+      "bytes": 6793,
+      "sha256": "dfc637fe385871d5a877c753febf59e3ab3d1c2bdd326a7ef4689be3040dc204"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/DriveTestingLab.tsx",
+      "bytes": 14545,
+      "sha256": "026eee91a0c53a1bbca3bae858746566cfc90fc9623aead5df37d7f57ded362b"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/DriveTestingLauncher.tsx",
+      "bytes": 848,
+      "sha256": "f6ac5246b67d99b196dea17391aabfeb5d0036a59e49cee9a83ff862166da7eb"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/ExperimentComparison.tsx",
+      "bytes": 3341,
+      "sha256": "00e1462bbff233f9c1ddfea08d1fea6a4d1afa2c2954d44d16883d46bd51a9c5"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/ExperimentControls.tsx",
+      "bytes": 2115,
+      "sha256": "c43aa0f8e4127244a4161c22b6b6f7c3ae3556a2e16885f900bd7e6c85de14b9"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/ExperimentHistory.tsx",
+      "bytes": 3489,
+      "sha256": "c65fa5664a50f11ee2558d18b2834a7d96415c3908dd5d6199d584fb17bf971c"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/ExperimentQueue.tsx",
+      "bytes": 6207,
+      "sha256": "5aa756b409682ea5eb3802b105a07eb2ba70b27a790b5edfc86314dc97c0ae8f"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/HistoryComparison.test.tsx",
+      "bytes": 2546,
+      "sha256": "fada3c27677328b9808dac1338f92156b458dee02edfa92c0f1967631c5a86e0"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/LiveExperimentPanel.tsx",
+      "bytes": 5395,
+      "sha256": "95267373f4fca0fbf2b8f8a8b602114a7fe35ce682583eb67a808d3620397d80"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/ObservationForm.tsx",
+      "bytes": 6804,
+      "sha256": "e11db834360c9ae79777716e75aca0274d1102c1d2257c74a3e213a03cc4c25a"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/ProfilePanel.tsx",
+      "bytes": 7491,
+      "sha256": "bf9a0eaa7ed4abd34863b53b2bf92a1928715c10ef39bacf0dd71611f882152e"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/RouteSetupPanel.tsx",
+      "bytes": 7823,
+      "sha256": "34300424980a53f9003ac8bcd8ae465d84d9db2b8640d803a0347871a9c4090b"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/featureFlags.ts",
+      "bytes": 323,
+      "sha256": "02477fe369cded24d5bb44494a3846b1595ed324eed507bd496373913b9d5cea"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/styles.ts",
+      "bytes": 5017,
+      "sha256": "7d1c14162d05525e25383162388413c1ddffe88770aa562c9fa48471037b9e16"
+    },
+    {
+      "path": "frontend/src/components/drive-testing/types.ts",
+      "bytes": 884,
+      "sha256": "9aa6341b37fbddf5c167c4ade959bac12513a99107af71f3bd02bb049bab51e1"
+    },
+    {
+      "path": "frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx",
+      "bytes": 8702,
+      "sha256": "b35d24ec0cc156838dc4b377ad0283984c0b5fa5e015c99ec948e50b4c091682"
+    },
+    {
+      "path": "frontend/src/components/wireless-testing/WirelessTestingLab.tsx",
+      "bytes": 42864,
+      "sha256": "9a92afa154ddd04bcf63f855a263d217d3a08d54cdf8a1ecd81bb7c57fa4b707"
+    },
+    {
+      "path": "frontend/src/components/wireless-testing/WirelessTestingLauncher.tsx",
+      "bytes": 925,
+      "sha256": "a1ab6986447e07c5b916196430d0ed778b8c82da3e832a6c7651fd532e8009cc"
+    },
+    {
+      "path": "frontend/src/components/wireless-testing/featureFlags.ts",
+      "bytes": 338,
+      "sha256": "a9ba797c79544d63e1c1d69a7d6e2a4e499c091e6efe650ac150bae0178cecdd"
+    },
+    {
+      "path": "frontend/src/components/wireless-testing/styles.ts",
+      "bytes": 5078,
+      "sha256": "8a5b70ad759be5e6b6b024e54b9b8a52486c9723e20b2b2cd4b8d3d6e9a023d0"
+    },
+    {
+      "path": "frontend/src/main.tsx",
+      "bytes": 210,
+      "sha256": "6316ca0b2b868bab15149d593f5345d72102956826372fa6cd2ddeda88738a52"
+    },
+    {
+      "path": "frontend/src/test/setup.ts",
+      "bytes": 146,
+      "sha256": "e20f6c79ce7842f29f0dd93957e8230a5cbb3b5f6ee691fef96d4f393b964cb3"
+    },
+    {
+      "path": "frontend/src/vite-env.d.ts",
+      "bytes": 41,
+      "sha256": "c27f59d978c3b1e8ee3419b9514eb83197a279adb86e019498d0d284ff31d0d7"
+    },
+    {
+      "path": "frontend/tsconfig.json",
+      "bytes": 528,
+      "sha256": "31b48576802064b27f77f215ad391b9225265623504b14acba5d84a10819f69a"
+    },
+    {
+      "path": "frontend/vite.config.ts",
+      "bytes": 298,
+      "sha256": "3a44eb6f3c8b10267ec04ee51197882b76bbf2e563045cf04511616384611554"
+    },
+    {
+      "path": "ios/App/AppleLocationControlsView.swift",
+      "bytes": 24884,
+      "sha256": "276678be582d85663fce18ec495df3b80035e54cadbff3a496a598ba0f3f15f4"
+    },
+    {
+      "path": "ios/App/ContentView.swift",
+      "bytes": 4800,
+      "sha256": "9ffd277cc760d23e2106cd3ec19189367b12ea839074684b225c84120ed75a9d"
+    },
+    {
+      "path": "ios/App/DriveView.swift",
+      "bytes": 50683,
+      "sha256": "4aed37f158de7a797cf5c50298f0ebf3f64bc9c786bc52da1f030b13f715fc68"
+    },
+    {
+      "path": "ios/App/IOSSimOnDeviceDVTPOCApp.swift",
+      "bytes": 1781,
+      "sha256": "f9ef4c8047de762a26bebb6c26902849ae345db66e4a8d039ff085840f4615a7"
+    },
+    {
+      "path": "ios/App/Info.plist",
+      "bytes": 1849,
+      "sha256": "5ba67fefe6df0ccd9de6e608e5df5bf7000342d9b0e611579a3e03eb79858d44"
+    },
+    {
+      "path": "ios/App/Location/LocationMapView.swift",
+      "bytes": 1357,
+      "sha256": "6128c713ce856d7e943ea3e1648c1b08d311aa61abb89a993d27fce37b8b36bd"
+    },
+    {
+      "path": "ios/App/Location/LocationSelectionSheet.swift",
+      "bytes": 3779,
+      "sha256": "21d66e08b59bdf1d748be01da55a48f78b33c2dbd33f3b6cbe50e7a90288e33b"
+    },
+    {
+      "path": "ios/App/Location/LocationView.swift",
+      "bytes": 6150,
+      "sha256": "cb36c48b9d26f9820db6384d91d4bbfea95d2e4d0dc65b30b254054c7c2a600b"
+    },
+    {
+      "path": "ios/App/Location/LocationViewModel.swift",
+      "bytes": 6498,
+      "sha256": "95059c86de927cb6298db9b026fdfb4a7cd5911b7f73aa12592dd6dfcbd5e86c"
+    },
+    {
+      "path": "ios/App/Location/SavedPlacesSheet.swift",
+      "bytes": 3279,
+      "sha256": "70b8bbff2a93b06deeb600e56b15d25cdc2104be68777561bdda5188c18f316f"
+    },
+    {
+      "path": "ios/App/POCViewModel.swift",
+      "bytes": 12741,
+      "sha256": "07e83a34f02a910c95e69321225330b79ba96f9cb418db37a093a6859ed17b10"
+    },
+    {
+      "path": "ios/App/RootTabView.swift",
+      "bytes": 1283,
+      "sha256": "fea091f8066acbfdcd792f99aeba66f20b34401c608af3c6a8ecc7eca513ee04"
+    },
+    {
+      "path": "ios/App/SettingsView.swift",
+      "bytes": 5708,
+      "sha256": "36e79be24d842a9719e26b46d2005f0b87b596cd5a68d98b895d31739e9f4bf9"
+    },
+    {
+      "path": "ios/App/SetupView.swift",
+      "bytes": 5221,
+      "sha256": "98d59d39ef085455591917dfacc21688fce0ef03bbfa25f35da6b4c6564e112c"
+    },
+    {
+      "path": "ios/App/Shared/AppRouter.swift",
+      "bytes": 411,
+      "sha256": "a3b965651f8045e18750de1e69417bc7427aac92cbcdc9a37038a259f7ab983a"
+    },
+    {
+      "path": "ios/App/Shared/ConnectionStatusModel.swift",
+      "bytes": 6678,
+      "sha256": "3bf0214e01bf2bdd2796dfe466b5d8b977323ca7a854755a1272cecc853b83e9"
+    },
+    {
+      "path": "ios/App/Shared/CurrentLocationProvider.swift",
+      "bytes": 1448,
+      "sha256": "47560114d66bce2c6ce349b8d9bb582e372c483800d29f72259bcb90658babee"
+    },
+    {
+      "path": "ios/App/Shared/FavoritesStore.swift",
+      "bytes": 1932,
+      "sha256": "13a8cd90e197efdcc61a22e2619a853b5a6555fc0551591ba2e8036d67f7ec55"
+    },
+    {
+      "path": "ios/App/Shared/PlaceSearchField.swift",
+      "bytes": 3096,
+      "sha256": "ec154868b0f07b1ce16d377fb8c15482856227785a1fca0432f1039952bdff80"
+    },
+    {
+      "path": "ios/App/Shared/PlaceSearchService.swift",
+      "bytes": 5431,
+      "sha256": "e940727e6751eec4ee18bded8e6b25a31aaf33df2e525dba052d0b2607d8bdec"
+    },
+    {
+      "path": "ios/App/Shared/SearchSuggestionsList.swift",
+      "bytes": 2298,
+      "sha256": "3f617975eed9b52e7a57ce4705d6483731d5795cb8e8091a3819596a2f01256d"
+    },
+    {
+      "path": "ios/DEPENDENCIES.md",
+      "bytes": 1861,
+      "sha256": "a5cc479d1fac54384d548d9e480dd6220dc25b08f3e4cfd7297e855c5518a0fd"
+    },
+    {
+      "path": "ios/IOSSimOnDevicePOC.xcodeproj/project.pbxproj",
+      "bytes": 52831,
+      "sha256": "a42e13771f7c7cf895def8d4f095906edb519b553da6d27cb553e0083e3463d2"
+    },
+    {
+      "path": "ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/AppleDebuggerGPXControl.xcscheme",
+      "bytes": 2962,
+      "sha256": "07a112270d771de585b898a4980e635b3b89260814d9960c5673d1089c2fdadc"
+    },
+    {
+      "path": "ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/AppleLocationControl.xcscheme",
+      "bytes": 4262,
+      "sha256": "79d66eba615a9a8766151a41bebf12ffb1700c365b18cce87cbe275a7cd184a4"
+    },
+    {
+      "path": "ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/AppleXCUILocationControl.xcscheme",
+      "bytes": 4704,
+      "sha256": "15e4b367f877c013bcca05f015e9edb1afb037dfad02947364310a5616852ed8"
+    },
+    {
+      "path": "ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/IOSSimOnDevicePOC.xcscheme",
+      "bytes": 2961,
+      "sha256": "93e66f8cc183eeba6ecdd16287c85c2beedf71bd490fd9b5427f0cbe1ef33bbb"
+    },
+    {
+      "path": "ios/IOSSimOnDevicePOC.xcodeproj/xcshareddata/xcschemes/IOSSimPayloadRunner.xcscheme",
+      "bytes": 4056,
+      "sha256": "349994cbee7f79e0d0c620849b8ad78baaa7293cd720ef1810db2bd60e659a49"
+    },
+    {
+      "path": "ios/LocationWitness/IOSSimLocationWitnessApp.swift",
+      "bytes": 162,
+      "sha256": "e0f4cde6ff75a3a1b824c4dd044f44539d1e87e206608179ee13f79bcf6a6930"
+    },
+    {
+      "path": "ios/LocationWitness/Info.plist",
+      "bytes": 1536,
+      "sha256": "497907f8b71c5954f0ad74c2b0755256a8eaf5e2213a895a7e15b34912013ef1"
+    },
+    {
+      "path": "ios/LocationWitness/LocationWitnessView.swift",
+      "bytes": 18548,
+      "sha256": "4bd520e3a7356c4946e230d394c6eb651a2869bfd788c467be9dfc6496a65449"
+    },
+    {
+      "path": "ios/Package.swift",
+      "bytes": 637,
+      "sha256": "9566de48985de08896518dd17d67e6a0b8f691279994d1d9bc90c955e06187e5"
+    },
+    {
+      "path": "ios/README.md",
+      "bytes": 3786,
+      "sha256": "7ce312543a965804e1513567122c3af833af4cc9e25b3e0ce706b56a3c0a99c0"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/AppleLocationControlModels.swift",
+      "bytes": 31151,
+      "sha256": "d7bdce9551692297c6041bcbc884c2e99817bb20de989d7c8fb7b174da0a591f"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/AutomaticPairingInbox.swift",
+      "bytes": 8428,
+      "sha256": "b8034a5044cc2f068960e26674d1118103547197e119d0368a2b4a5ddc543e33"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/BackgroundManager.swift",
+      "bytes": 4136,
+      "sha256": "78f22fbbdee135e71156baf8184f0afb6cd9718c9f1823d291296f4cb17192d2"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/BackgroundSessionKeeper.swift",
+      "bytes": 3122,
+      "sha256": "da72b1d811d7f58f68dadc04a63bc7c5e30eaa74623a066141ac4ae228531a51"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/CoreLocationVerifier.swift",
+      "bytes": 17868,
+      "sha256": "c2c33e45b56f8c56857934b313cb9547d3d111b756ba642e7e2f5be625851b8f"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DeveloperRouteProbe.swift",
+      "bytes": 9446,
+      "sha256": "62a9bb5b3da61bbbc5b399adc857fb8d8d7c246f7ae992c786086533ca8f2540"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DiagnosticModels.swift",
+      "bytes": 8285,
+      "sha256": "b89dca61dad71c3fe7d2a2be7ee634e8c0e27aef56715d1ea4508843a5454c00"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DriveDiagnostics.swift",
+      "bytes": 47107,
+      "sha256": "fccd9fe99b9458ead81fc0af1df5f8e027bad109503224c36f25b0815db775b7"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DriveLocationTransport.swift",
+      "bytes": 25089,
+      "sha256": "59de48b5e06880533b55722b49e6d76663be025efda7659c272738683ac37e2f"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DriveScheduler.swift",
+      "bytes": 18078,
+      "sha256": "fccf2641cc1e1a22b3252d1409651db9cfd77bc4f0687bb9d3f7928d0137758a"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DriveSessionController.swift",
+      "bytes": 10128,
+      "sha256": "576a3b6b82e58ada4e9bea1b72e4fc1af54f4ace506db9ac67646ddba7a55ce4"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DriveTiming.swift",
+      "bytes": 8206,
+      "sha256": "0a78f5b6b6c66b0faf8a3d03d621bc0811df67305fecda03a18da7e9981ebcab"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DriveTraceModels.swift",
+      "bytes": 7575,
+      "sha256": "4b97f05356e4505e9f0a843ad36f7c79c4ec2659049b7c1c9e58769ea6435176"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/DvtLocationClient.swift",
+      "bytes": 42026,
+      "sha256": "9f973ce703a41790822f20e65b63fefbd076a53d86f524fa2be1e3f08ec4b351"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/ExperimentRunner.swift",
+      "bytes": 23193,
+      "sha256": "80d29c481c9da137b7b213136b48431b16066430444190401362d4658d09bca1"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/LocalDevVPNSetupInbox.swift",
+      "bytes": 6567,
+      "sha256": "9570488fbf875eddabd8972c2a2f5655b2221a890324889052925753b777494b"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/LocationCoordinator.swift",
+      "bytes": 25086,
+      "sha256": "1239a4890c0a925ee576377113074adcbdf848859b96f9220020cb22fddc9682"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/LocationWitnessMetrics.swift",
+      "bytes": 19854,
+      "sha256": "e1a5b987aa946a0df347d5ade99a9509d72b2048c6b92f7bd55b9f5f92a4aba1"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/MapKitRouteProvider.swift",
+      "bytes": 3363,
+      "sha256": "e1850af674887ba57a25144079ccf8d821bff4fedb8d61443152d7014b6cb7fa"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/PairingStore.swift",
+      "bytes": 4611,
+      "sha256": "5fbb5bae1eca606d89af6260e3a59449b424aa77ca762ab48792afc367eb63aa"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/RPPairingValidator.swift",
+      "bytes": 3133,
+      "sha256": "cbb69240bf793e1ed9cf4be395ea1a7ae4f4faf79024135afc40a1e6eaa5f53f"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/RichDriveLocation.swift",
+      "bytes": 5921,
+      "sha256": "fa82d12c963ce70952ea75f385eab6ce810298358fb32cdb4d0f0343a23698fe"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/RouteResampler.swift",
+      "bytes": 6380,
+      "sha256": "a308bbda1101287d0c310eb1eab1c596960e0cf3227a93455bea290886d6bf4d"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/SavedPlace.swift",
+      "bytes": 3934,
+      "sha256": "42b1d332a0413fdb99d8d3d6499bf5c8ec10b9553f711b2ec03c377880f166c2"
+    },
+    {
+      "path": "ios/Sources/IOSSimOnDeviceDVTPOC/SessionDiagnosticRecorder.swift",
+      "bytes": 18549,
+      "sha256": "d3088580c8f33c3e73e75679168be6d6bd53fd9350b55f9c8d651c71b6475792"
+    },
+    {
+      "path": "ios/Sources/POCUnitChecks/main.swift",
+      "bytes": 125946,
+      "sha256": "cc14cba7766e2def39714d825ecc638a4e35a2b00916c94c82bf59ca7718bb29"
+    },
+    {
+      "path": "ios/Tests/LocationControl/AppleGPXLocationControlTests.swift",
+      "bytes": 4354,
+      "sha256": "e6fb680618b73f3dec2eab1f244b2ea9bbcf8d095bb49f32e0e6d1a91e18d498"
+    },
+    {
+      "path": "ios/Tests/LocationControl/AppleLocationControl.xctestplan",
+      "bytes": 884,
+      "sha256": "6463d8e5d1b8a4eeb0c26ecc267a68f20b76d7b9d501b2b8ceb2e3b31ef10e5a"
+    },
+    {
+      "path": "ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift",
+      "bytes": 60336,
+      "sha256": "02c5ff8686db86ffeaa62ab39cdeeb652771b7c6bc4b4e6195fd7ef57f3e90a8"
+    },
+    {
+      "path": "ios/Tests/LocationControl/Fixtures/apple-gpx-35mph.gpx",
+      "bytes": 2261,
+      "sha256": "41590a8dfeb43f7b599e1f14e883f421b23cfe7d79abb3764679e8cdd13d8bda"
+    },
+    {
+      "path": "ios/Tests/LocationControl/Fixtures/generate_apple_gpx_35mph.swift",
+      "bytes": 2436,
+      "sha256": "205516094d7a3287aa2c210add6dbf46748b07c1e5035fc00790e3dbe6d6428d"
+    },
+    {
+      "path": "ios/Tests/LocationControl/README.md",
+      "bytes": 1922,
+      "sha256": "36c23df0897416de91e80b157824cffb858dd0c5661f69e8a8186144919892ea"
+    },
+    {
+      "path": "ios/Vendor/idevice/LICENSE.txt",
+      "bytes": 1054,
+      "sha256": "233ada9de9b90db2835d48da9f03cabfa180d47671d8b58d3ca003dbb965302a"
+    },
+    {
+      "path": "ios/Vendor/idevice/include/idevice_minimal.h",
+      "bytes": 6021,
+      "sha256": "e238a9b13eebbe7feabd9d81170fa3a9005968b74af19f6f6ecbd54f618e2107"
+    },
+    {
+      "path": "ios/Vendor/idevice/include/module.modulemap",
+      "bytes": 77,
+      "sha256": "5ee267c57b9c4f11e21825cfc7a0e9ec6ca0fe7ed9757be443283759621f1d9b"
+    },
+    {
+      "path": "ios/Vendor/idevice/lib/.gitkeep",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "ios/project.yml",
+      "bytes": 2102,
+      "sha256": "41b65b6a79e7f46088547a33eeca2ba915b5d5a5ae801dd87b5f6dbdc8851b1c"
+    },
+    {
+      "path": "ios/scripts/build_idevice_ios.sh",
+      "bytes": 3086,
+      "sha256": "096a9a67e1993d87bcd940959a996090b0f787a48cce6548c3e2e97beaad4670"
+    },
+    {
+      "path": "ios/scripts/verify_idevice_symbols.sh",
+      "bytes": 2365,
+      "sha256": "75bd421d9ccd571b1d00101f65917ac232eeca7e0309c1957e56cad14b36413d"
+    },
+    {
+      "path": "iossim",
+      "bytes": 808,
+      "sha256": "4341cca0e6cbb4e38c302843bbf8b2e0e97c8efdb5f76644db7c76f4bde9b1c9"
+    },
+    {
+      "path": "macos/Package.resolved",
+      "bytes": 269,
+      "sha256": "7be51cd9cbfb9afaca08af65801ba8861a69b377e045610353aecd252e8e5cf9"
+    },
+    {
+      "path": "macos/Package.swift",
+      "bytes": 1546,
+      "sha256": "6d24ac87778371393ea660a1304e5c411f2e001d2eb1b9a07cedf961e801fe5e"
+    },
+    {
+      "path": "macos/Release/IOSSim.entitlements",
+      "bytes": 181,
+      "sha256": "97704a8960b4facceef54397a08fb5d0a456247c3627359215aa2a27df22656c"
+    },
+    {
+      "path": "macos/Release/IOSSimProvisioner.entitlements",
+      "bytes": 181,
+      "sha256": "97704a8960b4facceef54397a08fb5d0a456247c3627359215aa2a27df22656c"
+    },
+    {
+      "path": "macos/Release/IOSSimProvisionerLocal.entitlements",
+      "bytes": 264,
+      "sha256": "da68b708e3fc30709e82683a8d1cb794ae6666778ed7257decb98ece88ee3ead"
+    },
+    {
+      "path": "macos/Resources/IOSSimIcon.png",
+      "bytes": 962404,
+      "sha256": "71d58135ddc7fb045cff23fc0036ddbe5926d50a12b9a035f1a16572114ecbd5"
+    },
+    {
+      "path": "macos/Sources/IOSSimAuthDiagnostic/main.swift",
+      "bytes": 597,
+      "sha256": "622be84cfaba65366aa7882ba791627fe43f3ddd6f7f11b69402cfa3f9f86704"
+    },
+    {
+      "path": "macos/Sources/IOSSimMac/IOSSimMacApp.swift",
+      "bytes": 1245,
+      "sha256": "942447c64d8d2ad3b42901c61a13648eedb5bbd46d8d71cd0ea66216432fc9f2"
+    },
+    {
+      "path": "macos/Sources/IOSSimMac/Views/DashboardView.swift",
+      "bytes": 9683,
+      "sha256": "c3b34309d95fc944b5809123b748afa4738398408380075f2ee67e901e318ac7"
+    },
+    {
+      "path": "macos/Sources/IOSSimMac/Views/RootView.swift",
+      "bytes": 1814,
+      "sha256": "4826c05677933de9a4a2fee952137d7c3bae8354826a6a6cfa52d9bb5b22f59b"
+    },
+    {
+      "path": "macos/Sources/IOSSimMac/Views/SetupWizardView.swift",
+      "bytes": 21528,
+      "sha256": "ae3f8d22ffdf35092f66bf8c17e00fb0bbb0cb1206a819552c8786c8cb16c566"
+    },
+    {
+      "path": "macos/Sources/IOSSimMac/Views/SharedViews.swift",
+      "bytes": 8332,
+      "sha256": "2f395c0a073096e9b8d5424b4bdb95685c21232ff48fb71d30c6b72518ee855a"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/DeviceSelectionPolicy.swift",
+      "bytes": 2320,
+      "sha256": "72e5370bdeed91b0ad8906d343622ed55e8d815d59b1e4404f7c6771252afcc0"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Models/ArtifactManifest.swift",
+      "bytes": 12152,
+      "sha256": "36b0c5238686713190675d715f176c247a09e357092094e045c9fed386a4e5ad"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Models/ConsumerProvisioning.swift",
+      "bytes": 47530,
+      "sha256": "c50978b39e86e82bb511c028b230fbd1aea13006637ef8c7bef0e9306130d53b"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Models/DoctorStatus.swift",
+      "bytes": 15490,
+      "sha256": "4557202e5eea58412fcb8f1a68058128783950ad8058e7bab3a86fdb876ec329"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Models/SetupState.swift",
+      "bytes": 2451,
+      "sha256": "694fc3fba4135cc4b0012ea15e53144cfd8e659788377a17f73ad8ecd4ccfcf0"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/PersonalTeamProvisioningPOC.swift",
+      "bytes": 23926,
+      "sha256": "89522dcddc0615e93876c54ecd7cb1ab2fa358a10e10cdfcb969f8040c7221d2"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/ProvisioningProfileInspector.swift",
+      "bytes": 9561,
+      "sha256": "0223e57f36daebead71af8e4720b505586a76c975f4e7455f606c8f065911da7"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/AppleAuthenticationDiagnostics.swift",
+      "bytes": 10683,
+      "sha256": "c5af61ea7620bb5f86679df010b833bd3c6908c4335cf298fc6f27d7ad49e9a4"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamDiscovery.swift",
+      "bytes": 10916,
+      "sha256": "5bef9addcdf09061c2c788bb1f0138aa6f7563b719e31e2c17f52695b2f24e77"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamExperimental.swift",
+      "bytes": 38623,
+      "sha256": "195b4d7cd6a882b7a3f9fc1e2229b12ce23326957dcfd35bdea518ea9d8b005b"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamLive.swift",
+      "bytes": 158792,
+      "sha256": "8c17c4d0707b4425038b3742d95306614be9940a08eaea36133c638403e0ac34"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/BundledProvisioningEngine.swift",
+      "bytes": 11029,
+      "sha256": "6538a84b1ffd26e2668fe382eb7e4be9eb2d12757575d1861f6bb73fd60d36d6"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift",
+      "bytes": 132202,
+      "sha256": "f9cf0145fd6ded9cc126623349d30ee2e1ac6d3d6bb7901717c649cabdfa02f2"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ConsumerOnboardingCoordinator.swift",
+      "bytes": 5980,
+      "sha256": "6304d7773ab7051a1293b3e29fe2b9077d137971bcd7d798aa88c35df2bdebb9"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningBackend.swift",
+      "bytes": 11969,
+      "sha256": "34857ad6ed810aab0ac2e64ad313561e2d5a0185693762feb7bb932c205c6efd"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningFaultInjection.swift",
+      "bytes": 998,
+      "sha256": "9c7a0a5aa93c56d049b4b12922539b7d1113920dcf9e7472b75f26b72cce9c60"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningStateStore.swift",
+      "bytes": 8508,
+      "sha256": "780dc3511c6ab72d2ad7caea4e5bbb0ce3873cc524bc5f1fc2a166b1dcf5dce3"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/DeveloperSupportCoordinator.swift",
+      "bytes": 16061,
+      "sha256": "298a8b402f149baa1f461f72fa4b5fe96768b41bec6a651dc040f68d0ca6df70"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/DevelopmentCLIEngine.swift",
+      "bytes": 8770,
+      "sha256": "7fb0385b444dbf74598727a88e1584fc51ba3544cdf80c8c28fbeb030269ee29"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/IOSSimSetupEngine.swift",
+      "bytes": 4946,
+      "sha256": "ba4fcd4b95236397f8b744f196fec7800128e85548ad9b5b010ac308926b8200"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/InstallationInventory.swift",
+      "bytes": 5122,
+      "sha256": "3c287bb415bde61e27cef791079fe9e03574322a17774ff980d3698d820efb53"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/LocalDevVPNSetupCoordinator.swift",
+      "bytes": 7037,
+      "sha256": "33d41a2016a67e849c759e35692950e69536cfc9d88fa8b5932d424b6422553c"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/MacAssistedRenewal.swift",
+      "bytes": 4088,
+      "sha256": "0598fb87b82c702f2e65016475baef45336157c46df003b251235f6f90eaf335"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/MockIOSSimSetupEngine.swift",
+      "bytes": 6186,
+      "sha256": "836f778efabad953ea6d71d2d4bb071cb5683de150e93d701751021454cd0810"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/NativeApplicationManagement.swift",
+      "bytes": 15272,
+      "sha256": "b2a4703ec58c20a8f4bb60312283e0a1a1107fd8209616bad84b40bbb8902e67"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/NativeDeveloperServicesCoordinator.swift",
+      "bytes": 5815,
+      "sha256": "04404f1efb871277abc669dbb39a611b1ae87278ebfbcec4d9074fe08848ff62"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/NativeDeviceBridge.swift",
+      "bytes": 36309,
+      "sha256": "5921195a91a8c0d3c8e5e92231409ed7319c286e44f3c7718bffc3dcb55e4f2b"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/NativeProvisioningArtifactStore.swift",
+      "bytes": 11280,
+      "sha256": "24d839c8afdc9eee3cd759560ff2483ce0eabf913d9f394ec951fb4bf3ba0e26"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/NativeSigningIdentityResolver.swift",
+      "bytes": 16926,
+      "sha256": "1c0b1c29adfac474c85802d3382ff0812cc8b95ec3f4b01f02f09393c9623105"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ProcessRunner.swift",
+      "bytes": 4085,
+      "sha256": "8f2b8e37aa2efad84b2c51b2bb11aa1a360194ad88ec2ba8fa7ed23a6511c0ef"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/ReadinessRecovery.swift",
+      "bytes": 6822,
+      "sha256": "d1d81d7e5fa2a640c956a487ea09ec628bdb09fa293927988e6a4ca0d4ff05bf"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/Redactor.swift",
+      "bytes": 2604,
+      "sha256": "62ef0acf270df3eebb6d7b933ce7031857313c874d9d1c54b8e7d570c79a10b8"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/RemotePairingLifecycle.swift",
+      "bytes": 25892,
+      "sha256": "e57cc5863708910de26e2e889a377bdac31c0722faafae37d31b94d7e2f54473"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift",
+      "bytes": 40640,
+      "sha256": "e390fd5692ff8a594ff045e747722b10d1cfb899b4ea3b03cff39eca800ff282"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/Services/SupportBundleExporter.swift",
+      "bytes": 21492,
+      "sha256": "3995f1e4a271a53c284aa000123a87e697a2e792de8ba7c204946d302d85b014"
+    },
+    {
+      "path": "macos/Sources/IOSSimMacCore/SetupStore.swift",
+      "bytes": 50634,
+      "sha256": "99dd8f79003dd97783382b568afb1ece851407423d413f82f6f8d606b64f2fc4"
+    },
+    {
+      "path": "macos/Sources/IOSSimProvisioner/main.swift",
+      "bytes": 43100,
+      "sha256": "6bb0fb59fe0a8e078791f2fc25701b501abc47a5a5fd063ba19645b43fd700cf"
+    },
+    {
+      "path": "macos/Sources/IOSSimSigningKeyTestHelper/main.swift",
+      "bytes": 2413,
+      "sha256": "df6b6cdc085fd481d70273f4e1add5cbbfac9be3d2ce5f96917f7eafac5d7dc8"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamExperimentalTests.swift",
+      "bytes": 39646,
+      "sha256": "ee747a32e875a1203caa8d2a5d880d99f8fe2fd1323b774baf6277b163bce745"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamLiveTests.swift",
+      "bytes": 86296,
+      "sha256": "40727fe4bce7c550fbc332ecd4c360fee3df4dee64b7c328261ada26db88f6fe"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/AppleSRPPrimitiveAndEncodingTests.swift",
+      "bytes": 9326,
+      "sha256": "c29134423c5506dbaaa0c721da4b9b7c4849fe1e4021de30a054c6fd729e86f0"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ArtifactManifestTests.swift",
+      "bytes": 8732,
+      "sha256": "ab3e07885ea5671d29956688b95acb7959ceb1e66414f117f350c9079b131cd4"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/BundledProvisioningEngineTests.swift",
+      "bytes": 4117,
+      "sha256": "14b920b3d53a6943a3f21853884b387514352a703944d6f23025c0184132ee40"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ConsumerOnboardingCoordinatorTests.swift",
+      "bytes": 3928,
+      "sha256": "b82cfa605fac77d1033b5772d1a87ef0641a49e508ccfd95200e061dde2e2ce4"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift",
+      "bytes": 90951,
+      "sha256": "a8ee7c87c1869baebc8386c4ef3368523c0f42a4f050e0d8d4ff1a8bbd9b9850"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/DeveloperSupportCoordinatorTests.swift",
+      "bytes": 7076,
+      "sha256": "78d6c67d32c574c9ca51509f8715450bee6a2ef1051fa61faa5aa5dce5c269de"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/DevelopmentCLIEngineTests.swift",
+      "bytes": 2108,
+      "sha256": "bb7bc9662817f36ce6c9f3cf6f647cc4b019597ca3fa8c46a334631cf5d2abbf"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/DeviceSelectionPolicyTests.swift",
+      "bytes": 3051,
+      "sha256": "5b9409813edebfffde9da3d3bece048e3fee864dc1ab1dbd205f4b97dc36b5b8"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/DoctorStatusTests.swift",
+      "bytes": 4867,
+      "sha256": "ce4c68e8c4300265ff6038312705d6c814d92872feb6eaf788867b3de962c258"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/Fixtures/apple_srp_reference.py",
+      "bytes": 5285,
+      "sha256": "d2ff8bd3432b6338794b316667f8d0e1ce316351b6b37295cdca6d33af0135ff"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/LocalDevVPNSetupCoordinatorTests.swift",
+      "bytes": 5674,
+      "sha256": "fb5156d0f3445481c7d8e02fd08372dfd84470857b61acebaa0c9f15639f522a"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/MacAssistedRenewalTests.swift",
+      "bytes": 2295,
+      "sha256": "e88afe250003ec38fdcdad63e85733687328254115c2e285aaf6928fa91c78d7"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/NativeApplicationManagementTests.swift",
+      "bytes": 9855,
+      "sha256": "316f329644cb196c072893943ef7ad15cda219f79ab94b01cec77a01147bdb8a"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/NativeDeviceBridgeTests.swift",
+      "bytes": 10179,
+      "sha256": "62c8d94dbe2406bce9074896eb252075d9c8ebef6bafd1bd2d1ee8fddfb7bed7"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift",
+      "bytes": 38807,
+      "sha256": "3207da9cf2fb9171a9d972946c8c263927fd24e77893097c1b643400f13fa97a"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/PersonalTeamProvisioningPOCTests.swift",
+      "bytes": 15109,
+      "sha256": "662aa6a6dc99c1efeb3ca0bf6a0a5215d8b1fd92f4eeb7b2e99c9cc9c14b0fc9"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ProcessRunnerTests.swift",
+      "bytes": 2350,
+      "sha256": "5d4de7872bc666dd229a20de4a6837862f7d56009b21cea7a444f837bbe0e91b"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift",
+      "bytes": 17564,
+      "sha256": "ec3ac3e181248b3141eb8cd22e38d8b7ec8393a621c68143948ebb23e8ca9baf"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ProvisioningProfileInspectorTests.swift",
+      "bytes": 4171,
+      "sha256": "b70f01608f494b25223386dec4c67a83f917e13d5975152d44e061af11c39231"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/ReadinessRecoveryTests.swift",
+      "bytes": 1851,
+      "sha256": "58425cfb469c3b545e75e035b8c7681c63b00386dcdc3d75a57609d90e41a6b4"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/RemotePairingLifecycleTests.swift",
+      "bytes": 6305,
+      "sha256": "70f685ee47049552cec69dfd9afc92a721d4bb80233494e1b334d21b0271572e"
+    },
+    {
+      "path": "macos/Tests/IOSSimMacCoreTests/SetupStoreTests.swift",
+      "bytes": 42014,
+      "sha256": "e186503cfb522e36328553347513a2c57e2c194d2b1ae0da2f6addc8d4014965"
+    },
+    {
+      "path": "macos/ThirdPartyNotices/BigInt-LICENSE.txt",
+      "bytes": 1066,
+      "sha256": "662e7904b2338ddd894f307907df28b4694ee4969ff0a58611eff328686ab3f3"
+    },
+    {
+      "path": "macos/scripts/build_app.sh",
+      "bytes": 9570,
+      "sha256": "453adc88426fc1ae279ba031ae23b1a2e0abb19718197553b7d97e4a6a4e9165"
+    },
+    {
+      "path": "native/iossim-device-bridge/Cargo.lock",
+      "bytes": 49478,
+      "sha256": "75a1d322e6018f56032dbad6ffedc2bf82ccdddb968cd1b6a915a7506650b542"
+    },
+    {
+      "path": "native/iossim-device-bridge/Cargo.toml",
+      "bytes": 747,
+      "sha256": "4e2ea6a3701820a8afa74af485a2f24576262293711ff42ae76077d5f2e76cb8"
+    },
+    {
+      "path": "native/iossim-device-bridge/LICENSE-THIRD-PARTY.md",
+      "bytes": 443,
+      "sha256": "60875a34912d868a26b557be6aa037ef46c64179fe473a2dcb3107a4ca8e3cae"
+    },
+    {
+      "path": "native/iossim-device-bridge/README.md",
+      "bytes": 888,
+      "sha256": "2cdb32a8271bf1051663470d3b9bf85bc9729bbf59d7ff5910d83ff6486e858e"
+    },
+    {
+      "path": "native/iossim-device-bridge/include/iossim_device_bridge.h",
+      "bytes": 4335,
+      "sha256": "6031469212380a9287adb9327e4f1fda2b5cd8f2ff1b078c31ec2728e390d03a"
+    },
+    {
+      "path": "native/iossim-device-bridge/src/lib.rs",
+      "bytes": 57741,
+      "sha256": "6dacec485df7309ff832dc5812a548a26f0a77fad6e9cd6871bd22f738533807"
+    },
+    {
+      "path": "research/01_driving_signal_audit.md",
+      "bytes": 12949,
+      "sha256": "d36bece5f238ebf192cff1dd4128d280ab437d2ae97d1d2d5a421f2276b87726"
+    },
+    {
+      "path": "research/02_driving_classification_feasibility.md",
+      "bytes": 26189,
+      "sha256": "1214104203fb005f43ac4d98f10ab0461d5d042994b68b01c27039e47c491be8"
+    },
+    {
+      "path": "research/03_commercial_spoofers_analysis.md",
+      "bytes": 10004,
+      "sha256": "bae9188995e9ce0dcf1f452013a509c0f5534e662ccc015b2015941de39b3693"
+    },
+    {
+      "path": "research/04_bluetooth_gps_emulation.md",
+      "bytes": 8211,
+      "sha256": "1afaaaf29f218f7a2aa76093a6a0f4e3355706dea296defc27fecdd8927503c6"
+    },
+    {
+      "path": "research/05_pymobiledevice3_protocol_audit.md",
+      "bytes": 11208,
+      "sha256": "b7c3a7e4d640cef43689b4519e221fe73257bdf25a198af4afa9dc59bb6b3e72"
+    },
+    {
+      "path": "research/06_life360_detection_gate_analysis.md",
+      "bytes": 9383,
+      "sha256": "2e2b7abbce609ccb8ff828ff75e79eb7016e903a11150cc5fa26d7da266c632f"
+    },
+    {
+      "path": "research/07_synthesis_and_verdict.md",
+      "bytes": 11810,
+      "sha256": "0c6e0d5f9c3866cd9df44777b5d9f1cf9512b316fda6c78bd968713faf19002b"
+    },
+    {
+      "path": "research/08_ios_simulation_research.md",
+      "bytes": 4688,
+      "sha256": "df781aca60cd73b09e3edcf6e0a57197f69c611b0bdfed8b6bafeb22c515957d"
+    },
+    {
+      "path": "research/README.md",
+      "bytes": 4608,
+      "sha256": "c959aae2e1ce0a90e454bc9abb93b2545409edb6ad9ec03af832dc347bb8e002"
+    },
+    {
+      "path": "run_all.ps1",
+      "bytes": 941,
+      "sha256": "2b119a20ff19722060ff15346d3ea40282832d9d1b0e241ff8a86bf1b002abd3"
+    },
+    {
+      "path": "scripts/bootstrap/iossim_cli.py",
+      "bytes": 151992,
+      "sha256": "508bf7055288bf6cf43c805e54deea4c6add370c8fe68d0e74895c378d5b5b37"
+    },
+    {
+      "path": "scripts/checks/check_bundle_identifiers.py",
+      "bytes": 2268,
+      "sha256": "25d2bc18412cd6ca45e30b34be54ec415460179aca96bc90c1459efd8b2b0b9b"
+    },
+    {
+      "path": "scripts/checks/check_no_xcode_consumer_runtime.py",
+      "bytes": 5882,
+      "sha256": "3ae3e3d88033fdc15c2e5f7ab8c810058f5ca6c1c6bce76ca2ed196de43bdb33"
+    },
+    {
+      "path": "scripts/checks/check_no_xcode_install_routing.py",
+      "bytes": 3629,
+      "sha256": "daed55f39faf8757cc3ae3392d166478b3e6deef30f3ee35a2eb9bd49625c024"
+    },
+    {
+      "path": "scripts/checks/test_device_discovery_cli.py",
+      "bytes": 3368,
+      "sha256": "67a99ff67a7b7c3d1ea638b124705500e5a96df7fa5a6c8b3fdfb18c771fb596"
+    },
+    {
+      "path": "start.bat",
+      "bytes": 159,
+      "sha256": "9863cf382fb6f4c29a29d518136825336145d024a09290ac2fc68e725a0717e4"
+    }
+  ]
+}

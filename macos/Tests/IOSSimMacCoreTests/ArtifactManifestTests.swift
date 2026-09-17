@@ -11,7 +11,12 @@ final class ArtifactManifestTests: XCTestCase {
             macVersion: "0.1.0",
             buildNumber: "1",
             variant: "PRODUCTION",
-            helperSchemaVersion: 1
+            helperSchemaVersion: 1,
+            payloadSourceHead: "abc123",
+            payloadSourceDirty: true,
+            payloadSourceTreeSHA256: String(repeating: "a", count: 64),
+            payloadBuildTimestamp: "2026-09-05T12:00:00Z",
+            payloadBuildVariant: "DEVICE_PAYLOAD_RELEASE"
         )
 
         let data = try JSONEncoder().encode(release)
@@ -21,13 +26,17 @@ final class ArtifactManifestTests: XCTestCase {
         XCTAssertEqual(decoded.sourceDirty, false)
         XCTAssertEqual(decoded.buildNumber, "1")
         XCTAssertEqual(decoded.variant, "PRODUCTION")
+        XCTAssertEqual(decoded.payloadSourceHead, "abc123")
+        XCTAssertEqual(decoded.payloadSourceDirty, true)
+        XCTAssertEqual(decoded.payloadSourceTreeSHA256, String(repeating: "a", count: 64))
+        XCTAssertEqual(decoded.payloadBuildVariant, "DEVICE_PAYLOAD_RELEASE")
     }
 
     func testManifestDecodingAndChecksumVerification() throws {
         let root = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
         let artifact = root.appendingPathComponent("DeviceArtifacts/IOSSim DVT POC.app")
         let manifest = ArtifactManifest(
-            schemaVersion: 1,
+            schemaVersion: ArtifactManifest.currentSchemaVersion,
             release: ReleaseManifest(sourceCommit: "abc123", buildTimestamp: "2026-09-03T00:00:00Z", macVersion: "0.1", helperSchemaVersion: 1),
             components: [
                 DeviceArtifactComponent(
@@ -51,7 +60,7 @@ final class ArtifactManifestTests: XCTestCase {
     func testCorruptArtifactFailsChecksumVerification() throws {
         let root = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
         let manifest = ArtifactManifest(
-            schemaVersion: 1,
+            schemaVersion: ArtifactManifest.currentSchemaVersion,
             release: ReleaseManifest(sourceCommit: "abc123", buildTimestamp: "2026-09-03T00:00:00Z", macVersion: "0.1", helperSchemaVersion: 1),
             components: [
                 DeviceArtifactComponent(
@@ -74,7 +83,7 @@ final class ArtifactManifestTests: XCTestCase {
         let root = try makeArtifactFixture(bundleIdentifier: "com.example.wrong")
         let artifact = root.appendingPathComponent("DeviceArtifacts/IOSSim DVT POC.app")
         let manifest = ArtifactManifest(
-            schemaVersion: 1,
+            schemaVersion: ArtifactManifest.currentSchemaVersion,
             release: ReleaseManifest(sourceCommit: "abc123", buildTimestamp: "2026-09-03T00:00:00Z", macVersion: "0.1", helperSchemaVersion: 1),
             components: [
                 DeviceArtifactComponent(
@@ -88,6 +97,70 @@ final class ArtifactManifestTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try ArtifactManifestLoader.assertArtifactsVerified(resourcesURL: root, manifest: manifest))
+    }
+
+    func testStalePayloadWithoutRequiredCapabilitiesFailsVerification() throws {
+        let root = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
+        let artifact = root.appendingPathComponent("DeviceArtifacts/IOSSim DVT POC.app")
+        let manifest = ArtifactManifest(
+            schemaVersion: ArtifactManifest.currentSchemaVersion,
+            release: ReleaseManifest(
+                sourceCommit: "bc339b3",
+                buildTimestamp: "2026-09-03T00:00:00Z",
+                macVersion: "0.1",
+                helperSchemaVersion: 1
+            ),
+            components: [
+                DeviceArtifactComponent(
+                    role: "iosMain",
+                    bundleIdentifier: "com.iossim.on-device-dvt-poc",
+                    version: "0.1",
+                    relativePath: "DeviceArtifacts/IOSSim DVT POC.app",
+                    sha256: sha256Tree(artifact)
+                )
+            ],
+            payloadCapabilities: nil
+        )
+
+        XCTAssertThrowsError(try ArtifactManifestLoader.assertArtifactsVerified(resourcesURL: root, manifest: manifest)) { error in
+            guard case ArtifactManifestError.missingPayloadCapability(let name, _, _) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(name, "automaticPairingInbox")
+        }
+    }
+
+    func testStaleManifestSchemaFailsVerification() throws {
+        let root = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
+        let artifact = root.appendingPathComponent("DeviceArtifacts/IOSSim DVT POC.app")
+        let manifest = ArtifactManifest(
+            schemaVersion: ArtifactManifest.currentSchemaVersion - 1,
+            release: ReleaseManifest(
+                sourceCommit: "abc123",
+                buildTimestamp: "2026-09-03T00:00:00Z",
+                macVersion: "0.1",
+                helperSchemaVersion: 1
+            ),
+            components: [
+                DeviceArtifactComponent(
+                    role: "iosMain",
+                    bundleIdentifier: "com.iossim.on-device-dvt-poc",
+                    version: "0.1",
+                    relativePath: "DeviceArtifacts/IOSSim DVT POC.app",
+                    sha256: sha256Tree(artifact)
+                )
+            ]
+        )
+
+        XCTAssertThrowsError(try ArtifactManifestLoader.assertArtifactsVerified(resourcesURL: root, manifest: manifest)) { error in
+            XCTAssertEqual(
+                error as? ArtifactManifestError,
+                .incompatibleManifestSchema(
+                    expected: ArtifactManifest.currentSchemaVersion,
+                    actual: ArtifactManifest.currentSchemaVersion - 1
+                )
+            )
+        }
     }
 
     private func makeArtifactFixture(bundleIdentifier: String) throws -> URL {

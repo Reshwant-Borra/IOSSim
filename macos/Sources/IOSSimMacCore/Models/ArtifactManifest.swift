@@ -2,14 +2,30 @@ import Foundation
 import CryptoKit
 
 public struct ArtifactManifest: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 2
+    public static let currentPayloadCapabilities: [String: Int] = [
+        "automaticPairingInbox": 2,
+        "localDevVPNSetupGate": 2,
+        "pairingReceiptSchema": 2,
+        "richRuntimeProofInbox": 1,
+        "runtimeMappingSchema": 1
+    ]
+
     public let schemaVersion: Int
     public let release: ReleaseManifest
     public let components: [DeviceArtifactComponent]
+    public let payloadCapabilities: [String: Int]?
 
-    public init(schemaVersion: Int, release: ReleaseManifest, components: [DeviceArtifactComponent]) {
+    public init(
+        schemaVersion: Int,
+        release: ReleaseManifest,
+        components: [DeviceArtifactComponent],
+        payloadCapabilities: [String: Int]? = ArtifactManifest.currentPayloadCapabilities
+    ) {
         self.schemaVersion = schemaVersion
         self.release = release
         self.components = components
+        self.payloadCapabilities = payloadCapabilities
     }
 }
 
@@ -21,6 +37,12 @@ public struct ReleaseManifest: Codable, Equatable, Sendable {
     public let buildNumber: String?
     public let variant: String?
     public let helperSchemaVersion: Int
+    public let payloadSourceHead: String?
+    public let payloadSourceDirty: Bool?
+    public let payloadSourceTreeSHA256: String?
+    public let payloadBuildTimestamp: String?
+    public let payloadBuildVariant: String?
+    public let localDevVPN: LocalDevVPNReleaseDependency?
 
     public init(
         sourceCommit: String,
@@ -29,7 +51,13 @@ public struct ReleaseManifest: Codable, Equatable, Sendable {
         macVersion: String,
         buildNumber: String? = nil,
         variant: String? = nil,
-        helperSchemaVersion: Int
+        helperSchemaVersion: Int,
+        payloadSourceHead: String? = nil,
+        payloadSourceDirty: Bool? = nil,
+        payloadSourceTreeSHA256: String? = nil,
+        payloadBuildTimestamp: String? = nil,
+        payloadBuildVariant: String? = nil,
+        localDevVPN: LocalDevVPNReleaseDependency? = .current
     ) {
         self.sourceCommit = sourceCommit
         self.sourceDirty = sourceDirty
@@ -38,7 +66,31 @@ public struct ReleaseManifest: Codable, Equatable, Sendable {
         self.buildNumber = buildNumber
         self.variant = variant
         self.helperSchemaVersion = helperSchemaVersion
+        self.payloadSourceHead = payloadSourceHead
+        self.payloadSourceDirty = payloadSourceDirty
+        self.payloadSourceTreeSHA256 = payloadSourceTreeSHA256
+        self.payloadBuildTimestamp = payloadBuildTimestamp
+        self.payloadBuildVariant = payloadBuildVariant
+        self.localDevVPN = localDevVPN
     }
+}
+
+public struct LocalDevVPNReleaseDependency: Codable, Equatable, Sendable {
+    public static let current = LocalDevVPNReleaseDependency(
+        bundleIdentifier: "com.jkcoxson.LocalDevVPN",
+        appStoreIdentifier: "6755608044",
+        minimumVersion: "1.0.0",
+        observedAppStoreVersion: "1.3.0",
+        physicallyTestedVersions: [],
+        setupProtocolSchema: 2
+    )
+
+    public let bundleIdentifier: String
+    public let appStoreIdentifier: String
+    public let minimumVersion: String
+    public let observedAppStoreVersion: String
+    public let physicallyTestedVersions: [String]
+    public let setupProtocolSchema: Int
 }
 
 public struct DeviceArtifactComponent: Codable, Equatable, Sendable, Identifiable {
@@ -49,6 +101,7 @@ public struct DeviceArtifactComponent: Codable, Equatable, Sendable, Identifiabl
     public let relativePath: String
     public let sha256: String
     public let signingMode: String?
+    public let expectedTeamIdentifier: String?
 
     public init(
         role: String,
@@ -56,7 +109,8 @@ public struct DeviceArtifactComponent: Codable, Equatable, Sendable, Identifiabl
         version: String,
         relativePath: String,
         sha256: String,
-        signingMode: String? = nil
+        signingMode: String? = nil,
+        expectedTeamIdentifier: String? = nil
     ) {
         self.role = role
         self.bundleIdentifier = bundleIdentifier
@@ -64,6 +118,7 @@ public struct DeviceArtifactComponent: Codable, Equatable, Sendable, Identifiabl
         self.relativePath = relativePath
         self.sha256 = sha256
         self.signingMode = signingMode
+        self.expectedTeamIdentifier = expectedTeamIdentifier
     }
 }
 
@@ -93,14 +148,18 @@ public struct ArtifactVerificationResult: Codable, Equatable, Sendable {
 }
 
 public enum ArtifactManifestError: Error, Equatable, Sendable, CustomStringConvertible {
+    case incompatibleManifestSchema(expected: Int, actual: Int)
     case missingManifest(URL)
     case missingArtifact(String)
     case unreadableArtifact(String)
     case checksumMismatch(String)
     case invalidBundleIdentifier(role: String, expected: String, actual: String?)
+    case missingPayloadCapability(name: String, required: Int, actual: Int?)
 
     public var description: String {
         switch self {
+        case .incompatibleManifestSchema(let expected, let actual):
+            return "Artifact manifest schema is \(actual), expected \(expected)."
         case .missingManifest(let url):
             return "Artifact manifest is missing at \(url.path)."
         case .missingArtifact(let path):
@@ -111,6 +170,8 @@ public enum ArtifactManifestError: Error, Equatable, Sendable, CustomStringConve
             return "Bundled artifact checksum mismatch: \(path)."
         case .invalidBundleIdentifier(let role, let expected, let actual):
             return "Bundled artifact \(role) has bundle identifier \(actual ?? "missing"), expected \(expected)."
+        case .missingPayloadCapability(let name, let required, let actual):
+            return "Bundled payload capability \(name) is \(actual.map(String.init) ?? "missing"), required >= \(required)."
         }
     }
 }
@@ -182,6 +243,12 @@ public enum ArtifactManifestLoader {
     }
 
     public static func assertArtifactsVerified(resourcesURL: URL, manifest: ArtifactManifest) throws {
+        guard manifest.schemaVersion == ArtifactManifest.currentSchemaVersion else {
+            throw ArtifactManifestError.incompatibleManifestSchema(
+                expected: ArtifactManifest.currentSchemaVersion,
+                actual: manifest.schemaVersion
+            )
+        }
         for result in verify(resourcesURL: resourcesURL, manifest: manifest) where result.state != .pass {
             switch result.detail {
             case "missing":
@@ -193,6 +260,20 @@ public enum ArtifactManifestLoader {
             }
         }
         try assertValidBundleIdentifiers(resourcesURL: resourcesURL, manifest: manifest)
+        try assertCurrentPayloadCapabilities(manifest: manifest)
+    }
+
+    public static func assertCurrentPayloadCapabilities(manifest: ArtifactManifest) throws {
+        for (name, required) in ArtifactManifest.currentPayloadCapabilities.sorted(by: { $0.key < $1.key }) {
+            let actual = manifest.payloadCapabilities?[name]
+            guard let actual, actual >= required else {
+                throw ArtifactManifestError.missingPayloadCapability(
+                    name: name,
+                    required: required,
+                    actual: actual
+                )
+            }
+        }
     }
 
     private static func sha256(url: URL) -> String? {

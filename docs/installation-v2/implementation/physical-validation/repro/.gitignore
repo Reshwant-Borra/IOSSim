@@ -1,0 +1,5 @@
+# Compiled reproduction probes are rebuilt on demand; only sources are tracked.
+acl_probe
+e2e_probe
+codesign_auth_probe
+*.log

@@ -1,0 +1,740 @@
+Read-only source search at IOSSim 0a18e986f40fd877a1aab1e91e4c6a87217c7c81, 2026-09-14.
+Binary assets, generated caches, node_modules and untracked Rust target output excluded; tools has no source outside target.
+Search is intentionally broad: hits in documentation/tests are not executable consumer dependencies.
+
+./scripts/bootstrap/iossim_cli.py:312:        print_step("ACTION", "Accept the Xcode license", "open Xcode once or run sudo xcodebuild -license")
+./scripts/bootstrap/iossim_cli.py:316:        print_step("ACTION", "Install/select full Xcode", "xcode-select must point at Xcode.app")
+./scripts/bootstrap/iossim_cli.py:450:def xcodebuild_args(*parts: str) -> list[str]:
+./scripts/bootstrap/iossim_cli.py:451:    args = ["xcodebuild", "-project", str(IOS_PROJECT), *parts, "-derivedDataPath", str(DERIVED_DATA)]
+./scripts/bootstrap/iossim_cli.py:496:    if not command_exists("xcodebuild"):
+./scripts/bootstrap/iossim_cli.py:497:        report.add("ACTION", "Xcode", "xcodebuild", "missing", "Install Xcode from Apple and launch it once.", "build")
+./scripts/bootstrap/iossim_cli.py:499:    selected = runner.run("xcode-select", ["xcode-select", "-p"], check=False)
+./scripts/bootstrap/iossim_cli.py:501:        report.add("PASS", "Xcode", "xcode-select path", selected.stdout.strip())
+./scripts/bootstrap/iossim_cli.py:503:        report.add("ACTION", "Xcode", "xcode-select path", "not configured", "Run sudo xcode-select -s /Applications/Xcode.app.", "build")
+./scripts/bootstrap/iossim_cli.py:504:    version = runner.run("xcodebuild-version", ["xcodebuild", "-version"], check=False)
+./scripts/bootstrap/iossim_cli.py:511:        report.add("ACTION", "Xcode", "Xcode license/tools", "xcodebuild failed", "Open Xcode once and accept required prompts.", "build")
+./scripts/bootstrap/iossim_cli.py:512:    sdk = runner.run("iphoneos-sdk", ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], check=False)
+./scripts/bootstrap/iossim_cli.py:601:    listed = runner.run("xcodebuild-list", ["xcodebuild", "-list", "-project", str(IOS_PROJECT)], check=False) if command_exists("xcodebuild") else None
+./scripts/bootstrap/iossim_cli.py:609:        report.add("SKIP", "Xcode", "required schemes", "xcodebuild unavailable")
+./scripts/bootstrap/iossim_cli.py:697:            report.add("PASS", "Device", "CoreDevice tunnel", "connected", "", "device")
+./scripts/bootstrap/iossim_cli.py:699:            report.add("WARN", "Device", "CoreDevice tunnel", tunnel or "unknown", "", "device")
+./scripts/bootstrap/iossim_cli.py:703:    if not command_exists("xcrun"):
+./scripts/bootstrap/iossim_cli.py:708:            "devicectl-list-devices",
+./scripts/bootstrap/iossim_cli.py:709:            ["xcrun", "devicectl", "list", "devices", "--timeout", "8", "--json-output", str(json_path), "--quiet"],
+./scripts/bootstrap/iossim_cli.py:866:        f"xcodebuild-iossim-{configuration.lower()}",
+./scripts/bootstrap/iossim_cli.py:867:        xcodebuild_args(
+./scripts/bootstrap/iossim_cli.py:882:        f"xcodebuild-xcuilocation-runner-{configuration.lower()}",
+./scripts/bootstrap/iossim_cli.py:883:        xcodebuild_args(
+./scripts/bootstrap/iossim_cli.py:1145:        ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"],
+./scripts/bootstrap/iossim_cli.py:1151:        raise RuntimeError("the macOS SDK could not be resolved with xcrun")
+./scripts/bootstrap/iossim_cli.py:1706:            "/usr/bin/xcrun", "notarytool", "history",
+./scripts/bootstrap/iossim_cli.py:1730:            "/usr/bin/xcrun", "notarytool", "submit", str(path),
+./scripts/bootstrap/iossim_cli.py:1758:                "/usr/bin/xcrun", "notarytool", "log", submission_id,
+./scripts/bootstrap/iossim_cli.py:1779:    runner.run(f"staple-{label}", ["/usr/bin/xcrun", "stapler", "staple", "-v", str(path)])
+./scripts/bootstrap/iossim_cli.py:1780:    runner.run(f"stapler-validate-{label}", ["/usr/bin/xcrun", "stapler", "validate", "-v", str(path)])
+./scripts/bootstrap/iossim_cli.py:2348:        ["/usr/bin/xcrun", "stapler", "validate", "-v", str(dmg_path)],
+./scripts/bootstrap/iossim_cli.py:2419:                ["/usr/bin/xcrun", "stapler", "validate", "-v", str(app_dir)],
+./scripts/bootstrap/iossim_cli.py:2625:            ["xcrun", "devicectl", "device", "install", "app", "--device", str(raw_id), str(app), "--timeout", "60", "--quiet"],
+./scripts/bootstrap/iossim_cli.py:2663:        ("xcrun/devicectl", "runtime", "Apple developer tools", "current Xcode path", "no", "install/select Apple developer tools", "IOSSimProvisioner device-status --json"),
+./scripts/bootstrap/iossim_cli.py:2664:        ("Xcode/xcodebuild", "build-time", "Apple", "15.0+", "yes from packaged runtime", "build machine only", "./iossim package-app"),
+./RUN_EVERYTHING.ps1:29:    $patterns = @("uvicorn", "vite", "pymobiledevice3", "simulate-location")
+./RUN_EVERYTHING.ps1:34:        $isLocation = $cmd -like "*pymobiledevice3*" -and $cmd -like "*simulate-location*"
+./.gitignore:28:ios/Vendor/idevice/*.mobiledevicepairing
+./.gitignore:29:ios/Vendor/idevice/*.mobiledevicepair
+./STABILITY.md:9:- USB device detection through pymobiledevice3/usbmux.
+./STABILITY.md:10:- Developer Disk Image mount through `pymobiledevice3 mounter auto-mount`.
+./STABILITY.md:64:1. `python -m pymobiledevice3 usbmux list` sees the device.
+./RUN_EVERYTHING.sh:32:    pids="$pids $(pgrep -f "pymobiledevice3 .*simulate-location" 2>/dev/null || true)"
+./docs/PHYSICAL_VALIDATION.md:41:| Developer-profile trust treated as failure | Installed app could not launch until Settings trust was completed | `ConsumerArtifactProvisioner.launchMain` classified the structured untrusted-developer launch failure as generic runtime failure. | Structured CoreDevice/FBS trust error maps to `DEVELOPER_PROFILE_TRUST_REQUIRED`; Continue retries only launch/trust verification. |
+./docs/PHYSICAL_VALIDATION.md:47:CoreDeviceError error 10002
+./docs/PHYSICAL_VALIDATION.md:88:| Main install | `devicectl device install app` | PROVEN via tests/mocks | PROVEN by package/audit | PROVEN | UNPROVEN | UNPROVEN |
+./docs/PHYSICAL_VALIDATION.md:89:| Runner install | `devicectl device install app` | PROVEN via tests/mocks | PROVEN by package/audit | PROVEN | UNPROVEN | UNPROVEN |
+./docs/PHYSICAL_VALIDATION.md:90:| Inventory verification | `devicectl device info apps` bounded retry | PROVEN | PROVEN | PROVEN capable; current stabilized policy pending retest | UNPROVEN | UNPROVEN |
+./ios/DEPENDENCIES.md:45:## pymobiledevice3
+./SETUP_FROM_SCRATCH.md:24:For iOS 17 and newer, the backend needs Administrator privileges because it starts the pymobiledevice3 tunnel.
+./SETUP_FROM_SCRATCH.md:42:Verify pymobiledevice3 can see the phone:
+./SETUP_FROM_SCRATCH.md:45:python -m pymobiledevice3 usbmux list
+./SETUP_FROM_SCRATCH.md:152:- **No device connected:** reconnect USB, unlock the iPhone, trust the computer, and verify `python -m pymobiledevice3 usbmux list`.
+./SETUP_FROM_SCRATCH.md:154:- **Set Location only flashes briefly:** the backend must stay open because the spoof is tied to a long-lived pymobiledevice3 process.
+./frontend/src/api/client.ts:291:  pymobiledevice3_importable?: boolean
+./frontend/src/api/client.ts:292:  pymobiledevice3_version?: string | null
+./docs/wireless_testing/README.md:20:Do not generalize that to every device, iOS version, network, or future pymobiledevice3 version.
+./docs/wireless_testing/README.md:60:6. IOSSim enables lockdown Wi-Fi connections using the syntax supported by the installed pymobiledevice3.
+./docs/wireless_testing/README.md:64:On the physical macOS test host with pymobiledevice3 10.7.4, IOSSim detected and uses:
+./docs/wireless_testing/README.md:67:python -m pymobiledevice3 lockdown remotepairing --pair [--udid UDID]
+./docs/wireless_testing/README.md:68:python -m pymobiledevice3 lockdown wifi-connections --state on [--udid UDID]
+./docs/wireless_testing/README.md:85:## Verified pymobiledevice3 10.7.4 Command Shapes
+./docs/wireless_testing/README.md:90:python -m pymobiledevice3 usbmux list --usb
+./docs/wireless_testing/README.md:91:python -m pymobiledevice3 usbmux list --network
+./docs/wireless_testing/README.md:92:python -m pymobiledevice3 remote browse --timeout 2
+./docs/wireless_testing/README.md:93:python -m pymobiledevice3 bonjour remotepairing --timeout 2
+./docs/wireless_testing/README.md:94:python -m pymobiledevice3 bonjour rsd
+./docs/wireless_testing/README.md:95:python -m pymobiledevice3 bonjour mobdev2 --timeout 2
+./docs/wireless_testing/README.md:96:python -m pymobiledevice3 lockdown remotepairing --pair [--udid UDID]
+./docs/wireless_testing/README.md:97:python -m pymobiledevice3 lockdown wifi-connections --state on [--udid UDID]
+./docs/wireless_testing/README.md:98:python -m pymobiledevice3 remote start-tunnel --connection-type wifi --script-mode [--udid UDID] --protocol quic
+./docs/wireless_testing/README.md:99:python -m pymobiledevice3 remote start-tunnel --connection-type wifi --script-mode [--udid UDID] --protocol tcp
+./docs/wireless_testing/README.md:100:python -m pymobiledevice3 remote rsd-info --rsd HOST PORT
+./docs/wireless_testing/README.md:101:python -m pymobiledevice3 developer dvt simulate-location set --rsd HOST PORT -- LAT LON
+./docs/wireless_testing/README.md:102:python -m pymobiledevice3 developer dvt simulate-location clear --rsd HOST PORT
+./docs/wireless_testing/README.md:105:For the installed 10.7.4 CLI, `lockdown wifi-connections --help` shows `--state <on|off>`, so IOSSim uses `--state on`. Do not substitute syntax from another pymobiledevice3 version without rechecking `--help`.
+./docs/wireless_testing/README.md:131:- Forcing TCP could crash the pymobiledevice3 process with a shell-reported `bus error`.
+./docs/wireless_testing/README.md:240:- QUIC/TCP tunnel failures can be pymobiledevice3 or Apple protocol behavior, not proof that wireless discovery is impossible.
+./macos/Sources/IOSSimProvisioner/main.swift:176:            if ProvisioningBackendKind.selected() == .devicectl && RuntimeProvisioning.devicectlForbidden() {
+./macos/Sources/IOSSimProvisioner/main.swift:177:                fputs("DEVICETCTL_FORBIDDEN: devicectl backend is disabled for this run.\n", stderr)
+./macos/Sources/IOSSimProvisioner/main.swift:253:        var devicectlResult: ProcessResult?
+./macos/Sources/IOSSimProvisioner/main.swift:256:                executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+./macos/Sources/IOSSimProvisioner/main.swift:261:            devicectlResult = try? await context.runner.run(
+./macos/Sources/IOSSimProvisioner/main.swift:262:                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+./macos/Sources/IOSSimProvisioner/main.swift:263:                arguments: ["--find", "devicectl"],
+./macos/Sources/IOSSimProvisioner/main.swift:269:        let devicectlUnavailable = RuntimeProvisioning.xcrunURL() == nil
+./macos/Sources/IOSSimProvisioner/main.swift:270:            || RuntimeProvisioning.devicectlForbidden()
+./macos/Sources/IOSSimProvisioner/main.swift:271:            || devicectlResult?.exitCode != 0
+./macos/Sources/IOSSimProvisioner/main.swift:273:            && (!usesXcodeBackend || (fullXcodeAvailable && !devicectlUnavailable))
+./macos/Sources/IOSSimProvisioner/main.swift:415:                    name: "CoreDevice tunnel",
+./ios/Vendor/idevice/patches/0001-gate2-supplied-rsd-xctest-ffi.patch:791: /// For iOS 17+ tries `CoreDeviceProxy` + RSD first. Falls back to lockdown
+./ios/Vendor/idevice/patches/0001-gate2-supplied-rsd-xctest-ffi.patch:866:+    /// second CoreDeviceProxy/software tunnel.
+./docs/RELEASE_AND_DISTRIBUTION.md:73:because setup invokes `/usr/bin/xcrun devicectl` / CoreDevice for physical device
+./docs/RELEASE_AND_DISTRIBUTION.md:80:| `/usr/bin/xcrun devicectl list devices` | Device discovery and exact selected-device resolution |
+./docs/RELEASE_AND_DISTRIBUTION.md:81:| `/usr/bin/xcrun devicectl device info lockState` | Lock-state/live-device check |
+./docs/RELEASE_AND_DISTRIBUTION.md:82:| `/usr/bin/xcrun devicectl device install app` | Main and runner installation |
+./docs/RELEASE_AND_DISTRIBUTION.md:83:| `/usr/bin/xcrun devicectl device info apps` | Authoritative installed-app inventory |
+./docs/RELEASE_AND_DISTRIBUTION.md:84:| `/usr/bin/xcrun devicectl device process launch` | Developer-profile trust/runtime mapping launch check |
+./docs/RELEASE_AND_DISTRIBUTION.md:85:| `/usr/bin/xcrun devicectl device copy from` | Runtime configuration readback |
+./docs/RELEASE_AND_DISTRIBUTION.md:88:| `/usr/bin/xcodebuild` through `xcrun xcodebuild` | Compatibility Xcode fallback signing shell only; native Personal Team path does not use it for current prepared profiles |
+./docs/RELEASE_AND_DISTRIBUTION.md:90:`DEVELOPER_DIR` is preserved from the environment when set; otherwise the system
+./docs/RELEASE_AND_DISTRIBUTION.md:91:developer directory selected for `xcrun` is used.
+./docs/RELEASE_AND_DISTRIBUTION.md:116:Path A: keep `devicectl`.
+./docs/RELEASE_AND_DISTRIBUTION.md:119:it is enough, keeping `devicectl` may be acceptable. Benefits are Apple-supported
+./docs/RELEASE_AND_DISTRIBUTION.md:122:Path B: replace `devicectl`.
+./docs/RELEASE_AND_DISTRIBUTION.md:124:If Xcode must be opened/configured, license prompts block the flow, or CoreDevice
+./docs/RELEASE_AND_DISTRIBUTION.md:138:- decision on `devicectl` versus native idevice/AFC/InstallationProxy;
+./docs/CURRENT_STATE.md:38:| Does Xcode need to be installed right now? | Yes. Current physical device operations still use Apple's `xcrun devicectl` / CoreDevice tooling supplied with Xcode. |
+./docs/CURRENT_STATE.md:72:  -> Apple Personal Team services, Keychain, codesign, xcrun devicectl
+./docs/CURRENT_STATE.md:104:to keep or replace `devicectl`, test profile refresh/expiry, then complete
+./frontend/src/components/wireless-testing/WirelessTestingLab.tsx:477:        <Readout label="pymobiledevice3" value={String(status?.capabilities.pymobiledevice3_version ?? 'UNKNOWN')} />
+./frontend/src/components/wireless-testing/WirelessTestingLab.tsx:485:      <div style={sectionTitle}>Confirmed pymobiledevice3 Command Categories</div>
+./docs/mac-host/PRODUCTION_RELEASE.md:12:`SwiftUI -> IOSSimMacCore -> BundledProvisioningEngine -> IOSSimProvisioner -> Xcode/codesign/devicectl`
+./docs/mac-host/PRODUCTION_RELEASE.md:38:The DMG-installed app does not require Git, Python, Node, Rust, repository scripts, a source checkout, or development environment variables. Xcode remains a product prerequisite because it creates Personal Team profiles and provides `codesign` and `devicectl` for the proven consumer provisioning path.
+./docs/mac-host/ZERO_XCODE_PROVISIONING.md:62:Xcode 26.6's local `xcodebuild -help` says:
+./docs/mac-host/ZERO_XCODE_PROVISIONING.md:73:No supported `xcodebuild` option, public Xcode API, macOS authorization
+./docs/mac-host/ZERO_XCODE_PROVISIONING.md:150:| Full Xcode | SDK/platform, stored account, signing, CoreDevice | PATH A hidden dependency | Acceptable only if initial account auth becomes headless; currently blocked |
+./docs/mac-host/ZERO_XCODE_PROVISIONING.md:151:| `xcodebuild` | IDs, certs, device, profiles | XCODE_INVISIBLE candidate / DEVELOPMENT FALLBACK | Fully automates after supported account or API-key auth exists |
+./docs/mac-host/ZERO_XCODE_PROVISIONING.md:152:| `xcrun`/`devicectl` | device operations | Allowed for XCODE_INVISIBLE; remove for native | Pinned idevice bridge |
+./docs/mac-host/ZERO_XCODE_PROVISIONING.md:258:| Native signing/install/pair | Native signing and `devicectl` install are proven on current Mac/iPhone; native macOS idevice install backend remains unimplemented |
+./frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx:43:    pymobiledevice3_importable: true,
+./frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx:44:    pymobiledevice3_version: '10.7.4',
+./frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx:47:      remote_browse: { available: true, command: ['python', '-m', 'pymobiledevice3', 'remote', 'browse', '--timeout', '2'] },
+./frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx:48:      remote_start_tunnel: { available: true, command: ['python', '-m', 'pymobiledevice3', 'remote', 'start-tunnel', '--connection-type', 'wifi', '--script-mode'] },
+./frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx:49:      lockdown_remotepairing: { available: true, command: ['python', '-m', 'pymobiledevice3', 'lockdown', 'remotepairing', '--pair'] },
+./frontend/src/components/wireless-testing/WirelessTestingLab.test.tsx:50:      lockdown_wifi_connections: { available: true, command: ['python', '-m', 'pymobiledevice3', 'lockdown', 'wifi-connections', '--state', 'on'] },
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:140:- `testGate1NoXcodebuildRichLocationWitnessProof` when `IOSSIM_GATE1_RICH_LOCATION_ONLY=1`
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:145:xcodebuild \
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:158:xcodebuild \
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:171:xcodebuild \
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:210:## Gate 1: No-Xcodebuild XCUITest Runner Launch
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:237:- The runner was refreshed with `xcodebuild build-for-testing` and installed with `xcrun devicectl device install app`.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:238:- Runtime execution did not use `xcodebuild test`, Xcode Test, or normal Xcode XCTest orchestration.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:242:backend/.venv/bin/python -m pymobiledevice3 -vv developer dvt xcuitest \
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:250:- `pymobiledevice3 10.7.4` established userspace RSD.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:257:- Test plan began, `testGate1NoXcodebuildRichLocationWitnessProof` ran, and all non-Gate-1 tests were skipped by environment guard.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:281:- For iOS 17+, the audited `idevice` path creates a `CoreDeviceProxy` software tunnel and then opens RSD services, rather than accepting a caller-supplied already-open IOSSim RSD connection.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:283:- Local `pymobiledevice3` exposes the equivalent audited CLI path at `developer dvt xcuitest`; that path was used for the physical Gate 1 run.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:287:- The pinned Rust `XCUITestService` protocol implementation is likely reusable for a native Gate 2/3 launcher, because the physical `pymobiledevice3` run proved the service sequence on the target iOS 26.6 device and the audited Rust implementation follows the same sequence.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:288:- `CoreDeviceProxy` is not a Gate 1 blocker. For on-device IOSSim, it is an integration boundary because IOSSim already owns a working RSD provider through LocalDevVPN/RPPairing.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:289:- Existing IOSSim RSD should be able to substitute for a newly-created `CoreDeviceProxy` tunnel if the Rust XCTest layer is refactored to accept a caller-supplied RSD service connector.
+./docs/iphone_on_device_dvt/APPLE_LOCATION_CONTROLS_V2.md:295:- `pymobiledevice3 --mobdev2` did not run in this host state because no matching pymobiledevice3 pairing record was available for its discovered network candidates; this failed before RSD setup.
+./docs/mac-host/PERSONAL_TEAM_PROVISIONING_POC.md:28:The normal install backend remains `devicectl`. Replacing `devicectl` or solving
+./macos/Sources/IOSSimMacCore/Services/ConsumerProvisioningBackend.swift:282:    /// Pure filesystem inspection. It never invokes xcode-select, xcrun, or
+./docs/iphone_on_device_dvt/24_IDEVICE_IOS_BUILD_NOTES.md:29:xcodebuild -runFirstLaunch
+./docs/iphone_on_device_dvt/24_IDEVICE_IOS_BUILD_NOTES.md:30:xcodebuild -downloadPlatform iOS
+./docs/iphone_on_device_dvt/24_IDEVICE_IOS_BUILD_NOTES.md:33:`xcodebuild -downloadPlatform iOS` installed iOS 26.5 platform content required by destination resolution.
+./docs/iphone_on_device_dvt/24_IDEVICE_IOS_BUILD_NOTES.md:153:xcodebuild -project ios/IOSSimOnDevicePOC.xcodeproj \
+./docs/iphone_on_device_dvt/24_IDEVICE_IOS_BUILD_NOTES.md:168:No physical iPhone was visible to `xcrun devicectl list devices` during this run, so install was not attempted.
+./docs/mac-host/PRODUCTION_VS_DEVELOPMENT.md:27:`devicectl`. The current native Personal Team path collects Apple Account
+./docs/drive_testing/01_EXISTING_ARCHITECTURE.md:10:-> pymobiledevice3 DVT simulate-location
+./frontend/src/components/drive-testing/ProfilePanel.tsx:50:        <div style={{ ...notice('info'), marginTop: 10 }}>GPX timestamps control pymobiledevice3 host pacing only. They do not inject CLLocation.speed or CLLocation.course.</div>
+./macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamDiscovery.swift:166:            home.appendingPathComponent("Library/MobileDevice/Provisioning Profiles", isDirectory: true)
+./docs/iphone_on_device_dvt/06_LOCUS_AUDIT.md:22:- It accepts `.plist`, `.mobiledevicepairing`, `.mobiledevicepair`, and a custom UTI.
+./docs/drive_testing/03_TECHNICAL_LIMITS.md:19:Static DVT set accepts latitude and longitude only. GPX `<time>` elements control pymobiledevice3 sleeps on the host and are not transmitted as location metadata. GPX per-coordinate subprocess writes are opaque to IOSSim, so those runs receive incomplete telemetry rather than invented write metrics.
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:29:        inventoryReader: any DeviceApplicationInventoryReading = DevicectlApplicationInventoryReader(),
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:121:                        developerDetail: "Hardware UDID could not be resolved from the selected CoreDevice identifier."
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:536:                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:538:                    "devicectl", "device", "uninstall", "app",
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:777:        let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:779:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:1123:            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:1125:                "devicectl", "device", "process", "launch",
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:1219:                executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:1221:                    "devicectl", "device", "copy", "from",
+./macos/Sources/IOSSimMacCore/Services/ConsumerArtifactProvisioner.swift:1763:            "xcodebuild",
+./frontend/src/components/drive-testing/DriveTestingHelp.tsx:6:    <section style={section}><div style={sectionTitle}>Drive Testing Lab Limits</div><div style={notice('warning')}>Results are observations, not guarantees of third-party classification. Use only authorized devices and test accounts.</div><ul style={{ margin: '12px 0 0 18px', lineHeight: 1.7, fontSize: 13 }}><li>The computer sends coordinate sequences through the existing pymobiledevice3 DVT path.</li><li>Nothing is installed on the iPhone.</li><li>Static DVT commands contain latitude and longitude only.</li><li>GPX timestamps pace host-side playback and do not inject CLLocation.speed.</li><li>IOSSim cannot control or read Core Motion, accelerometer, gyroscope, Arity confidence, or third-party internal trip state.</li><li>External outcomes must be checked and entered manually.</li></ul></section>
+./docs/iphone_on_device_dvt/15_IMPLEMENTATION_OPTIONS.md:51:## Option E - Use pymobiledevice3
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:9:No-devicectl runtime: partial. The Mac code now has an explicit backend boundary and a devicectl-forbidden test mode, but the bundled native idevice library in this repository is an iOS static archive, not a macOS helper library.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:13:## Devicectl Call Map
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:17:| Device discovery | `/usr/bin/xcrun devicectl list devices --timeout 8 --json-output <file> --quiet` | none | CoreDevice JSON device list | `DevicectlProvisioningBackend.discoverDevices`, legacy CLI `discover_devices` | Yes, if host idevice FFI is built | usbmux device list + lockdown metadata |
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:18:| Live-device validation | `/usr/bin/xcrun devicectl device info lockState --device <id> --timeout 5 --json-output <file> --quiet` | selected/candidate CoreDevice ID | success/failure, lock state JSON | `DevicectlProvisioningBackend.discoverDevices`, install target validation | Probably | lockdown query over exact usbmux provider |
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:19:| Raw target resolution | same `list devices` plus exact selected identifier | GUI selection identifier | raw CoreDevice ID | `install` / `repair` | Yes | exact usbmux UDID/provider selection |
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:20:| App installation | `/usr/bin/xcrun devicectl device install app --device <id> <app> --timeout 60 --quiet` | selected device and app bundle path | process exit and text | `DevicectlProvisioningBackend.install`, legacy CLI `device` | Research-supported, not implemented | idevice installation proxy / `install_package_with_callback` |
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:21:| App lookup | `/usr/bin/xcrun devicectl device info apps --device <id> --bundle-id <bundle id> --timeout 10 --json-output <file> --quiet` | selected device and exact project bundle ID | filtered app list JSON | `DevicectlProvisioningBackend.isAppInstalled`, dashboard installed-state reporting | Yes | idevice installation proxy `get_apps` |
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:22:| Process launch | no current packaged helper command found | none | none | not currently used by packaged helper | Optional | DVT process control or CoreDevice app service |
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:26:The pinned `jkcoxson/idevice` source under `ios/.build/idevice-src` contains usbmux enumeration, lockdown metadata, installation proxy lookup/install, DVT process control, CoreDevice app service, and XCTest support. The checked-in `ios/Vendor/idevice/include/idevice_minimal.h` exposes only the on-device RPPairing/RSD/DVT/location/XCTest metadata surface used by the iPhone app. The available `ios/Vendor/idevice/lib/libidevice_ffi.a` is `arm64` for iOS and cannot be linked into the macOS provisioner.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:31:- `DevicectlProvisioningBackend` for the current proven path.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:34:- `IOSSIM_FORBID_DEVICETCTL=1` / `IOSSIM_NO_DEVICETCTL=true` structural no-devicectl mode.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:46:- Still invokes `/usr/bin/xcrun devicectl` for discovery, lock-state liveness probing, and app installation when the devicectl backend is selected.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:47:- Also invokes `/usr/bin/xcrun devicectl device info apps` for exact bundle-ID installed-app lookup when the devicectl backend is selected.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:49:- Does not invoke `xcodebuild`, `git`, `python`, `node`, `cargo`, or `rustc` in the packaged Swift helper's normal provisioning path.
+./docs/mac-host/DEVICE_PROVISIONING_PRODUCTIZATION.md:56:- Prove install/lookup parity against `devicectl` on the same selected device.
+./docs/mac-host/SELF_CONTAINED_APP.md:7:developer tooling, especially `/usr/bin/xcrun devicectl`, but the intended
+./docs/mac-host/SELF_CONTAINED_APP.md:54:| Xcode/xcodebuild | build profile-free artifacts at package time; compatibility signing-shell fallback | Yes | Compatibility only in current native flow | No in current proven device path | Yes | No | Full Xcode | Install Xcode; clean-Mac first-launch requirements unproven | Current native path authorizes Apple Account inside IOSSim |
+./docs/mac-host/SELF_CONTAINED_APP.md:55:| xcrun/devicectl | discover devices and install bundled apps | Yes | Yes | Not yet | No | No | Xcode/Apple developer tools | Install/select Apple developer tools | Current proven install path |
+./docs/mac-host/SELF_CONTAINED_APP.md:57:| DeveloperDiskImage/developer services | CoreDevice install/XCTest support | Yes via Xcode | Yes indirectly through devicectl/XCTest runner | Not yet proven | No | No | Xcode/private Apple stack | Apple tools required | Apple-controlled boundary |
+./docs/mac-host/SELF_CONTAINED_APP.md:68:path uses Apple's installed CoreDevice tooling through `/usr/bin/xcrun
+./docs/mac-host/SELF_CONTAINED_APP.md:69:devicectl`. The native Personal Team path obtains Apple authorization inside
+./docs/mac-host/SELF_CONTAINED_APP.md:71:uses `codesign`, `security`, and `devicectl` to prepare, verify, and install the
+./docs/mac-host/SELF_CONTAINED_APP.md:75:Removing `xcrun devicectl` should be handled as a later focused milestone behind an Apple tooling adapter or a direct compiled idevice/CoreDevice integration.
+./docs/drive_testing/12_GPX_COMPARISON.md:10:Installed pymobiledevice3 `9.12.0` parses GPX time deltas, sleeps on the host, then calls its latitude/longitude setter. A GPX timestamp does not populate a device `CLLocation.speed` field. The installed CLI does not provide confirmed pause support; the lab supports process cancellation and disables GPX pause.
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:41:        if let developerDir = ProcessInfo.processInfo.environment["DEVELOPER_DIR"], !developerDir.isEmpty {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:42:            env["DEVELOPER_DIR"] = developerDir
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:61:    public static func xcrunURL() -> URL? {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:62:        let url = URL(fileURLWithPath: "/usr/bin/xcrun")
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:66:    public static func devicectlForbidden() -> Bool {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:67:        devicectlForbidden(environment: ProcessInfo.processInfo.environment)
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:70:    public static func devicectlForbidden(environment env: [String: String]) -> Bool {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:86:    case devicectl
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:96:        if raw == "devicectl" {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:97:            return .devicectl
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:100:        // physical-device transport. Keep using the proven CoreDevice
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:101:        // devicectl path until a native macOS idevice backend has parity.
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:102:        return .devicectl
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:129:        case .devicectl:
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:130:            return DevicectlProvisioningBackend()
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:254:public struct DevicectlProvisioningBackend: DeviceProvisioningBackend {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:258:        guard !RuntimeProvisioning.devicectlForbidden() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:261:        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:276:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:278:                "devicectl",
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:331:        guard !RuntimeProvisioning.devicectlForbidden() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:334:        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:349:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:350:            arguments: ["devicectl", "list", "devices", "--timeout", "8", "--json-output", jsonURL.path, "--quiet"],
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:386:        guard !RuntimeProvisioning.devicectlForbidden(), let xcrun = RuntimeProvisioning.xcrunURL() else { return nil }
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:393:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:394:            arguments: ["devicectl", "list", "devices", "--timeout", "8", "--json-output", jsonURL.path, "--quiet"],
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:405:            let coreDeviceIdentifier = item["identifier"] as? String
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:407:            guard selector == coreDeviceIdentifier || selector == udid else { return nil }
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:423:        guard !RuntimeProvisioning.devicectlForbidden() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:426:        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:441:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:443:                "devicectl",
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:471:        guard !RuntimeProvisioning.devicectlForbidden() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:472:            return ProcessResult(exitCode: 78, stdout: "", stderr: "DEVICETCTL_FORBIDDEN: devicectl backend is disabled for this run.")
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:474:        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:475:            return ProcessResult(exitCode: 127, stdout: "", stderr: "Apple development support required: /usr/bin/xcrun is unavailable.")
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:479:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:481:                "devicectl",
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:498:        guard let xcrun = RuntimeProvisioning.xcrunURL() else {
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:513:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/RuntimeProvisioningSupport.swift:515:                "devicectl",
+./docs/mac-host/CONSUMER_PROVISIONING_ARCHITECTURE.md:17:CoreDevice/`devicectl`. The current native Personal Team path authorizes the
+./frontend/src/components/drive-testing/DeviceCheckPanel.tsx:51:          <Readout label="pymobiledevice3 available" value={status?.pmd3_available ? 'Yes' : 'No'} />
+./frontend/src/components/drive-testing/DeviceCheckPanel.tsx:68:          <button style={button()} onClick={() => copy('python -m pymobiledevice3 usbmux list')}>Copy Detection Command</button>
+./frontend/src/components/drive-testing/DeviceCheckPanel.tsx:69:          <button style={button()} onClick={() => copy('python -m pymobiledevice3 amfi reveal-developer-mode')}>Copy Developer Mode Command</button>
+./docs/mac-host/CONSUMER_SETUP_FLOW.md:41:  selected CoreDevice identifier. The hardware UDID is resolved separately only
+./docs/iphone_on_device_dvt/21_POC_TEST_RESULTS.md:266:xcodebuild -project ios/IOSSimOnDevicePOC.xcodeproj \
+./docs/iphone_on_device_dvt/21_POC_TEST_RESULTS.md:305:xcrun devicectl device install app \
+./docs/drive_testing/README.md:3:The Drive Testing Lab is part of the existing IOSSim web application. Nothing is installed on the iPhone. The Mac or Windows computer still performs DVT location injection through the existing FastAPI, DeviceManager, LocationService, and pymobiledevice3 path.
+./docs/mac-host/README.md:14:host and used pymobiledevice3 to reach iPhone developer services.
+./docs/mac-host/README.md:18:- `backend/`: FastAPI backend, pymobiledevice3 command boundary, device setup, tunnel/session ownership, location set/clear, Drive Mode, and experimental wireless/drive testing routers.
+./docs/mac-host/README.md:30:  -> pymobiledevice3
+./docs/iphone_on_device_dvt/20_POC_IMPLEMENTATION_NOTES.md:56:Selectors from idevice/pymobiledevice3:
+./docs/iphone_on_device_dvt/20_POC_IMPLEMENTATION_NOTES.md:126:xcodebuild -runFirstLaunch
+./docs/iphone_on_device_dvt/20_POC_IMPLEMENTATION_NOTES.md:127:xcodebuild -downloadPlatform iOS
+./docs/iphone_on_device_dvt/20_POC_IMPLEMENTATION_NOTES.md:151:xcodebuild -project ios/IOSSimOnDevicePOC.xcodeproj \
+./SETUP_MAC.md:48:Verify pymobiledevice3 can see the phone:
+./SETUP_MAC.md:51:python -m pymobiledevice3 usbmux list
+./SETUP_MAC.md:184:- **No device connected:** reconnect USB, unlock the iPhone, trust the computer, and verify `python -m pymobiledevice3 usbmux list`.
+./SETUP_MAC.md:186:- **Set Location only flashes briefly:** the backend must stay open because the spoof is tied to a long-lived pymobiledevice3 process.
+./backend/test_wireless_location.py:108:        tail = args[3:] if len(args) >= 3 and args[2] == "pymobiledevice3" else args
+./docs/mac-host/PHYSICAL_INSTALL_STATE_STABILIZATION.md:10:| Installed app could not open until its developer profile was trusted | `2026-09-08T21:18:41Z`: CoreDevice 10002 → FBS service error 1 → `FBSOpenApplicationErrorDomain` 3, `BSErrorCodeDescription=Security`, explicit `profile has not been explicitly trusted by the user` | `ConsumerArtifactProvisioner.launchMain`; every non-disconnect launch error became `RUNTIME_VERIFICATION_FAILED` at `VERIFYING_RUNTIME_CONFIGURATION` | Expected Apple developer-profile trust was conflated with installation/runtime failure | Strict signature/profile and exact inventory checks complete first; the structured CoreDevice/FBS chain maps to persisted `DEVELOPER_PROFILE_TRUST_REQUIRED`; Continue retries only launch, then runtime mapping readback |
+./docs/mac-host/PHYSICAL_INSTALL_STATE_STABILIZATION.md:15:The policy performs one immediate authoritative `devicectl device info apps` refresh for the exact selected device, followed by delays of 0.2, 0.4, 0.8, 1.2, 1.6, and 2.0 seconds. It is bounded to seven reads and 6.2 seconds of scheduled delay. Every delay is `Task.sleep`, so cancellation prevents later publication. Device unavailable, locked, computer-trust, and Developer Mode conditions stop polling and route to their own recoverable classifications.
+./macos/Sources/IOSSimMacCore/Services/SupportBundleExporter.swift:188:            executableURL: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
+./backend/debug/userspace_location_diagnostic.py:30:from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
+./backend/debug/userspace_location_diagnostic.py:31:from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
+./backend/debug/userspace_location_diagnostic.py:32:from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+./backend/debug/userspace_location_diagnostic.py:33:from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+./backend/debug/userspace_location_diagnostic.py:139:            [self.python, "-m", "pymobiledevice3", *args],
+./backend/debug/userspace_location_diagnostic.py:314:            has_coredevice_location="com.apple.coredevice.locationservice" in service_names(self.rsd),
+./backend/debug/userspace_dvt_location_probe.py:2:"""Experimental probe for pymobiledevice3 userspace DVT location simulation.
+./backend/debug/userspace_dvt_location_probe.py:4:This is intentionally outside IOSSim's production path. It uses pymobiledevice3's
+./backend/debug/userspace_dvt_location_probe.py:16:from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
+./backend/debug/userspace_dvt_location_probe.py:17:from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
+./backend/debug/userspace_dvt_location_probe.py:18:from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+./backend/debug/userspace_dvt_location_probe.py:19:from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+./backend/debug/userspace_dvt_location_probe.py:61:        print(f"has_coredevice_location={'com.apple.coredevice.locationservice' in names}")
+./backend/test_userspace_location_diagnostic.py:70:            services={"com.apple.instruments.dtservicehub": {}, "com.apple.coredevice.locationservice": {}},
+./docs/mac-host/THIRD_PARTY_PROVISIONING_COMPONENTS.md:10:| `libimobiledevice` | none | No current purpose | LGPL-2.1-or-later (project libraries; component-specific review would be required) | Not included or linked | Potential LGPL obligations if introduced | Not required and not approved for addition by this work |
+./docs/mac-host/THIRD_PARTY_PROVISIONING_COMPONENTS.md:11:| `idevicepair` from libimobiledevice | none | No current purpose | LGPL-2.1-or-later in the current source file | Not included or invoked | LGPL relinking/source obligations would apply if distributed in a combined work | Not required; do not bundle without a separate legal review |
+./docs/mac-host/THIRD_PARTY_PROVISIONING_COMPONENTS.md:27:- <https://github.com/libimobiledevice/libimobiledevice/blob/master/tools/idevicepair.c>
+./docs/mac-host/THIRD_PARTY_PROVISIONING_COMPONENTS.md:28:- <https://github.com/libimobiledevice/libusbmuxd>
+./docs/mac-host/THIRD_PARTY_PROVISIONING_COMPONENTS.md:29:- <https://github.com/libimobiledevice/usbmuxd>
+./backend/wireless_testing/report_generator.py:28:        f"pymobiledevice3 version: {summary.get('pymobiledevice3_version', 'unknown')}",
+./docs/iphone_on_device_dvt/19_RECOMMENDED_POC.md:57:- Do not embed pymobiledevice3 in the iOS app: GPL-3.0 and host/Python assumptions.
+./macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamLive.swift:1677:    guard source != .coreDeviceIdentifier else { throw ExperimentalBackendError.invalidDeviceIdentifier }
+./docs/drive_testing/07_DEVELOPER_MODE_SETUP.md:12:python -m pymobiledevice3 amfi developer-mode-status
+./docs/drive_testing/07_DEVELOPER_MODE_SETUP.md:13:python -m pymobiledevice3 amfi reveal-developer-mode
+./backend/debug/userspace_location_compatibility_probe.py:7:whether the installed pymobiledevice3 CoreDevice location wrapper exposes a real
+./backend/debug/userspace_location_compatibility_probe.py:30:from pymobiledevice3.remote.core_device.location_service import LocationService as CoreDeviceLocationService
+./backend/debug/userspace_location_compatibility_probe.py:31:from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
+./backend/debug/userspace_location_compatibility_probe.py:32:from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
+./backend/debug/userspace_location_compatibility_probe.py:33:from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+./backend/debug/userspace_location_compatibility_probe.py:34:from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+./backend/debug/userspace_location_compatibility_probe.py:47:COREDEVICE_LOCATION_SERVICE = "com.apple.coredevice.locationservice"
+./backend/debug/userspace_location_compatibility_probe.py:48:COREDEVICE_SIMULATE_FEATURE = "com.apple.coredevice.feature.simulatelocation"
+./backend/debug/userspace_location_compatibility_probe.py:49:COREDEVICE_AVAILABLE_SCENARIOS_ACTION = "com.apple.coredevice.action.availablelocationscenarios"
+./backend/debug/userspace_location_compatibility_probe.py:50:SERVICE_TERMS = ("location", "simulation", "coredevice", "gps", "instruments", "developer")
+./backend/debug/userspace_location_compatibility_probe.py:136:            [self.python, "-m", "pymobiledevice3", *args],
+./backend/debug/userspace_location_compatibility_probe.py:275:def coredevice_set_clear_supported(location_cls: type[Any] = CoreDeviceLocationService) -> bool:
+./backend/debug/userspace_location_compatibility_probe.py:279:def backend_availability(services: dict[str, Any], location_cls: type[Any] = CoreDeviceLocationService) -> dict[str, bool]:
+./backend/debug/userspace_location_compatibility_probe.py:282:        "COREDEVICE": COREDEVICE_LOCATION_SERVICE in services and coredevice_set_clear_supported(location_cls),
+./backend/debug/userspace_location_compatibility_probe.py:438:class CoreDeviceLocationBackend:
+./backend/debug/userspace_location_compatibility_probe.py:439:    name = "COREDEVICE"
+./backend/debug/userspace_location_compatibility_probe.py:446:        location_service_factory: Callable[..., Any] = CoreDeviceLocationService,
+./backend/debug/userspace_location_compatibility_probe.py:462:            raise ProbeError("COREDEVICE_LOCATION_SIMULATION_UNAVAILABLE")
+./backend/debug/userspace_location_compatibility_probe.py:463:        self.recorder.event("COREDEVICE_LOCATION_INITIALIZATION_START")
+./backend/debug/userspace_location_compatibility_probe.py:467:            "COREDEVICE_LOCATION_READY",
+./backend/debug/userspace_location_compatibility_probe.py:468:            service_identifier=COREDEVICE_LOCATION_SERVICE,
+./backend/debug/userspace_location_compatibility_probe.py:476:            raise ProbeError("CoreDevice Set requested before service is connected.")
+./backend/debug/userspace_location_compatibility_probe.py:493:            raise ProbeError("CoreDevice Clear requested before service is connected.")
+./backend/debug/userspace_location_compatibility_probe.py:509:            self.recorder.event("COREDEVICE_LOCATION_CLOSED")
+./backend/debug/userspace_location_compatibility_probe.py:514:            "coredevice_location_object": self.service is not None,
+./backend/debug/userspace_location_compatibility_probe.py:515:            "coredevice_set_clear_supported": self.set_clear_supported,
+./backend/debug/userspace_location_compatibility_probe.py:557:            coredevice_location_service_present=COREDEVICE_LOCATION_SERVICE in self.services,
+./backend/debug/userspace_location_compatibility_probe.py:562:        await self._inspect_coredevice_location_service()
+./backend/debug/userspace_location_compatibility_probe.py:564:        self.backends["COREDEVICE"] = CoreDeviceLocationBackend(self.rsd, self.recorder)
+./backend/debug/userspace_location_compatibility_probe.py:569:    async def _inspect_coredevice_location_service(self) -> None:
+./backend/debug/userspace_location_compatibility_probe.py:570:        present = COREDEVICE_LOCATION_SERVICE in self.services
+./backend/debug/userspace_location_compatibility_probe.py:571:        supported = self.available.get("COREDEVICE", False)
+./backend/debug/userspace_location_compatibility_probe.py:573:            "COREDEVICE_LOCATION_IMPLEMENTATION_INSPECTED",
+./backend/debug/userspace_location_compatibility_probe.py:575:            implementation_file=implementation_file(CoreDeviceLocationService),
+./backend/debug/userspace_location_compatibility_probe.py:576:            available_scenarios_method=callable(getattr(CoreDeviceLocationService, "available_location_scenarios", None)),
+./backend/debug/userspace_location_compatibility_probe.py:577:            set_supported=coredevice_set_clear_supported(),
+./backend/debug/userspace_location_compatibility_probe.py:578:            clear_supported=coredevice_set_clear_supported(),
+./backend/debug/userspace_location_compatibility_probe.py:579:            feature_identifier=COREDEVICE_SIMULATE_FEATURE,
+./backend/debug/userspace_location_compatibility_probe.py:580:            available_scenarios_action=COREDEVICE_AVAILABLE_SCENARIOS_ACTION,
+./backend/debug/userspace_location_compatibility_probe.py:583:            self.recorder.event("COREDEVICE_LOCATION_SIMULATION_UNAVAILABLE", reason="RSD service not present")
+./backend/debug/userspace_location_compatibility_probe.py:586:            async with CoreDeviceLocationService(self.rsd) as service:
+./backend/debug/userspace_location_compatibility_probe.py:588:            self.recorder.event("COREDEVICE_AVAILABLE_LOCATION_SCENARIOS", result=json.dumps(scenarios, default=str))
+./backend/debug/userspace_location_compatibility_probe.py:590:            self.recorder.error("COREDEVICE_AVAILABLE_LOCATION_SCENARIOS_FAILED", exc)
+./backend/debug/userspace_location_compatibility_probe.py:593:                "COREDEVICE_LOCATION_SIMULATION_UNAVAILABLE",
+./backend/debug/userspace_location_compatibility_probe.py:594:                reason="installed pymobiledevice3 exposes available scenarios only; no set/clear implementation",
+./backend/debug/userspace_location_compatibility_probe.py:599:            "PYMOBILEDEVICE3_DVT_SOURCE",
+./backend/debug/userspace_location_compatibility_probe.py:612:            "PYMOBILEDEVICE3_COREDEVICE_LOCATION_SOURCE",
+./backend/debug/userspace_location_compatibility_probe.py:613:            provider="CoreDevice LocationService",
+./backend/debug/userspace_location_compatibility_probe.py:614:            service_identifier=COREDEVICE_LOCATION_SERVICE,
+./backend/debug/userspace_location_compatibility_probe.py:615:            implementation_file=implementation_file(CoreDeviceLocationService),
+./backend/debug/userspace_location_compatibility_probe.py:617:            set_supported=coredevice_set_clear_supported(),
+./backend/debug/userspace_location_compatibility_probe.py:618:            clear_supported=coredevice_set_clear_supported(),
+./backend/debug/userspace_location_compatibility_probe.py:630:            if normalized == "COREDEVICE":
+./backend/debug/userspace_location_compatibility_probe.py:631:                self.recorder.event("COREDEVICE_LOCATION_SIMULATION_UNAVAILABLE")
+./backend/debug/userspace_location_compatibility_probe.py:671:            "coredevice_location_simulation_available": self.available.get("COREDEVICE", False),
+./backend/debug/userspace_location_compatibility_probe.py:694:    if value in {"2", "c", "core", "coredevice", "core-device"}:
+./backend/debug/userspace_location_compatibility_probe.py:695:        return "COREDEVICE"
+./backend/debug/userspace_location_compatibility_probe.py:727:                    method = input("Backend method (1=DVT, 2=CoreDevice): ").strip()
+./backend/debug/userspace_location_compatibility_probe.py:794:    core_line = "2 - CoreDevice Location Simulation"
+./backend/debug/userspace_location_compatibility_probe.py:795:    if session is not None and not session.available.get("COREDEVICE", False):
+./backend/debug/userspace_location_compatibility_probe.py:796:        core_line += " (COREDEVICE_LOCATION_SIMULATION_UNAVAILABLE)"
+./backend/wireless_testing/experiment_store.py:225:                "pymobiledevice3_version": summary.get("pymobiledevice3_version"),
+./docs/iphone_on_device_dvt/03_APPLE_PROTOCOL_STACK.md:22:Both pymobiledevice3 and idevice implement the same DVT service and selector names.
+./docs/iphone_on_device_dvt/03_APPLE_PROTOCOL_STACK.md:24:pymobiledevice3:
+./docs/iphone_on_device_dvt/03_APPLE_PROTOCOL_STACK.md:43:- USB via CoreDeviceProxy.
+./docs/iphone_on_device_dvt/03_APPLE_PROTOCOL_STACK.md:44:- Network via RemoteXPC after connecting to RSD and `com.apple.internal.dt.coredevice.untrusted.tunnelservice`.
+./docs/iphone_on_device_dvt/03_APPLE_PROTOCOL_STACK.md:47:The on-device Locus path uses raw RPPairing to `10.7.0.1:49152`, not pymobiledevice3's host-side userspace tunnel.
+./backend/drive_controller.py:5:not know about pymobiledevice3; callers inject writer functions so route math
+./macos/Sources/IOSSimMacCore/Services/InstallationInventory.swift:50:public struct DevicectlApplicationInventoryReader: DeviceApplicationInventoryReading {
+./macos/Sources/IOSSimMacCore/Services/InstallationInventory.swift:57:        guard !RuntimeProvisioning.devicectlForbidden(), let xcrun = RuntimeProvisioning.xcrunURL() else {
+./macos/Sources/IOSSimMacCore/Services/InstallationInventory.swift:80:            executableURL: xcrun,
+./macos/Sources/IOSSimMacCore/Services/InstallationInventory.swift:82:                "devicectl", "device", "info", "apps",
+./docs/iphone_on_device_dvt/04_RPPAIRING_RESEARCH.md:52:Locus setup and Mirage docs both warn that older lockdown/SideStore `.mobiledevicepairing` files are not the required RPPairing format. RPPairing plists may be named `.plist` or `.mobiledevicepairing` by tools, so content validation should check semantic keys (`public_key`, `private_key`, `identifier`, optional `alt_irk`) rather than extension alone.
+./macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamExperimental.swift:335:        case coreDeviceIdentifier = "coreDeviceIdentifier"
+./macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamExperimental.swift:339:    /// CoreDevice/device-transport selector. This is not necessarily the UDID
+./backend/wireless_testing/command_runner.py:19:PMD3 = [sys.executable, "-m", "pymobiledevice3"]
+./backend/wireless_testing/command_runner.py:20:RELEVANT_ENV_PREFIXES = ("PYTHON", "VIRTUAL_ENV", "USBMUX", "PMD3", "PYMOBILEDEVICE3")
+./backend/wireless_testing/command_runner.py:112:        return importlib.metadata.version("pymobiledevice3")
+./backend/wireless_testing/command_runner.py:227:    importable = importlib.util.find_spec("pymobiledevice3") is not None
+./backend/wireless_testing/command_runner.py:249:        "pymobiledevice3_importable": importable,
+./backend/wireless_testing/command_runner.py:250:        "pymobiledevice3_version": pmd3_version(),
+./backend/wireless_testing/command_runner.py:300:        return "device_not_connected", "pymobiledevice3 did not find the target device."
+./backend/drive_testing/router.py:396:        {"name": "pymobiledevice3 available", "status": "PASS" if device.get("pmd3_available") else "FAIL", "detail": pmd3_detail},
+./backend/drive_testing/experiment_controller.py:124:            "pymobiledevice3_available": bool(device.get("pmd3_available")),
+./backend/drive_testing/experiment_controller.py:191:                return self._error("Installed pymobiledevice3 does not provide confirmed GPX pause support", "pause_unsupported")
+./backend/location_service.py:2:location_service.py — Set, clear, and route-play location via pymobiledevice3 CLI.
+./backend/location_service.py:5:need to replicate pymobiledevice3's internal service plumbing.
+./backend/location_service.py:22:    cmd = [sys.executable, "-m", "pymobiledevice3", *args]
+./backend/location_service.py:36:            "message": f"Command timed out after {timeout}s — pymobiledevice3 may still be processing",
+./backend/location_service.py:56:    """High-level location operations — delegates subprocess calls to pymobiledevice3."""
+./backend/location_service.py:90:            cmd = [sys.executable, "-m", "pymobiledevice3", *args]
+./backend/location_service.py:171:        pymobiledevice3 uses GPX timestamps only for host-side sleeps and sends
+./backend/location_service.py:191:            # pymobiledevice3 9.x requires the legacy timing-randomness positional argument.
+./backend/location_service.py:197:            cmd = [sys.executable, "-m", "pymobiledevice3", *args]
+./backend/wireless_testing/controller.py:169:        result = self.runner.run(["xcodebuild", "-version"], timeout_s=8)
+./backend/wireless_testing/controller.py:184:            "message": "Use the installed Xcode device-management interface to enable network/wireless development." if result.ok else "xcodebuild was not found.",
+./backend/wireless_testing/controller.py:214:                "name": "pymobiledevice3 available",
+./backend/wireless_testing/controller.py:215:                "status": "PASS" if capabilities.get("pymobiledevice3_importable") else "FAIL",
+./backend/wireless_testing/controller.py:216:                "detail": capabilities.get("pymobiledevice3_version") or "not importable",
+./backend/wireless_testing/controller.py:255:                "pymobiledevice3_version": pmd3_version(),
+./backend/wireless_testing/controller.py:283:            "pymobiledevice3_available": bool(stable.get("pmd3_available")),
+./backend/wireless_testing/controller.py:883:            return "UNSUPPORTED", reasons or ["Installed pymobiledevice3 does not support one or more native preparation commands."]
+./backend/wireless_testing/controller.py:1034:        summary = {**(record.get("summary") or {}), "pymobiledevice3_version": pmd3_version(), **{k: v for k, v in changes.items() if v is not None}}
+./backend/test_device_manager_pmd3.py:19:        "stderr_summary": "" if available else "No module named pymobiledevice3",
+./backend/test_device_manager_pmd3.py:20:        "message": "" if available else "No module named pymobiledevice3",
+./backend/test_device_manager_pmd3.py:57:        result = SimpleNamespace(returncode=1, stdout="", stderr="No module named pymobiledevice3")
+./backend/test_device_manager_pmd3.py:104:        self.assertEqual(checks["pymobiledevice3 available"]["status"], "PASS")
+./backend/test_device_manager_pmd3.py:119:        self.assertEqual(checks["pymobiledevice3 available"]["status"], "FAIL")
+./backend/test_device_manager_pmd3.py:120:        self.assertIn("python-under-test", checks["pymobiledevice3 available"]["detail"])
+./docs/iphone_on_device_dvt/DRIVE_MODE_IMPLEMENTATION.md:633:- Gate 1 ran without `xcodebuild test`.
+./backend/test_userspace_location_compatibility_probe.py:11:    COREDEVICE_LOCATION_SERVICE,
+./backend/test_userspace_location_compatibility_probe.py:14:    CoreDeviceLocationBackend,
+./backend/test_userspace_location_compatibility_probe.py:20:    coredevice_set_clear_supported,
+./backend/test_userspace_location_compatibility_probe.py:187:            COREDEVICE_LOCATION_SERVICE: {"Properties": {"Features": ["com.apple.coredevice.feature.simulatelocation"]}},
+./backend/test_userspace_location_compatibility_probe.py:194:        self.assertIn(COREDEVICE_LOCATION_SERVICE, related)
+./backend/test_userspace_location_compatibility_probe.py:197:    def test_dvt_and_coredevice_availability_detection(self) -> None:
+./backend/test_userspace_location_compatibility_probe.py:198:        services = {DVT_RSD_SERVICE: {}, COREDEVICE_LOCATION_SERVICE: {}}
+./backend/test_userspace_location_compatibility_probe.py:199:        self.assertTrue(coredevice_set_clear_supported(FakeCoreAvailable))
+./backend/test_userspace_location_compatibility_probe.py:200:        self.assertFalse(coredevice_set_clear_supported(FakeCoreUnavailable))
+./backend/test_userspace_location_compatibility_probe.py:201:        self.assertEqual(backend_availability(services, FakeCoreAvailable), {"DVT": True, "COREDEVICE": True})
+./backend/test_userspace_location_compatibility_probe.py:202:        self.assertEqual(backend_availability(services, FakeCoreUnavailable), {"DVT": True, "COREDEVICE": False})
+./backend/test_userspace_location_compatibility_probe.py:242:    def test_coredevice_backend_unavailable_without_real_set_clear(self) -> None:
+./backend/test_userspace_location_compatibility_probe.py:247:                    backend = CoreDeviceLocationBackend(
+./backend/test_userspace_location_compatibility_probe.py:259:    def test_coredevice_backend_dispatches_if_implementation_exists(self) -> None:
+./backend/test_userspace_location_compatibility_probe.py:265:                    backend = CoreDeviceLocationBackend(
+./backend/test_userspace_location_compatibility_probe.py:287:                    core = FakeSelectableBackend("COREDEVICE")
+./backend/test_userspace_location_compatibility_probe.py:288:                    session.backends = {"DVT": dvt, "COREDEVICE": core}
+./backend/test_userspace_location_compatibility_probe.py:289:                    session.available = {"DVT": True, "COREDEVICE": True}
+./backend/test_userspace_location_compatibility_probe.py:294:                    self.assertEqual(session.active_method, "COREDEVICE")
+./backend/test_userspace_location_compatibility_probe.py:318:                    core = FakeSelectableBackend("COREDEVICE")
+./backend/test_userspace_location_compatibility_probe.py:320:                    session.backends = {"DVT": dvt, "COREDEVICE": core}
+./docs/drive_testing/08_MACOS_SETUP.md:16:python -m pymobiledevice3 usbmux list
+./docs/drive_testing/08_MACOS_SETUP.md:17:python -m pymobiledevice3 amfi developer-mode-status
+./docs/drive_testing/08_MACOS_SETUP.md:18:python -m pymobiledevice3 amfi reveal-developer-mode
+./docs/drive_testing/08_MACOS_SETUP.md:24:~/IOSSim/backend/.venv/bin/python -m pymobiledevice3 usbmux list
+./macos/Sources/IOSSimMacCore/Models/ConsumerProvisioning.swift:719:    /// Classifies the structured CoreDevice/FBS error chain observed on the
+./macos/Sources/IOSSimMacCore/Models/ConsumerProvisioning.swift:725:        if lower.contains("coredeviceerror error 10002")
+./backend/device_manager.py:19:# pymobiledevice3 imports — lazy so missing dep gives a clear error
+./backend/device_manager.py:21:    from pymobiledevice3.lockdown import create_using_usbmux
+./backend/device_manager.py:34:        return importlib.metadata.version("pymobiledevice3")
+./backend/device_manager.py:47:    if importlib.util.find_spec("pymobiledevice3") is None:
+./backend/device_manager.py:48:        return {**base, "available": False, "message": "pymobiledevice3 package is not importable"}
+./backend/device_manager.py:51:            [sys.executable, "-m", "pymobiledevice3", "--help"],
+./backend/device_manager.py:64:        return {**base, "available": False, "message": f"pymobiledevice3 --help timed out after {timeout_s}s"}
+./backend/device_manager.py:111:        `python -m pymobiledevice3 usbmux list` when the API raises.
+./backend/device_manager.py:129:        # CLI fallback: python -m pymobiledevice3 usbmux list
+./backend/device_manager.py:133:                [sys.executable, "-m", "pymobiledevice3", "usbmux", "list"],
+./backend/device_manager.py:162:        """Auto-mount developer disk image. pymobiledevice3 handles personalized DDI (iOS 17+)."""
+./backend/device_manager.py:164:            [sys.executable, "-m", "pymobiledevice3", "mounter", "auto-mount"],
+./backend/device_manager.py:175:        Start pymobiledevice3 tunneld in a subprocess.
+./backend/device_manager.py:192:            [sys.executable, "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--script-mode"],
+./docs/iphone_on_device_dvt/23_E1_PHYSICAL_TEST_PROCEDURE.md:12:- Xcode license accepted with `sudo xcodebuild -license`.
+./macos/Sources/IOSSimMacCore/Models/DoctorStatus.swift:239:        if text.contains("xcrun") || text.contains("devicectl") || text.contains("apple tooling") || text.contains("xcode") {
+./docs/iphone_on_device_dvt/.gitignore:4:*.mobiledevicepairing
+./docs/iphone_on_device_dvt/.gitignore:5:*.mobiledevicepair
+./ios/scripts/build_idevice_ios.sh:30:command -v xcrun >/dev/null || { echo "xcrun is required. Install/select full Xcode."; exit 2; }
+./ios/scripts/build_idevice_ios.sh:31:xcrun --sdk iphoneos --show-sdk-path >/dev/null || { echo "iphoneos SDK unavailable. Open Xcode and accept the license first."; exit 2; }
+./ios/scripts/build_idevice_ios.sh:73:BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path)" \
+./docs/NEXT_STEPS.md:4:replace `devicectl` until the relevant phase below calls for it.
+./docs/NEXT_STEPS.md:67:- `xcrun`;
+./docs/NEXT_STEPS.md:68:- `devicectl`;
+./docs/NEXT_STEPS.md:69:- CoreDevice;
+./docs/NEXT_STEPS.md:70:- `xcodebuild`;
+./docs/NEXT_STEPS.md:102:If Phase 4 fails because Xcode must be opened/configured or `devicectl` carries
+./macos/Sources/IOSSimMacCore/SetupStore.swift:979:        if lower.contains("apple development support required") || lower.contains("devicectl") || lower.contains("xcrun") {
+./docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md:26:## pymobiledevice3
+./docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md:28:Repository: `https://github.com/doronz88/pymobiledevice3`
+./docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md:36:pymobiledevice3 is IOSSim's current host-side dependency and remains excellent evidence for DVT service names and host-side tunnel behavior. Its userspace tunnel is Python/PyTCP, in-process only, and oriented around host-initiated connections. GPL-3.0 makes embedding or porting into a proprietary/non-GPL IOSSim app unattractive.
+./docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md:50:## libimobiledevice
+./docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md:52:Repository: `https://github.com/libimobiledevice/libimobiledevice`
+./docs/iphone_on_device_dvt/08_OTHER_OPEN_SOURCE_PROJECTS.md:60:libimobiledevice includes legacy `idevicesetlocation` for `com.apple.dt.simulatelocation` and lockdown pairing code. It is not the right basis for iOS 17.4+ RPPairing/on-device DVT work.
+./ios/README.md:66:xcodebuild -project IOSSimOnDevicePOC.xcodeproj \
+./docs/ARCHITECTURE.md:23:  xcrun devicectl / CoreDevice
+./docs/drive_testing/20_TROUBLESHOOTING.md:8:python -m pymobiledevice3 usbmux list
+./docs/drive_testing/20_TROUBLESHOOTING.md:9:python -m pymobiledevice3 amfi developer-mode-status
+./docs/drive_testing/20_TROUBLESHOOTING.md:10:python -m pymobiledevice3 amfi reveal-developer-mode
+./docs/drive_testing/20_TROUBLESHOOTING.md:16:~/IOSSim/backend/.venv/bin/python -m pymobiledevice3 usbmux list
+./docs/drive_testing/20_TROUBLESHOOTING.md:22:- `No module named pymobiledevice3`: install `backend/requirements.txt` with the same interpreter used to launch uvicorn.
+./docs/drive_testing/20_TROUBLESHOOTING.md:37:- GPX pause unavailable: use Stop or Emergency Stop; installed pymobiledevice3 does not expose confirmed GPX pause.
+./backend/requirements.txt:1:pymobiledevice3>=4.14.0
+./docs/iphone_on_device_dvt/12_SECURITY_AND_ENTITLEMENTS.md:45:- `*.mobiledevicepairing`
+./docs/iphone_on_device_dvt/12_SECURITY_AND_ENTITLEMENTS.md:46:- `*.mobiledevicepair`
+./docs/validation_evidence/integration_flow_map.md:11:  -> pymobiledevice3 CLI developer dvt simulate-location set --rsd HOST PORT -- LAT LON
+./docs/validation_evidence/integration_flow_map.md:23:  -> pymobiledevice3 CLI developer dvt simulate-location clear --rsd HOST PORT
+./docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md:7:| S03 | IOSSim local repo | 2026-08-26 | SOURCE_CODE | Setup runs pymobiledevice3 RemotePairing and Wi-Fi enablement | CONFIRMED | `backend/wireless_location/discovery.py` lines 112-152 | Stores UDID, not pairing secrets |
+./docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md:8:| S04 | IOSSim local repo | 2026-08-26 | SOURCE_CODE | USB/stable location uses pymobiledevice3 DVT CLI | CONFIRMED | `backend/location_service.py` lines 65-132 | Existing host DVT |
+./docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md:20:| S16 | pymobiledevice3 `4fcfdd82ffcf30b6a11460b505fadb5579e7b2bb` | 2026-08-26 | SOURCE_CODE | UserspaceRsdTunnel is host-side in-process PyTCP and falls back to RemotePairing over Bonjour | CONFIRMED | `remote/userspace_tunnel.py` lines 1-30, 706-793 | Current IOSSim dependency |
+./docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md:21:| S17 | pymobiledevice3 `4fcfdd...` | 2026-08-26 | SOURCE_CODE | pymobiledevice3 DVT service names match idevice | CONFIRMED | `services/dvt/instruments/location_simulation.py` lines 7-47 | Independent implementation |
+./docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md:46:- pymobiledevice3 userspace tunnel selection: `https://github.com/doronz88/pymobiledevice3/blob/4fcfdd82ffcf30b6a11460b505fadb5579e7b2bb/pymobiledevice3/remote/userspace_tunnel.py#L706-L793`
+./docs/iphone_on_device_dvt/17_SOURCE_LEDGER.md:47:- pymobiledevice3 DVT LocationSimulation: `https://github.com/doronz88/pymobiledevice3/blob/4fcfdd82ffcf30b6a11460b505fadb5579e7b2bb/pymobiledevice3/services/dvt/instruments/location_simulation.py#L7-L47`
+./docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md:45:- USB list: `pymobiledevice3 usbmux list --usb`, lines 43-45.
+./docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md:46:- Network list: `pymobiledevice3 usbmux list --network`, lines 47-49.
+./docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md:47:- RemotePairing bootstrap: `pymobiledevice3 lockdown remotepairing --pair`, lines 112-131.
+./docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md:48:- Wi-Fi connection enablement: `pymobiledevice3 lockdown wifi-connections --state on`, lines 133-152.
+./docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md:75:- `set_location()` requires an active RSD tunnel and starts a long-lived pymobiledevice3 process, lines 71-108.
+./docs/iphone_on_device_dvt/01_CURRENT_IOSSIM_BASELINE.md:77:- GPX/route playback delegates to the pymobiledevice3 DVT play command, lines 168-286.
+./backend/test_wireless_testing.py:82:        if "xcodebuild -version" in text:
+./backend/test_wireless_testing.py:349:        self.assertEqual(command[:5], [command[0], "-m", "pymobiledevice3", "remote", "start-tunnel"])
+./docs/SETUP.md:36:`xcrun devicectl` / CoreDevice tooling. The clean-Mac test has not yet proven
+./docs/SETUP.md:77:`devicectl` JSON output to detect paired iPhones, build local artifacts, and
+./docs/PROVISIONING_AND_SIGNING.md:27:operations use Apple's `xcrun devicectl` / CoreDevice tooling. The current user
+./docs/PROVISIONING_AND_SIGNING.md:211:`devicectl device info apps`.
+./ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift:9:  private static let gate1RichLocationTestName = "testGate1NoXcodebuildRichLocationWitnessProof"
+./ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift:16:      throw XCTSkip("Skipping non-Gate-1 test during no-xcodebuild rich-location runner proof.")
+./ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift:342:  func testGate1NoXcodebuildRichLocationWitnessProof() throws {
+./ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift:389:        Gate 1 witness timed out waiting for no-xcodebuild rich-location CLLocation callback.
+./ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift:418:      GATE1_NO_XCODEBUILD_RICH_LOCATION_WITNESS_METADATA:
+./ios/Tests/LocationControl/AppleXCUILocationControlUITests.swift:445:    attach(summary, name: "GATE1-NO-XCODEBUILD-rich-location-witness-metadata.txt")
+./docs/drive_testing/00_REPOSITORY_AUDIT.md:19:-> pymobiledevice3
+./docs/drive_testing/00_REPOSITORY_AUDIT.md:30:The legacy builder emits `trk/trkseg/trkpt` with latitude and longitude only. It has no timestamps, elevation, speed, or course. Experimental timestamped GPX adds `<time>` only for pymobiledevice3 host pacing.
+./docs/IMPLEMENTATIONS.md:7:| Legacy Mac-hosted IOSSim | Mac or Windows host | Python/FastAPI backend + React/TypeScript frontend | pymobiledevice3 | host-side pairing/trust | historical baseline, preserved on `desktop-legacy` |
+./docs/wireless_research/14_USB_OVER_IP.md:33:An alternative is not raw USB passthrough but forwarding the usbmux socket/protocol. Corellium’s usbfluxd pattern exposes usbmux over TCP, and pymobiledevice3 supports `--usbmux HOST:PORT`.
+./docs/wireless_research/14_USB_OVER_IP.md:36:iPhone -> local usbmuxd -> TCP/VPN -> remote pymobiledevice3 --usbmux HOST:PORT
+./docs/wireless_research/14_USB_OVER_IP.md:39:This is more protocol-aware than raw USB-over-IP. It may be sufficient for many libimobiledevice/pymobiledevice3 operations. For iOS 17+/26 DVT, the open question is whether remote tunnel creation and resulting RSD routing work reliably.
+./docs/wireless_research/14_USB_OVER_IP.md:41:Sources: Corellium [USBFlux](https://support.corellium.com/features/connect/usbflux), [usbfluxd](https://github.com/corellium/usbfluxd), VirtualHere [iOS devices](https://www.virtualhere.com/node/3500), pymobiledevice3 CLI `--usbmux`.
+./backend/wireless_location/session.py:12:    from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
+./backend/wireless_location/session.py:13:    from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
+./backend/wireless_location/session.py:14:    from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+./backend/wireless_location/session.py:15:    from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+./backend/wireless_location/session.py:44:    """Single event-loop owner for long-lived pymobiledevice3 async objects."""
+./backend/wireless_location/session.py:242:            raise RuntimeError(f"pymobiledevice3 userspace APIs are unavailable: {', '.join(missing)}")
+./docs/wireless_research/13_COMMERCIAL_TOOL_ARCHITECTURES.md:18:| GeoPort | Desktop app | Yes/likely | No | DVT/pymobiledevice-like | Yes | Yes | No durable guarantee | Open-source desktop location simulator class |
+./docs/wireless_research/13_COMMERCIAL_TOOL_ARCHITECTURES.md:28:- If a product requires Developer Mode, Trust, Apple drivers, root/admin, and desktop setup, assume DVT/CoreDevice developer services unless proven otherwise.
+./docs/wireless_research/04_REMOTE_MAC_ARCHITECTURE.md:53:- expose a private command API and run pymobiledevice3 locally, or
+./backend/wireless_location/discovery.py:119:                "message": "Installed pymobiledevice3 does not support RemotePairing bootstrap.",
+./backend/wireless_location/discovery.py:140:                "message": "Installed pymobiledevice3 does not support Wi-Fi connection enablement.",
+./docs/wireless_research/10_WIRELESS_TEST_MATRIX.md:9:pymobiledevice3 version, Python version, Xcode version if used,
+./docs/wireless_research/10_WIRELESS_TEST_MATRIX.md:23:| W03 restart tunnel after unplug | Paired phone, no cable | `pymobiledevice3 remote start-tunnel -t wifi --script-mode` | Wi-Fi RSD if paired | RSD host/port printed | Pairing/discovery not ready | remote browse output |
+./research/05_pymobiledevice3_protocol_audit.md:1:# pymobiledevice3 Protocol Audit — All DVT Channels, Alternative Tools, Private APIs
+./research/05_pymobiledevice3_protocol_audit.md:3:**Agent:** pymobiledevice3 undocumented channels + private CoreLocation APIs  
+./research/05_pymobiledevice3_protocol_audit.md:10:The complete list of DVT instrument modules in pymobiledevice3 as of early 2026:
+./research/05_pymobiledevice3_protocol_audit.md:75:## pymobiledevice3 Issue Tracker — All Relevant Issues
+./research/05_pymobiledevice3_protocol_audit.md:79:| [#340](https://github.com/doronz88/pymobiledevice3/issues/340) | Simulate location with speed, heading and altitude | **Open** (Oct 2022) | Feature never implemented; no workaround |
+./research/05_pymobiledevice3_protocol_audit.md:80:| [#572](https://github.com/doronz88/pymobiledevice3/issues/572) | Unreliable simulate-location with iOS 17 | Open | Transport regression; no new fields |
+./research/05_pymobiledevice3_protocol_audit.md:81:| [#767](https://github.com/doronz88/pymobiledevice3/issues/767) | `dvt simulate-location` doesn't self-exit | Open | Hang issue; transport problem |
+./research/05_pymobiledevice3_protocol_audit.md:82:| [#975](https://github.com/doronz88/pymobiledevice3/issues/975) | LocationSimulation — InvalidServiceError | Open | iOS 17.3.1 connection error |
+./research/05_pymobiledevice3_protocol_audit.md:90:### libimobiledevice / idevicesetlocation
+./research/05_pymobiledevice3_protocol_audit.md:97:- Go implementation (`dtx_codec`) mirrors pymobiledevice3's protocol exactly
+./research/05_pymobiledevice3_protocol_audit.md:103:- idb's physical device support largely broken since iOS 17 (CoreDevice/RemoteXPC transition)
+./research/05_pymobiledevice3_protocol_audit.md:114:iOS 17 introduced the **CoreDevice / RemoteXPC** transport (QUIC/TCP tunnel over `com.apple.internal.dt.coredevice.untrusted.tunnelservice`). DVT services now require establishing a virtual IPv6 tunnel first.
+./research/05_pymobiledevice3_protocol_audit.md:159:- No public CoreDevice/RemoteXPC service for motion injection exists
+./research/05_pymobiledevice3_protocol_audit.md:172:2. **CoreDevice RPC namespace**: Run `developer.supported_identifiers` via pymobiledevice3 on iOS 17/18 device to check if any motion/sensor/activity service identifiers exist in the `com.apple.coredevice.*` namespace.
+./research/05_pymobiledevice3_protocol_audit.md:180:- [pymobiledevice3 location_simulation.py](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/location_simulation.py)
+./research/05_pymobiledevice3_protocol_audit.md:181:- [pymobiledevice3 location_simulation_base.py](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/location_simulation_base.py)
+./research/05_pymobiledevice3_protocol_audit.md:182:- [pymobiledevice3 condition_inducer.py](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/condition_inducer.py)
+./research/05_pymobiledevice3_protocol_audit.md:183:- [pymobiledevice3 Issue #340](https://github.com/doronz88/pymobiledevice3/issues/340)
+./research/05_pymobiledevice3_protocol_audit.md:191:- [pymobiledevice3 RemoteXPC.md](https://github.com/doronz88/pymobiledevice3/blob/master/misc/RemoteXPC.md)
+./research/README.md:13:| `05_pymobiledevice3_protocol_audit.md` | 2026-06-10 | Complete DVT channel inventory (17 modules); full DTX interface spec for LocationSimulation; all related GitHub issues; iOS 17/18 transport changes |
+./research/README.md:19:- **DVT sends only lat/lon** — the DTX payload contains no speed, course, altitude, or timestamp fields. Confirmed by protocol/source code analysis across pymobiledevice3, go-ios, libimobiledevice.
+./docs/wireless_research/06_MINIMUM_HOST_OPTIONS.md:5:A Mac is required for Apple’s official Xcode UI and Device Hub. A Mac is not necessarily required for IOSSim’s current pymobiledevice3 DVT path: pymobiledevice3 runs on Windows, Linux, and macOS, and this repository already supports Windows. For iOS 17+/26, the hard requirement is a host that can pair with the phone and establish the RSD/CoreDevice tunnel.
+./docs/wireless_research/06_MINIMUM_HOST_OPTIONS.md:9:| Host | Pair with iPhone | Run pymobiledevice3 | Access developer services | Establish RSD | Run DVT location | Wireless operation | Headless | Cost | Complexity | Reliability |
+./docs/wireless_research/06_MINIMUM_HOST_OPTIONS.md:15:| Linux PC | Yes via libimobiledevice/pmd3 | Yes | Yes via pmd3, not Xcode | Likely but driver/version-sensitive | Likely | Wi-Fi unproven | Yes | Low | Medium | Medium |
+./docs/wireless_research/06_MINIMUM_HOST_OPTIONS.md:17:| Raspberry Pi | Yes via USB/libimobiledevice | Likely if Python deps build | Maybe | Unproven for modern RSD performance | Maybe | Unproven | Yes | Low | High | Low-medium |
+./docs/wireless_research/06_MINIMUM_HOST_OPTIONS.md:34:The smallest realistic local component is not “no host”; it is a small local bridge running pymobiledevice3 and holding pairing material. The most reliable version is a headless Mac mini. The cheapest plausible version is a Linux mini PC or Raspberry Pi, but those must be experimentally validated on iOS 26.x.
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:49:            .devicectl
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:53:    func testNativePersonalTeamProvisioningStillUsesDevicectlDeviceDiscoveryByDefault() {
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:58:            .devicectl
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:129:    func testNoDevicectlEnvironmentFlagsAreRecognized() {
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:130:        XCTAssertTrue(RuntimeProvisioning.devicectlForbidden(environment: ["IOSSIM_FORBID_DEVICETCTL": "1"]))
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:131:        XCTAssertTrue(RuntimeProvisioning.devicectlForbidden(environment: ["IOSSIM_NO_DEVICETCTL": "true"]))
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:132:        XCTAssertFalse(RuntimeProvisioning.devicectlForbidden(environment: [:]))
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:152:    func testDevicectlDiscoveryKeepsPairedPhysicalIPhoneWhenLockStateSucceeds() async throws {
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:153:        guard RuntimeProvisioning.xcrunURL() != nil else {
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:154:            throw XCTSkip("/usr/bin/xcrun is unavailable on this Mac.")
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:165:            if arguments.prefix(3) == ["devicectl", "list", "devices"] {
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:172:            if arguments.prefix(4) == ["devicectl", "device", "info", "lockState"],
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:187:        let devices = await DevicectlProvisioningBackend().discoverDevices(
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:225:            "commandType": "devicectl.list.devices",
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:278:            "commandType": "devicectl.device.info.lockState",
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:296:            "domain": "com.apple.dt.CoreDeviceError"
+./macos/Tests/IOSSimMacCoreTests/ProvisioningBackendTests.swift:299:            "commandType": "devicectl.device.info.lockState",
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:37:python -m pymobiledevice3 remote browse
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:38:python -m pymobiledevice3 usbmux list
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:43:Failure interpretation: Bonjour/network pairing not visible to installed pymobiledevice3 or platform blocks discovery.
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:52:python -m pymobiledevice3 remote start-tunnel --connection-type wifi --script-mode
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:66:python -m pymobiledevice3 developer dvt simulate-location set --rsd HOST PORT -- 37.7749 -122.4194
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:67:python -m pymobiledevice3 developer dvt simulate-location clear --rsd HOST PORT
+./docs/wireless_research/19_MINIMUM_EXPERIMENTS.md:118:Stop implementation if EXP-W03 or EXP-W04 fails on target iOS 26.x with current and latest pymobiledevice3.
+./docs/wireless_research/05_HOSTED_CONTROL_PLANE.md:9:  <-> pymobiledevice3 / pairing / RSD / DVT
+./docs/wireless_research/05_HOSTED_CONTROL_PLANE.md:43:| Could only the pymobiledevice3 bridge stay local? | Yes. That is the recommended hosted architecture. |
+./docs/wireless_research/05_HOSTED_CONTROL_PLANE.md:54:The cloud should not receive “run arbitrary pymobiledevice3 command.” It should send narrow commands:
+./docs/wireless_research/05_HOSTED_CONTROL_PLANE.md:62:The local agent translates those to pymobiledevice3 and returns structured, redacted status.
+./docs/wireless_research/11_PROTOCOL_STACK.md:10:  pymobiledevice3 remote browse
+./docs/wireless_research/11_PROTOCOL_STACK.md:21:  CoreDeviceProxy over lockdown for newer iOS
+./docs/wireless_research/11_PROTOCOL_STACK.md:65:Xcode/pymobiledevice3 wireless pairing
+./docs/wireless_research/11_PROTOCOL_STACK.md:74:The location simulation layer is already transport-agnostic once a valid `--rsd HOST PORT` exists. The hard research question is therefore not “can DVT set location wirelessly?” but “can IOSSim or pymobiledevice3 reliably obtain and maintain a valid RSD endpoint without USB on the target iOS 26.x phone?”
+./macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamLiveTests.swift:705:    func testCoreDeviceUUIDIsRejectedWhilePhysicalUDIDIsAccepted() throws {
+./macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamLiveTests.swift:707:            "812EB0E1-DB40-5E49-9347-08079A74CBAF", source: .coreDeviceIdentifier
+./research/07_synthesis_and_verdict.md:10:**Can a Mac-hosted iOS location simulation system (DVT-based, pymobiledevice3) cause Life360, Find My, or Google Maps to classify movement as driving, for a physically stationary iPhone?**
+./research/07_synthesis_and_verdict.md:39:| `<time>` tags in GPX controlling playback rate | pymobiledevice3 `play_gpx_file()` | Works; timestamps control host-side sleep, not device |
+./research/07_synthesis_and_verdict.md:51:  - pymobiledevice3 or current ios-location-sim DriveController running
+./research/07_synthesis_and_verdict.md:71:- iOS 17/18 CoreDevice tunnel reliability issues with DVT over USB
+./research/07_synthesis_and_verdict.md:187:**Impact:** pymobiledevice3's `play_gpx_file()` will use `<time>` tags to sleep between coordinate emissions — precisely controlling the apparent speed. Without `<time>` tags, all waypoints are emitted at maximum rate with zero delay.
+./research/07_synthesis_and_verdict.md:250:- [DVT Protocol Audit — File 05](05_pymobiledevice3_protocol_audit.md)
+./research/01_driving_signal_audit.md:10:Tooling: `pymobiledevice3` + iOS Developer Tools (DVT) location simulation  
+./research/01_driving_signal_audit.md:11:Current Drive Mode: calls `pymobiledevice3 developer dvt simulate-location set -- lat lon` per tick. No speed, heading, course, altitude, or motion metadata injected.
+./research/01_driving_signal_audit.md:75:| `CLLocation.course` | Unconfirmed | No public API known for DVT | Unknown | pymobiledevice3 issue #340 closed without fix |
+./research/01_driving_signal_audit.md:104:**DVT physical device (pymobiledevice3):** pymobiledevice3 issue #340 ("Simulate location with speed, heading and altitude") closed without implementation in 2022. DVT `simulate-location set` takes only `lat lon`. Whether GPX `play` path derives and populates `CLLocation.speed` on physical devices: **unconfirmed, likely no**.
+./research/01_driving_signal_audit.md:116:- `xcrun simctl location <device> set <lat> <lon>` and GPX file-based simulation
+./research/01_driving_signal_audit.md:121:**DVT Protocol (pymobiledevice3, physical device):**
+./research/01_driving_signal_audit.md:180:- [pymobiledevice3 GitHub - doronz88](https://github.com/doronz88/pymobiledevice3)
+./research/01_driving_signal_audit.md:181:- [Issue #340: Simulate location with speed, heading and altitude](https://github.com/doronz88/pymobiledevice3/issues/340)
+./research/01_driving_signal_audit.md:182:- [DVT Services and Instruments - DeepWiki](https://deepwiki.com/doronz88/pymobiledevice3/4.1-dvt-services-and-instruments)
+./research/06_life360_detection_gate_analysis.md:78:Xcode's location simulation sets `isSimulatedBySoftware = true` — the exact same DVT path as pymobiledevice3. Life360's engineering team explicitly uses this path for testing.
+./docs/wireless_research/18_ARCHITECTURE_DECISION_MATRIX.md:25:2. Run wireless RSD/DVT experiments with pymobiledevice3.
+./macos/Tests/IOSSimMacCoreTests/SetupStoreTests.swift:578:            .init(state: .pass, component: "Apple Tooling", name: "xcrun", detail: "ready")
+./macos/Tests/IOSSimMacCoreTests/SetupStoreTests.swift:798:            .init(state: .pass, component: "Apple Tooling", name: "xcrun", detail: "ready")
+./docs/wireless_research/17_SECURITY_MODEL.md:12:| Raw pymobiledevice3 logs | May include identifiers, ports, secrets, paths |
+./docs/wireless_research/17_SECURITY_MODEL.md:61:  -> local pymobiledevice3
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:28:| Does DVT location simulation function over that channel? | Xcode’s own location simulation uses developer services. pymobiledevice3 exposes a Wi-Fi tunnel path. Direct IOSSim confirmation is still required. | LIKELY |
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:29:| Does Remote Service Discovery behave differently over wireless pairing? | pymobiledevice3 documents remote pairing/trusted tunnel/RSD over Wi-Fi as a distinct path from USB lockdown/CoreDeviceProxy. | LIKELY |
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:37:Apple-supported wireless pairing proves “no cable after initial pairing” is a real concept for Xcode. It does not by itself prove current IOSSim can reconnect wirelessly, because IOSSim currently uses usbmux detection plus `lockdown start-tunnel`, not Xcode’s Device Hub state or pymobiledevice3’s `remote start-tunnel -t wifi`.
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:39:The lowest-risk experiment is to use Xcode/pymobiledevice3 to establish or verify wireless pairing, then run:
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:42:python -m pymobiledevice3 remote browse
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:43:python -m pymobiledevice3 remote start-tunnel --connection-type wifi --script-mode
+./docs/wireless_research/01_APPLE_WIRELESS_PAIRING.md:44:python -m pymobiledevice3 developer dvt simulate-location set --rsd HOST PORT -- LAT LON
+./macos/Tests/IOSSimMacCoreTests/ApplePersonalTeamExperimentalTests.swift:115:    func testProfileValidationUsesPhysicalUDIDRatherThanCoreDeviceIdentifier() async throws {
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:1:# 03 usbmuxd and libimobiledevice
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:7:Sources: Arch [usbmuxd(8)](https://man.archlinux.org/man/usbmuxd.8.en), libimobiledevice [project site](https://libimobiledevice.org/).
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:11:libimobiledevice documents network support for devices with Wi-Fi Sync enabled. Apple/Xcode troubleshooting also identifies port `62078` as the network-device communication port. Older tools such as `idevice_id -n` target this category of Wi-Fi lockdown/usbmux communication.
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:15:- This is not the same as iOS 17+ CoreDevice/RSD developer-service transport.
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:21:pymobiledevice3 supports a remote usbmux daemon address:
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:25:PYMOBILEDEVICE3_USBMUX
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:35:| Is wireless lockdown still supported? | Yes at a broad Apple/libimobiledevice level for Wi-Fi Sync/network devices, but reliability and iOS 17+ developer-service applicability are separate questions. |
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:38:| Can a remote `usbmuxd` server be accessed? | Yes in pymobiledevice3 via `--usbmux HOST:PORT` or env vars. |
+./docs/wireless_research/03_USBMUX_AND_LIBIMOBILEDEVICE.md:39:| Does that help with iOS 17+/26 developer services? | Possibly. It can get IOSSim to the remote lockdown/usbmux layer, but DVT still requires CoreDevice/RSD tunnel creation and privileges on whichever host creates the tunnel. |
+./docs/wireless_research/15_LOCAL_RELAY_OPTIONS.md:15:The relay runs pymobiledevice3 and owns pairing/tunnel/DVT. This is the preferred relay model.
+./docs/wireless_research/15_LOCAL_RELAY_OPTIONS.md:46:| Python 3.11+ / pymobiledevice3 | Yes | Pin and log version |
+./docs/wireless_research/15_LOCAL_RELAY_OPTIONS.md:66:The smallest practical local component is a local DVT bridge, not a transparent network tunnel. Start with a headless Mac mini or x86 mini PC. Only move to Raspberry Pi after confirming pymobiledevice3 can establish the iOS 26 tunnel and DVT set/clear reliably on ARM Linux.
+./research/02_driving_classification_feasibility.md:50:- **`CLLocation.altitude` via DVT: device uses its own barometric sensor.** GPX `<ele>` is not read by pymobiledevice3 code; Apple docs confirm altitude not provided from GPX. [CONFIRMED-COMMUNITY-REPORT]
+./research/02_driving_classification_feasibility.md:52:- **`isSimulatedBySoftware`: forced true by DVT.** pymobiledevice3 uses the same `com.apple.dt.simulatelocation` service as Xcode. Apple DTS confirmed this service triggers the flag. [CONFIRMED-EXPERIMENT via Apple DTS engineer, Apple Developer Forums thread #803179]
+./research/02_driving_classification_feasibility.md:144:## Task 5: GPX Format — What pymobiledevice3 Actually Reads
+./research/02_driving_classification_feasibility.md:158:**Apple Health GPX extensions:** Apple Health exports GPX with `<extensions>` blocks containing `<speed>` and `<course>`. These are not read by pymobiledevice3 or Xcode DVT. Useful only for in-app GPX libraries (e.g., GpxLocationManager) running within your own app process.
+./research/02_driving_classification_feasibility.md:197:## Task 7: pymobiledevice3 Source Code Audit
+./research/02_driving_classification_feasibility.md:231:Source: [pymobiledevice3 simulate_location.py](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/simulate_location.py), [location_simulation.py](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/location_simulation.py)
+./research/02_driving_classification_feasibility.md:253:3. Run: `python -m pymobiledevice3 developer dvt simulate-location play route_timed.gpx`
+./research/02_driving_classification_feasibility.md:275:3. Execute: `python -m pymobiledevice3 developer dvt simulate-location play route.gpx`
+./research/02_driving_classification_feasibility.md:406:- [pymobiledevice3 simulate_location.py source](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/simulate_location.py)
+./research/02_driving_classification_feasibility.md:407:- [pymobiledevice3 DVT location_simulation.py source](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/location_simulation.py)
+./research/02_driving_classification_feasibility.md:408:- [Issue #340: Simulate location with speed, heading, altitude](https://github.com/doronz88/pymobiledevice3/issues/340)
+./research/02_driving_classification_feasibility.md:429:- [DVT Services and Instruments - DeepWiki](https://deepwiki.com/doronz88/pymobiledevice3/4.1-dvt-services-and-instruments)
+./research/02_driving_classification_feasibility.md:430:- [iOS 26.0 Location Spoofing with pymobiledevice3 - Gist](https://gist.github.com/lucasrod/52b8375d0b8a8212092c2440f0400fa3)
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:1:# 02 pymobiledevice3 Wireless Audit
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:5:- Installed locally: `pymobiledevice3 9.12.0`.
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:7:- IOSSim requirement: `pymobiledevice3>=4.14.0`, so the environment may install a newer version on fresh setup.
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:12:python -m pymobiledevice3 remote browse
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:13:python -m pymobiledevice3 remote pair
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:14:python -m pymobiledevice3 remote start-tunnel --connection-type usb|wifi
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:15:python -m pymobiledevice3 remote tunneld
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:16:python -m pymobiledevice3 lockdown start-tunnel --mobdev2 --usbmux HOST:PORT --rsd HOST PORT --tunnel ...
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:17:python -m pymobiledevice3 usbmux list  # "USB and Wi-Fi"
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:23:python -m pymobiledevice3 lockdown remotepairing --pair
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:33:C:\Users\reshw\AppData\Local\Programs\Python\Python311\Lib\site-packages\pymobiledevice3
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:41:| `remote/tunnel_service.py` | remote pairing and CoreDevice tunnel service discovery/creation helpers |
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:49:`cli/remote.py` maps `ConnectionType.USB` to CoreDevice tunnel services and `ConnectionType.WIFI` to remote-pairing tunnel services. That is the key installed-code evidence that a Wi-Fi tunnel path exists in pymobiledevice3.
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:55:| Can pymobiledevice3 discover a device over Wi-Fi? | It has `remote browse` for Bonjour RemoteXPC devices and `usbmux list` says it lists USB and Wi-Fi. Real discovery depends on pairing, Bonjour, platform networking, and version. | POSSIBLE BUT UNPROVEN LOCALLY |
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:56:| Does it support Apple CoreDevice wireless connections? | It implements RemoteXPC/RSD/tunnel services and has `remote start-tunnel -t wifi`. This is reverse-engineered, not Apple-supported API. | LIKELY |
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:65:| Does the tunnel collapse when USB disconnects? | Current USB lockdown/CoreDeviceProxy tunnel likely collapses when USB transport disappears. Needs W02 test. | LIKELY |
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:66:| Is there a supported way to reconnect automatically? | pymobiledevice3 top-level has `--reconnect`, and `remote tunneld` monitors USB/Wi-Fi/mobdev2, but IOSSim does not use this. Wireless auto-reconnect is experimental. | POSSIBLE |
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:75:  wifi -> pymobiledevice3 remote start-tunnel --connection-type wifi --script-mode
+./docs/wireless_research/02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md:83:Sources: pymobiledevice3 [README](https://github.com/doronz88/pymobiledevice3), [iOS 17+ tunnels guide](https://github.com/doronz88/pymobiledevice3/blob/master/docs/guides/ios17-tunnels.md), [RemoteXPC.md](https://github.com/doronz88/pymobiledevice3/blob/master/misc/RemoteXPC.md), [iDevice protocol layers](https://github.com/doronz88/pymobiledevice3/blob/master/misc/understanding_idevice_protocol_layers.md).
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:199:            $0.executable.path == "/usr/bin/xcrun"
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:200:                && $0.arguments.starts(with: ["devicectl", "device", "install", "app"])
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:211:            $0.executable.lastPathComponent == "xcodebuild"
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:400:        guard executable.path == "/usr/bin/xcrun", arguments.first == "devicectl" else {
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:409:        if arguments.starts(with: ["devicectl", "list", "devices"]) {
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:420:        if arguments.starts(with: ["devicectl", "device", "info", "lockState"]) {
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:424:        if arguments.starts(with: ["devicectl", "device", "info", "apps"]) {
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:432:        if arguments.starts(with: ["devicectl", "device", "install", "app"]),
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:450:        if arguments.starts(with: ["devicectl", "device", "process", "launch"]) {
+./macos/Tests/IOSSimMacCoreTests/NativeSigningIdentityIntegrationTests.swift:453:        if arguments.starts(with: ["devicectl", "device", "copy", "from"]),
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:17:  -> python -m pymobiledevice3 ...
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:28:4. `backend/device_manager.py` detects the device through `pymobiledevice3.lockdown.create_using_usbmux()` or `python -m pymobiledevice3 usbmux list`.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:29:5. `backend/device_manager.py` mounts the Developer Disk Image using `python -m pymobiledevice3 mounter auto-mount`.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:33:   python -m pymobiledevice3 lockdown start-tunnel --script-mode
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:40:   python -m pymobiledevice3 developer dvt simulate-location set --rsd HOST PORT -- LAT LON
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:41:   python -m pymobiledevice3 developer dvt simulate-location clear --rsd HOST PORT
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:42:   python -m pymobiledevice3 developer dvt simulate-location play --rsd HOST PORT FILE.gpx
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:48:   python -m pymobiledevice3 developer simulate-location set -- LAT LON
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:49:   python -m pymobiledevice3 developer simulate-location clear
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:60:- `DeviceManager.detect()` uses `create_using_usbmux()` first and falls back to `python -m pymobiledevice3 usbmux list`.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:61:- `DeviceManager.start_tunnel()` uses `pymobiledevice3 lockdown start-tunnel --script-mode`, whose default path discovers the device through usbmux.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:64:Important nuance: the installed pymobiledevice3 help says `usbmux list` can list “USB and Wi-Fi” devices, and `lockdown start-tunnel` has `--mobdev2` and `--usbmux HOST:PORT` options. The current IOSSim implementation does not use those options and does not attempt network or remote pairing discovery.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:71:- `pymobiledevice3`; local installed version during audit: `9.12.0`.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:90:- Developer Disk Image mounted by `pymobiledevice3 mounter auto-mount`.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:99:Local pymobiledevice3 `9.12.0` exposes additional tunnel paths not used by current IOSSim:
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:102:python -m pymobiledevice3 remote browse
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:103:python -m pymobiledevice3 remote pair
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:104:python -m pymobiledevice3 remote start-tunnel --connection-type usb|wifi
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:105:python -m pymobiledevice3 remote tunneld
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:106:python -m pymobiledevice3 lockdown start-tunnel --mobdev2
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:107:python -m pymobiledevice3 lockdown start-tunnel --usbmux HOST:PORT
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:129:- `research/05_pymobiledevice3_protocol_audit.md`: confirms DVT `LocationSimulation` exposes only `simulateLocationWithLatitude:longitude:` and `stopLocationSimulation`; iOS 17+ changed transport to CoreDevice/RemoteXPC/RSD, not the location simulation payload.
+./docs/wireless_research/00_CURRENT_ARCHITECTURE_AUDIT.md:145:2. Whether pymobiledevice3 `remote start-tunnel --connection-type wifi` works with a modern physical iPhone on iOS 26.x.
+./docs/wireless_research/16_IPHONE_REMOTE_CONTROL_UI.md:9:  -> pymobiledevice3 / RSD / DVT
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:7:| Can IOSSim operate without a cable after initial pairing? | Likely, if pymobiledevice3 Wi-Fi RemotePairing/RSD works on the target phone. Apple supports wireless Xcode devices; IOSSim still needs experiments. | LIKELY |
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:8:| Can IOSSim reconnect wirelessly after cable removal? | Possible via `pymobiledevice3 remote start-tunnel -t wifi`, but unproven in this repo. | POSSIBLE BUT UNPROVEN |
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:18:| Can a Raspberry Pi replace the Mac? | Possibly for pymobiledevice3 USB bridge; Wi-Fi/RSD on iOS 26 needs validation. It cannot run Xcode. | POSSIBLE BUT UNPROVEN |
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:24:| What is the easiest experiment next? | EXP-W03/EXP-W04: Xcode-pair wirelessly, run `pymobiledevice3 remote start-tunnel -t wifi`, then DVT set/clear with `--rsd`. | CONFIRMED |
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:32:  -> Xcode/pymobiledevice3 wireless pairing
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:33:  -> pymobiledevice3 Wi-Fi RSD tunnel
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:44:  -> pymobiledevice3 / RSD / DVT
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:73:3. Run: python -m pymobiledevice3 remote browse
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:74:4. Run: python -m pymobiledevice3 remote start-tunnel --connection-type wifi --script-mode
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:76:   python -m pymobiledevice3 developer dvt simulate-location set --rsd HOST PORT -- 37.7749 -122.4194
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:78:   python -m pymobiledevice3 developer dvt simulate-location clear --rsd HOST PORT
+./docs/wireless_research/20_FINAL_RECOMMENDATION.md:81:If step 4 or 5 fails on `pymobiledevice3 9.12.0`, repeat in an isolated venv with current `10.1.0` before declaring the architecture infeasible.
+./docs/wireless_research/README.md:26:| `02_PYMOBILEDEVICE3_WIRELESS_AUDIT.md` | Installed/upstream pymobiledevice3 wireless capability audit |
+./docs/wireless_research/README.md:27:| `03_USBMUX_AND_LIBIMOBILEDEVICE.md` | usbmuxd/libimobiledevice network options |
+./docs/wireless_research/README.md:36:| `12_COREDEVICE_AUDIT.md` | CoreDevice/RemoteXPC/RSD architecture |
+./docs/wireless_research/README.md:58:| pymobiledevice3: [iOS 17+ tunnels guide](https://github.com/doronz88/pymobiledevice3/blob/master/docs/guides/ios17-tunnels.md) | upstream docs | current GitHub | iOS 17.4+ lockdown tunnel, Wi-Fi remote tunnel, RSD address/port, elevated privileges, userspace limits | High | Direct |
+./docs/wireless_research/README.md:59:| pymobiledevice3: [RemoteXPC.md](https://github.com/doronz88/pymobiledevice3/blob/master/misc/RemoteXPC.md) | reverse-engineered technical notes | current GitHub | Remote pairing, trusted tunnel, RSD over tunnel, QUIC/TCP parameters | Medium-high | Direct |
+./docs/wireless_research/README.md:60:| pymobiledevice3: [README](https://github.com/doronz88/pymobiledevice3) | upstream docs | current GitHub | Cross-platform Python API/CLI and DDI/DVT tooling over iOS 17+ tunnel | High | Direct |
+./docs/wireless_research/README.md:61:| pymobiledevice3: [iDevice protocol layers](https://github.com/doronz88/pymobiledevice3/blob/master/misc/understanding_idevice_protocol_layers.md) | reverse-engineered technical notes | current GitHub | iOS 17 developer services require RemoteXPC/RSD tunnel; Wi-Fi tunnel path exists after remote pairing | Medium-high | Direct |
+./docs/wireless_research/README.md:62:| pymobiledevice3 discussion [#1463](https://github.com/doronz88/pymobiledevice3/discussions/1463) | maintainer/community discussion | Sep 2025 | DVT location simulation tested on iOS 26 | Medium | Direct |
+./docs/wireless_research/README.md:63:| pymobiledevice3 issue [#618](https://github.com/doronz88/pymobiledevice3/issues/618) | issue report | Oct 2023 | Xcode may see Wi-Fi iPhone while pymobiledevice3 usbmux list does not | Medium | Direct |
+./docs/wireless_research/README.md:64:| pymobiledevice3 issue [#1046](https://github.com/doronz88/pymobiledevice3/issues/1046) | issue report | Jun 2024 | Windows Bonjour/remote browse reliability problems | Medium | Direct |
+./docs/wireless_research/README.md:65:| libimobiledevice site: [Network Support](https://libimobiledevice.org/) | upstream project site | 2025 releases visible | Wi-Fi Sync devices can be accessed wirelessly; cross-platform native protocol stack | Medium-high | Direct, mostly pre-CoreDevice paths |
+./docs/wireless_research/README.md:66:| libusbmuxd issue [#88](https://github.com/libimobiledevice/libusbmuxd/issues/88) | issue report | 2018 | Wi-Fi lockdown/usbmux depends on port 62078 and implementation details | Medium-low due age | Direct, older stack |
+./docs/wireless_research/README.md:83:- Local installed `pymobiledevice3`: `9.12.0`.
+./docs/wireless_research/README.md:84:- Latest available on PyPI during audit: `10.1.0` (`python -m pip index versions pymobiledevice3`).
+./research/03_commercial_spoofers_analysis.md:11:All desktop tools that advertise "no jailbreak required" route through this Apple private daemon via USB. Protocol: libimobiledevice, pymobiledevice3, or proprietary implementations. **Key finding: only accepts `simulateLocationWithLatitude:longitude:` — two float arguments, nothing else.** `CLLocation.speed` is NOT a directly injectable raw field via this protocol path.
+./research/03_commercial_spoofers_analysis.md:133:- [pymobiledevice3 Issue #340](https://github.com/doronz88/pymobiledevice3/issues/340)
+./research/03_commercial_spoofers_analysis.md:144:- [pymobiledevice3 DVT location service source](https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/location_simulation.py)
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:1:# 12 CoreDevice Audit
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:5:pymobiledevice3’s protocol notes state that iOS 17 made developer services reachable only through the RemoteXPC/RSD trusted tunnel model. For iOS 17.4+, pymobiledevice3 documents a faster lockdown tunnel path through a newer CoreDeviceProxy-style service, avoiding some special USB-network driver requirements from early iOS 17.
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:9:Sources: pymobiledevice3 [iOS 17+ tunnels guide](https://github.com/doronz88/pymobiledevice3/blob/master/docs/guides/ios17-tunnels.md), [RemoteXPC.md](https://github.com/doronz88/pymobiledevice3/blob/master/misc/RemoteXPC.md), [iDevice protocol layers](https://github.com/doronz88/pymobiledevice3/blob/master/misc/understanding_idevice_protocol_layers.md).
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:11:## Does pymobiledevice3 implement CoreDevice concepts?
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:18:- `remote/core_device/*`: CoreDevice service wrappers.
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:19:- `cli/developer/core_device.py`: CLI access to CoreDevice services.
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:24:## Does CoreDevice wireless expose the same developer services?
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:26:Likely. Xcode can run/debug apps wirelessly, and pymobiledevice3’s trusted tunnel/RSD model is designed to access developer services including DVT. The specific IOSSim location path must still be validated on the target device because Xcode-supported app run/debug does not guarantee every non-Xcode client path works.
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:30:Yes. pymobiledevice3 references RemotePairing pair records and helpers such as `get_remote_pairing_record_filename`. RemoteXPC notes describe saving pair records and later requesting trusted tunnels from them.
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:46:Do not use private Apple frameworks directly. Use pymobiledevice3 CLI/API as the compatibility boundary.
+./docs/wireless_research/12_COREDEVICE_AUDIT.md:48:## Open CoreDevice questions
+./docs/wireless_research/07_IPHONE_ONLY_OPTIONS.md:33:host pair record -> lockdown/CoreDevice/RemoteXPC -> RSD tunnel -> DVT LocationSimulation -> locationd/CoreLocation
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:292:        XCTAssertEqual(arguments.first, "xcodebuild")
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:302:                output: "CoreDeviceError MismatchedApplicationIdentifierEntitlement",
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:438:        XCTAssertFalse(evidence.commands.contains { $0.executable.lastPathComponent == "xcodebuild" || $0.arguments.first == "xcodebuild" })
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:680:            if executable.path == "/usr/bin/xcrun", arguments.starts(with: ["devicectl", "list", "devices"]) {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:687:            if executable.path == "/usr/bin/xcrun", arguments.starts(with: ["devicectl", "device", "install", "app"]) {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:723:        ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x2712))
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1351:        if executable.path == "/usr/bin/xcrun",
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1352:           arguments.starts(with: ["devicectl", "device", "process", "launch"]),
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1360:                return .init(exitCode: 1, stdout: "", stderr: "CoreDevice launch failed for an unrelated reason")
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1367:    ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x2712))
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1507:        if executable.path == "/usr/bin/xcrun", arguments.first == "devicectl" {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1508:            if arguments.starts(with: ["devicectl", "list", "devices"]) {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1519:            if arguments.starts(with: ["devicectl", "device", "info", "lockState"]) {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1523:            if arguments.starts(with: ["devicectl", "device", "info", "apps"]) {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1536:            if arguments.starts(with: ["devicectl", "device", "uninstall", "app"]), arguments.count > 6 {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1540:            if arguments.starts(with: ["devicectl", "device", "install", "app"]),
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1548:            if arguments.starts(with: ["devicectl", "device", "process", "launch"]) {
+./macos/Tests/IOSSimMacCoreTests/ConsumerProvisioningTests.swift:1551:            if arguments.starts(with: ["devicectl", "device", "copy", "from"]),
+
