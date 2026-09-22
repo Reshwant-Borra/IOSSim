@@ -110,4 +110,41 @@ final class DeviceDomainsTests: XCTestCase {
         XCTAssertEqual(pairing.count, 13)
         XCTAssertEqual(pairing.filter { DeviceDomainMapping.remotePairing($0).state == .satisfied }, [.operational])
     }
+
+    // Onboarding: legitimate Apple/iPhone actions surface as user actions, not product failures.
+
+    func testLocalDevVPNIsReconciledBeforePairingSoItsPromptIsReachable() {
+        let order = InstallationDomain.reconciliationOrder
+        XCTAssertLessThan(order.firstIndex(of: .vpn)!, order.firstIndex(of: .pairing)!)
+        XCTAssertEqual(order.last, .runtime)
+    }
+
+    func testUntrustedDeveloperLaunchRejectionIsAUserActionEverywhere() {
+        let untrusted = NativeDeviceBridgeError.launchRejected(
+            "launchapplication: Unable to launch because its profile has not been explicitly trusted by the user.")
+        XCTAssertTrue(untrusted.isDeveloperTrustRejection)
+        XCTAssertFalse(NativeDeviceBridgeError.launchRejected("launchapplication: invalid signature").isDeveloperTrustRejection)
+        XCTAssertFalse(NativeDeviceBridgeError.deviceLocked.isDeveloperTrustRejection)
+
+        let direct = DeviceFailureMapping.map(untrusted)
+        XCTAssertEqual(direct.state, .waitingForUser)
+        XCTAssertEqual(direct.userAction, DeviceFailureMapping.developerTrust)
+        // The VPN coordinator's launch of Veya is often the first launch after DDI is already mounted.
+        XCTAssertEqual(DeviceFailureMapping.map(LocalDevVPNSetupFailure.developerTrustRequired), direct)
+        XCTAssertEqual(DeviceFailureMapping.map(NativeDeviceBridgeError.launchRejected("invalid signature")).state,
+                       .retryableFailure)
+    }
+
+    func testTransitionStoppedOnUserActionIsReportedAsUserActionNotProductFailure() async throws {
+        let failure: VeyaFailure
+        do {
+            _ = try await DeviceFailureMapping.prepare { throw LocalDevVPNSetupFailure.appMissing }
+            return XCTFail("expected a user action")
+        } catch let value as VeyaFailure { failure = value }
+        let result = EngineHost.failureResult(EngineRequest(command: .reconcile), error: failure,
+                                              identity: EngineIdentity(packaged: false, qualificationBuild: true))
+        XCTAssertEqual(result.exitCode, .userAction)
+        XCTAssertEqual(result.status, "userActionRequired")
+        XCTAssertEqual(result.userAction, "Install LocalDevVPN from the App Store on the iPhone.")
+    }
 }

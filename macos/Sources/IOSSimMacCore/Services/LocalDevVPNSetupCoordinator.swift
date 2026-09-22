@@ -10,6 +10,8 @@ public enum LocalDevVPNSetupFailure: String, Error, Codable, Equatable, Sendable
     case receiptMissing = "LOCALDEVVPN_RECEIPT_MISSING"
     case receiptInvalid = "LOCALDEVVPN_RECEIPT_INVALID"
     case transportUnavailable = "LOCALDEVVPN_TRANSPORT_UNAVAILABLE"
+    /// iOS refused to launch Veya because its Personal Team developer is not trusted yet.
+    case developerTrustRequired = "LOCALDEVVPN_DEVELOPER_TRUST_REQUIRED"
 }
 
 public enum LocalDevVPNLifecycleState: String, Codable, Equatable, Sendable {
@@ -259,6 +261,7 @@ public actor LocalDevVPNSetupCoordinator {
         guard let bridge = error as? NativeDeviceBridgeError else { return .transportUnavailable }
         switch bridge {
         case .applicationNotFound(_): return .appMissing
+        case _ where bridge.isDeveloperTrustRejection: return .developerTrustRequired
         case .deviceNotFound, .deviceResolutionFailed(_), .deviceDisconnected, .timedOut,
              .deviceLocked, .trustRequired:
             return .transportUnavailable

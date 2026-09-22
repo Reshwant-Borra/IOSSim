@@ -20,8 +20,10 @@ extension InstallationDomain {
     /// Product dependency order. A stage's prerequisites are every domain before it.
     public static let reconciliationOrder: [InstallationDomain] = [
         .artifact, .migration, .authorization, .team, .signingKey, .certificate, .profile,
-        .payload, .application, .developerSupport, .pairing, .vpn, .runtime,
+        .payload, .application, .developerSupport, .vpn, .pairing, .runtime,
     ]
+    // VPN precedes pairing: the phone-side LocalDevVPN check never reads RPPairing, and the planner stops at the
+    // first unsatisfied domain, so pairing-first hid the LocalDevVPN install/approval prompt behind pairing.
 
     /// Direct prerequisites. A signing key needs no Apple account; a certificate needs both.
     public var prerequisites: [InstallationDomain] {
@@ -458,7 +460,8 @@ public enum EngineHost {
             code = .refused
         case let value as VeyaFailure:
             failure = EngineFailureSummary(code: value.code, safeMessage: value.safeMessage, domain: nil)
-            code = value.retryable ? .retryableExternal : .productFailure
+            // A transition that stopped on a legitimate user action (install/approve/trust) is not a product failure.
+            code = value.userAction != nil ? .userAction : value.retryable ? .retryableExternal : .productFailure
         case let value as InstallationStateFailure:
             failure = EngineFailureSummary(code: value.code, safeMessage: "Installation state operation failed.", domain: nil)
             code = value.code.hasPrefix("VEYA-SEC") ? .refused : .productFailure
@@ -467,9 +470,10 @@ public enum EngineHost {
             code = .internalProtocol
         }
         // Constructing a result from fixed safe values cannot fail; fall back defensively.
+        let userAction = (error as? VeyaFailure)?.userAction
         return (try? QualificationResult(
-            command: request.command, exitCode: code, status: "failed", runID: request.runID,
-            identity: identity, snapshot: nil, firstFailure: failure
+            command: request.command, exitCode: code, status: userAction == nil ? "failed" : "userActionRequired",
+            runID: request.runID, identity: identity, snapshot: nil, userAction: userAction, firstFailure: failure
         ))!
     }
 }

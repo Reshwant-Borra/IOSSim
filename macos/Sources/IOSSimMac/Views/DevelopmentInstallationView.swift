@@ -68,8 +68,13 @@ final class DevelopmentInstallationModel: ObservableObject {
                                                  maximumPermission: .destructiveOwned, maximumTransitions: 64),
                 connectionGeneration: device.identity.connectionGeneration, device: target)
             let response = await EngineHost.handle(request, composition: composition)
-            self.result = response
-            self.message = response.userAction ?? response.firstFailure?.safeMessage ?? response.status
+            // A transition that throws returns no snapshot; re-observe so the list is current, not blank or stale.
+            self.result = response.observations.isEmpty && command != .inspect
+                ? await EngineHost.handle(EngineRequest(command: .inspect, connectionGeneration: device.identity.connectionGeneration,
+                                                        device: target), composition: composition)
+                : response
+            self.message = response.userAction.map { "ACTION REQUIRED: \($0)" }
+                ?? response.firstFailure?.safeMessage ?? response.status
         }
     }
 
@@ -129,13 +134,20 @@ struct DevelopmentInstallationView: View {
             }.disabled(model.selected.isEmpty)
             Text(model.message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if let result = model.result {
-                Text("Last observation (not continuous readiness)").font(.caption).foregroundStyle(.secondary)
+                Text("Last observation (not continuous readiness). Development session: relaunching Veya discards the "
+                     + "Apple session and signing key (M4 deferred), so those show waitingForUser/invalid until the next Install / Resume.")
+                    .font(.caption).foregroundStyle(.secondary)
                 List(result.observations, id: \.domain) { observation in
-                    HStack {
-                        Text(observation.domain.rawValue).frame(width: 150, alignment: .leading)
-                        Text(observation.state.rawValue)
-                        Spacer()
-                        Text(observation.capturedAt, style: .time).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(observation.domain.rawValue).frame(width: 150, alignment: .leading)
+                            Text(observation.state.rawValue)
+                            Spacer()
+                            Text(observation.capturedAt, style: .time).foregroundStyle(.secondary)
+                        }
+                        if let action = observation.userAction {
+                            Text(action).font(.caption).foregroundStyle(.orange)
+                        }
                     }
                 }
             }

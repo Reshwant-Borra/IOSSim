@@ -98,10 +98,10 @@ public enum ProductionComposition {
                               device: { try selected() }),
             ProductionDeviceDomains.developerSupport(probe: transport, coordinator: developerServices,
                                                      repository: repository, device: selected),
-            ProductionDeviceDomains.pairing(store: pairingStore, native: pairingNative, coordinator: pairingCoordinator,
-                                            repository: repository, device: selected),
             ProductionDeviceDomains.vpn(service: applications, coordinator: LocalDevVPNSetupCoordinator(service: applications),
                                         repository: repository, device: selected),
+            ProductionDeviceDomains.pairing(store: pairingStore, native: pairingNative, coordinator: pairingCoordinator,
+                                            repository: repository, device: selected),
             RuntimeReadinessDomain(repository: repository, prover: JournalRuntimeProver(
                 repository: repository, developerServices: developerServices, pairingStore: pairingStore,
                 coordinator: RichRuntimeReadinessCoordinator(service: applications), device: selected)),

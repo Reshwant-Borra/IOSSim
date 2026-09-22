@@ -48,6 +48,8 @@ public enum DeviceFailureMapping {
     static let unlock = "Unlock your iPhone and keep it unlocked, then continue."
     static let trust = "Tap Trust on your iPhone and enter its passcode, then continue."
     static let developerMode = "Turn on Developer Mode on the iPhone, restart it, then retry."
+    public static let developerTrust = "On the iPhone open Settings > General > VPN & Device Management, select the "
+        + "Apple Development entry for your Apple Account, tap Trust, then return to Veya and choose Install / Resume."
     public static let secureStorageUnavailable = DeviceDomainFailure.make(
         .pairing, 31, "store", "Veya's secure storage is unavailable, so the device pairing cannot be kept.")
 
@@ -59,6 +61,7 @@ public enum DeviceFailureMapping {
             case .deviceLocked: return .user(unlock)
             case .trustRequired, .trustPromptPending, .trustDenied: return .user(trust)
             case .developerModeRequired: return .user(developerMode)
+            case _ where bridge.isDeveloperTrustRejection: return .user(developerTrust)
             case .ddiRequired: return .missing()
             default: return .failed(DeviceDomainFailure.observationFailed)
             }
@@ -83,6 +86,7 @@ public enum DeviceFailureMapping {
             case .vpnPermissionRequired, .userActionRequired: return DeviceDomainMapping.localDevVPN(.vpnPermissionRequired)
             case .vpnNotRunning: return .user("Open LocalDevVPN on the iPhone and tap Connect, then continue.")
             case .endpointUnavailable, .receiptMissing, .receiptInvalid: return DeviceDomainMapping.localDevVPN(.running)
+            case .developerTrustRequired: return .user(developerTrust)
             case .transportUnavailable: return .failed(DeviceDomainFailure.observationFailed)
             }
         default:
@@ -103,6 +107,16 @@ public enum DeviceFailureMapping {
                                   underlyingSubsystem: "deviceDomains")) ?? DeviceDomainFailure.observationFailed
             } ?? DeviceDomainFailure.observationFailed
         }
+    }
+}
+
+extension NativeDeviceBridgeError {
+    /// AppService launch denied because the user has not trusted the Personal Team developer on the iPhone.
+    /// A platform security requirement, not a Veya defect; reuses the physically observed classifier.
+    public var isDeveloperTrustRejection: Bool {
+        guard case .launchRejected(let detail) = self else { return false }
+        return ConsumerProvisioningErrorClassifier.launchErrorCode(output: "launch_rejected: \(detail)")
+            == .developerProfileTrustRequired
     }
 }
 

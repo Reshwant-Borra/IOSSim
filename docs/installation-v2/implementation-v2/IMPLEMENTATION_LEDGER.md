@@ -162,3 +162,11 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
   route, runner-as-launch-target.
 - User actions (not defects): iOS developer trust. Onboarding gaps: LocalDevVPN never prompted; pairing manual.
 - Baseline `--defer-m4` PASS: Swift 505/15 skipped/0 failed; Rust 18/0 + 12/0.
+
+## Onboarding pass 2026-09-21
+
+- VPN reconciled before pairing (LocalDevVPN prompt was unreachable); transition user actions reported as user
+  actions; untrusted-developer launch denial → Settings trust instruction; dev UI re-observes after failures.
+- Tests `DeviceDomainsTests` 9/0; focused suites 125/0; full baseline `--defer-m4` PASS (Swift 508/15 skipped/0 failed).
+- Physical E2E after the change NOT_RUN (target iPhone not attached). READY not claimed. M4 DEFERRED.
+- Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Onboarding pass.

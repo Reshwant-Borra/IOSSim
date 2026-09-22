@@ -77,3 +77,51 @@ target, so no physical test or mutation was run against it.
 - Live-qualification screenshots (`docs/installation-v2/implementation/live-qualification/*.png`) are excluded and
   gitignored: they are full-screen captures containing unrelated personal content, and the repository is public.
 - Stray shell-redirect file `:-` (codesign requirement text) is left untracked.
+
+## Onboarding pass (after checkpoint commit `94d9e76`)
+
+Failure/state classification of the device chain:
+
+| Domain / state | Class | Veya behavior now |
+|---|---|---|
+| Untrusted Personal Team developer (AppService launch denied, "profile has not been explicitly trusted") | PLATFORM_SECURITY_REQUIREMENT | `waitingForUser` with the Settings → General → VPN & Device Management instruction, from both the developer-services launch and the LocalDevVPN step's launch of Veya |
+| LocalDevVPN absent | USER_ACTION_REQUIRED | "Install LocalDevVPN from the App Store on the iPhone." (inventory-proven by the coordinator) |
+| LocalDevVPN VPN permission / not connected | USER_ACTION_REQUIRED | approve / tap Connect instructions (existing mappings) |
+| LocalDevVPN `running` without endpoint | STALE_OBSERVATION / incomplete | never satisfies; only `runtimeEndpointReachable` does (unchanged) |
+| Pairing record absent on the Mac | DEFERRED_FEATURE | engine runs the existing automatic bootstrap/delivery transition; not physically proven |
+| Apple session / signing key after relaunch | DEFERRED (M4 volatile) | shows `waitingForUser` / `invalid`; the dev UI now explains this |
+| Device locked / trust prompt / Developer Mode | USER_ACTION_REQUIRED | existing mappings, unchanged |
+
+Defects fixed:
+
+1. **LocalDevVPN prompt unreachable (root cause of "never prompted").** The planner stops at the first
+   unsatisfied domain in `reconciliationOrder`, and `.pairing` preceded `.vpn`. While pairing was unsatisfied
+   every reconcile ended at pairing. `.vpn` now precedes `.pairing`; the phone-side LocalDevVPN check never reads
+   RPPairing (`LocalDevVPNSetupInbox`), and runtime still requires both. READY semantics unchanged.
+2. **User actions raised inside a transition were reported as product failures** (`EngineHost.failureResult`
+   dropped `VeyaFailure.userAction`). They now return exit `userAction`, status `userActionRequired`, and the action.
+3. **Untrusted developer was a generic device/transport failure.** `NativeDeviceBridgeError.isDeveloperTrustRejection`
+   reuses the physically observed `ConsumerProvisioningErrorClassifier`; `LocalDevVPNSetupFailure.developerTrustRequired`
+   carries it out of the VPN coordinator (legacy route maps it to its existing `developerProfileTrustRequired`).
+4. **Blank/stale observation list after a failed action.** A thrown transition returns no snapshot; the dev UI now
+   re-inspects so the list reflects current state, shows each observation's user action, and labels M4-volatile states.
+
+Regression tests (`DeviceDomainsTests`, 9/0): VPN-before-pairing order; trust rejection → user action from bridge and
+VPN coordinator, non-trust rejection stays retryable; transition user action → `userAction` result.
+
+Truthful limits:
+
+- **Manual pairing import on the iPhone does not satisfy the Mac-side `.pairing` domain.** The development session
+  keeps pairing in `InMemoryRemotePairingStore`, and `JournalRuntimeProver` requires the Mac-side record's
+  generation. So READY via the v2 engine needs the existing automatic delivery to succeed physically. No "import
+  manually" prompt was added, because it would not unblock READY.
+- The iOS trust-denial text through idevice's AppService error is assumed to carry the FBS phrase the classifier
+  matches (as observed via devicectl). Physical confirmation pending.
+
+Physical E2E after these changes: **NOT_RUN** — the qualification iPhone was not attached (only `…001439C43EEA401C`).
+Development artifact rebuilt: `.build/iossim/development-session/Veya Development.app`.
+Graphify: 37,059 nodes, 90,894 edges, 1,203 communities.
+
+Onboarding-pass validation: `./iossim installation-baseline --defer-m4` **Overall PASS** — Swift 508 executed / 15
+skipped / 0 failed (a first run caught `ProductionComposition` still composing pairing before VPN; fixed to match
+`reconciliationOrder`, asserted by `LegacyMigrationTests`). Rust, secret scan, v2 legacy guard all PASS; M4 DEFERRED.

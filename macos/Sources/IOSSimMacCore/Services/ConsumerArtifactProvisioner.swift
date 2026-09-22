@@ -1915,6 +1915,10 @@ public actor ConsumerArtifactProvisioner {
                 code = .localDevVPNUserActionRequired
                 userMessage = "Finish enabling LocalDevVPN on your iPhone."
                 remediation = "Open LocalDevVPN and follow its setup guidance, then return to IOSSim and choose Try Again."
+            case .developerTrustRequired:
+                code = .developerProfileTrustRequired
+                userMessage = "Trust the developer on your iPhone."
+                remediation = "Open Settings > General > VPN & Device Management, trust the Apple Development entry, then choose Try Again."
             case .receiptMissing, .receiptInvalid:
                 code = .localDevVPNReadinessFailed
                 userMessage = "IOSSim could not verify LocalDevVPN readiness."
