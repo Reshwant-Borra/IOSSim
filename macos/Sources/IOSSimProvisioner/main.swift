@@ -233,10 +233,6 @@ struct ProvisionerTool {
                     }
                 }
                 return 0
-            case "personal-team-poc":
-                let report = await personalTeamPOCReport(arguments: Array(args.dropFirst()), context: context)
-                try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion, data: report))
-                return 0
             case "consumer-teams":
                 let provisioner = nativeConsumerProvisioner(context: context)
                 let teams = await provisioner.availableTeams(
@@ -752,7 +748,6 @@ struct ProvisionerTool {
           verify [--device <id>]
           verify-artifacts --json
           info --json
-          personal-team-poc --json [--team <team-id>] [--team-kind personal|paid|unknown] [--device <id>]
           consumer-teams --json [--device <id>]
           consumer-status --json
           consumer-runtime-ready --json
@@ -1203,89 +1198,6 @@ struct ProvisionerTool {
             fputs("\(Redactor.redact(String(describing: error)))\n", stderr)
             return 1
         }
-    }
-}
-
-private func personalTeamPOCReport(arguments: [String], context: RuntimeProvisioningContext) async -> PersonalTeamPOCInspectionReport {
-    let identities = await AppleSigningIdentityInspector.availableAppleDevelopmentIdentities(runner: context.runner)
-    let explicitTeam = optionValue("--team", in: arguments)
-    let selectedTeam = explicitTeam ?? singleDetectedTeamIdentifier(from: identities)
-    let selectedKind = teamKind(from: optionValue("--team-kind", in: arguments))
-    let selectedDevice = optionValue("--device", in: arguments)
-    let source = ProtectedSourceBundleIdentifiers.default
-    let derived = selectedTeam.flatMap { try? PersonalTeamProvisioningPOC.derivedBundleIdentifiers(teamIdentifier: $0) }
-    let manifest = try? context.loadManifest()
-    let profiles: [ProvisioningProfileSummary]
-    let signingGraph: [SigningGraphNode]
-    if let manifest {
-        profiles = await ArtifactEligibilityEvaluator.summaries(
-            resourcesURL: context.resourcesURL,
-            manifest: manifest,
-            selectedDeviceIdentifier: selectedDevice
-        )
-        signingGraph = await SigningGraphInspector.graph(
-            resourcesURL: context.resourcesURL,
-            manifest: manifest,
-            profiles: profiles,
-            runner: context.runner
-        )
-    } else {
-        profiles = []
-        signingGraph = []
-    }
-    let deviceHash = selectedDevice.map { PersonalTeamProvisioningPOC.deviceIdentifierHash($0) }
-    let refreshPlan: RefreshPlan?
-    if let selectedTeam, let deviceHash, let derived {
-        let pocManifest = PersonalTeamProvisioningManifest(
-            teamIdentifier: selectedTeam,
-            teamKind: selectedKind,
-            deviceIdentifierHash: deviceHash,
-            sourceMainBundleID: source.main,
-            installedMainBundleID: derived.main,
-            sourceUITestBundleID: source.uiTests,
-            installedUITestBundleID: derived.uiTests,
-            sourceRunnerBundleID: source.runner,
-            installedRunnerBundleID: derived.runner,
-            sourceWitnessBundleID: source.witness,
-            installedWitnessBundleID: nil,
-            mainExpiration: profiles.first(where: { $0.bundleIdentifier == source.main })?.expirationDate,
-            runnerExpiration: profiles.first(where: { $0.bundleIdentifier == source.runner })?.expirationDate,
-            witnessExpiration: nil
-        )
-        refreshPlan = PersonalTeamProvisioningPOC.refreshPlan(
-            manifest: pocManifest,
-            currentTeamIdentifier: selectedTeam,
-            currentDeviceIdentifierHash: deviceHash
-        )
-    } else {
-        refreshPlan = nil
-    }
-    return PersonalTeamPOCInspectionReport(
-        sourceBundleIdentifiers: source,
-        derivedBundleIdentifiers: derived,
-        selectedTeamIdentifier: selectedTeam,
-        selectedTeamKind: selectedKind,
-        appleDevelopmentIdentities: identities,
-        selectedDeviceIdentifierHash: deviceHash,
-        currentArtifactProfiles: profiles,
-        currentSigningGraph: signingGraph,
-        refreshPlan: refreshPlan
-    )
-}
-
-private func singleDetectedTeamIdentifier(from identities: [AppleCodeSigningIdentity]) -> String? {
-    let teams = Set(identities.compactMap(\.teamIdentifier))
-    return teams.count == 1 ? teams.first : nil
-}
-
-private func teamKind(from rawValue: String?) -> ProvisioningTeamKind {
-    switch rawValue?.lowercased() {
-    case "personal", "personal-team", "free":
-        return .personalTeam
-    case "paid", "developer", "paid-development":
-        return .paidDevelopment
-    default:
-        return .unknown
     }
 }
 
