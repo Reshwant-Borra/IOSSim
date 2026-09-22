@@ -15,7 +15,7 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 | M8 | SOFTWARE_GATE_PASS / LEGACY_WRITE_REMOVAL_PENDING | Read-only legacy snapshot in the migration ledger; legacy key never imported (plaintext-equivalent at rest) |
 | M9 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (development DDI, LocalDevVPN, automatic pairing) / PRODUCTION_DDI_BLOCKED_EXTERNAL | DDI via the helper's real coordinator; pairing/VPN bound to the installed app; v2 pairing store fail-closed |
 | M10 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (development READY 2026-09-21 22:17, fresh bound runtime proof) | READY only from fresh bound full-chain proof; journal-aware production prover composed |
-| M11 | PARTIAL / ROUTE_SWITCH_BLOCKED_HUMAN | v2 cannot reach legacy (retired identity store, subprocess guard); 16 legacy findings remain on the shipping route |
+| M11 | PARTIAL / ROUTE_SWITCH_BLOCKED_HUMAN | v2 cannot reach legacy (retired identity store, subprocess guard); M11-A removed `personal-team-poc`; 14 legacy entries remain on the shipping route |
 | M12 | FAIL (M4 open) | 497 Swift (1 required failure: M4), Rust 27/0 both arches, exact payload pass, baseline all other steps PASS |
 
 ## M0
@@ -185,3 +185,14 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - Confirmed physically: immediate VPN re-check (no 600 s wait), LocalDevVPN connect action shown, automatic
   pairing, status-line redraw. Fixed: VPN receipts older than 60 s are stale (reported satisfied while off).
 - Baseline `--defer-m4` PASS (Swift 509/15/0). Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Clean confirmation run.
+
+## Production DDI investigation 2026-09-22
+
+- Verdict: DDI is a production dependency. Phone Run Setup (DVT dtservicehub) and default Rich Drive (testmanagerd +
+  XCTest) need a mounted personalized DDI; the READY probe adds none of its own. The production DDI source decision
+  stays open (human/legal).
+- Defect 9 fixed (`9e74ad0`): READY proof now requires Core Location to observe a DVT and a Rich Drive coordinate
+  (receipt schema 2). Earlier physical READYs proved runner launch and TestManager, not location.
+- M11-A (`65cddeb`): unreachable `personal-team-poc` command removed; scanner `--scope all` 16 → 14.
+- Baseline `--defer-m4` PASS (Swift 509/15/0). Physical P1–P4 NOT_RUN (iPhone not attached).
+- Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Production DDI investigation.

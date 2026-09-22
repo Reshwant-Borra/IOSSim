@@ -67,3 +67,16 @@ Build 12 DMG exists, correctly).
 3. Delete their tests: `NativeSigningIdentityIntegrationTests`, `VeyaSigningKeychainRegressionTests`, `CertificateCapacityRecoveryTests`, the `prepareIdentity` cases of `ApplePersonalTeamLiveTests`, legacy `ConsumerProvisioningTests`.
 4. Make `KeychainRemotePairingStore` require a backend (drop the v1 default); M8 inventories the v1 items.
 5. Gate: `check_legacy_signing_routes.py --scope all` must report 0 findings.
+
+## M11-A (2026-09-22, `65cddeb`)
+
+Deleted the `personal-team-poc` helper command, `AppleSigningIdentityInspector`, `SigningGraphInspector` and
+`PersonalTeamPOCInspectionReport`. Nothing called them (no UI, engine, script, or test caller). The shared parsers
+stay. `--scope all`: 16 → 14 entries in 7 files.
+
+Everything else in the removal set still requires M4, the `SetupStore` route switch, and a physical run through the
+production composition. None of it depends on the DDI decision.
+
+Additional gaps found:
+- M8 does not inventory `com.iossim.remote-pairing.v1`.
+- `--scope v2` does not scan the `Services/` files that the v2 path uses.

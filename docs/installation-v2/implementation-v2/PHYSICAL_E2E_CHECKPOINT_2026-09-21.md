@@ -201,3 +201,76 @@ already granted; covered by `RuntimeReadinessTests`.
 
 Validation: `./iossim installation-baseline --defer-m4` **Overall PASS** — Swift 509 / 15 skipped / 0 failed;
 Rust bridge 18/0, signer 12/0 (+1 ignored); M4 DEFERRED.
+
+## Production DDI investigation and runtime-proof correction — 2026-09-22 (`9e74ad0`, `65cddeb`)
+
+### Verdict: production functionality requires DDI
+
+- The iPhone's own Run Setup (`ConnectionStatusModel.runSetup` → `OnDeviceDVTExperimentRunner.connect` →
+  `IdeviceOnDeviceTunnelClient.connectWithIdevice`) opens `com.apple.instruments.dtservicehub` over RSD for DVT
+  LocationSimulation.
+- The default Drive mode (`richXCUILocationExperimental`) also launches the XCTest runner through
+  `com.apple.dt.testmanagerd.remote`. The runner links XCTest from `/Developer/Library/Frameworks`.
+- On iOS 17+ these services exist only while a personalized DDI is mounted. The iPhone app has no mounter.
+- **Production DDI therefore stays a product dependency. It is not qualification-only.**
+- The READY probe adds no DDI dependency of its own: it reuses the same stack.
+- **Evidence status: from code.** Physical experiment P3 below confirms it on the device.
+
+### Defect 9: READY did not prove location delivery
+
+- `richLocationProbeCompleted` was true whenever the Gate-1 XCTest plan finished without a transport error. Two
+  things made that meaningless:
+  - The FFI `XCUITestListener` is empty, and idevice's default `test_case_did_fail` returns `Ok`.
+  - The test targets `com.iossim.location-witness`, which the v2 payload does not ship.
+- So the physical READYs recorded above proved runner launch and the TestManager handshake, not location.
+- Fix:
+  - The phone proof now drives the product DVT path and the product `XCTestRichDriveLocationTransport`.
+  - It requires `CoreLocationVerifier` in Veya to observe each coordinate: receipt fields `dvtLocationVerified` and
+    `richLocationVerified`, request/receipt schema 2.
+  - Cleanup still runs.
+  - The Mac `RichRuntimeProofReceipt.ready` requires both fields.
+  - The `VEYA-RUNTIME-010` action text now also covers location permission.
+  - Packaging refuses a payload whose main binary lacks the new fields.
+- Tests:
+  - `RichRuntimeReadinessTests`: unverified DVT/Rich → not ready; schema 1 rejected; unverified receipt →
+    `proofFailed`.
+  - `POCUnitChecks.runtimeProofNeverVerifiesLocationWithoutCoreLocationObservation`, sabotage-checked.
+
+### Clean-Mac observations (this development Mac)
+
+- The development DDI came from the doronz88 mirror cache,
+  `~/Library/Application Support/IOSSim/DeveloperSupport/23G90`, downloaded 2026-09-21 18:55 EDT, before the
+  physical runs.
+- Xcode's CoreDevice DDIs (`/Library/Developer/CoreDevice/CandidateDDIs`) and an Xcode-updated MobileDevice are
+  installed. It is **not proven** that Veya's own mount path ran rather than an already-mounted image.
+- The development app runs the engine in-process with development overrides. Never exercised physically:
+  - the helper `engine` command
+  - M4 key store
+  - v2 pairing Keychain store
+  - `ExistingAppleCacheProvider`
+
+### M11-A
+
+`personal-team-poc` helper command deleted (no caller). `check_legacy_signing_routes.py --scope all`: 16 → 14
+entries; `--scope v2`: 0.
+
+### Artifacts and validation
+
+- iPhone payload rebuilt from `9e74ad0` (clean). Development app rebuilt:
+  `.build/iossim/development-session/Veya Development.app`.
+- `./iossim package-app` still fails its universal-architecture audit for the self-contained Mac app (host arm64
+  only). That failure predates this change and does not involve the payload.
+- `./iossim installation-baseline --defer-m4` **Overall PASS**:
+  - Swift 509 / 15 skipped / 0 failed
+  - Rust 18/0 and 12/0 (+1 ignored)
+  - iOS shared checks PASS
+  - v2 guard 0
+
+### Physical gates pending (NOT_RUN — qualification iPhone not attached)
+
+| Gate | Procedure | Expected |
+|---|---|---|
+| P1 | Fresh Install / Resume with the rebuilt development app | READY; receipt has `dvtLocationVerified` and `richLocationVerified` true; no regression in sign-in, signing, install, trust, VPN action/re-check, pairing, status line |
+| P2 | Deny Veya location access, then Install / Resume | not READY; `VEYA-RUNTIME-010` user action |
+| P3 | Reboot the iPhone; without the Mac, press Run Setup on the phone | Session step fails (`RSD_FAILED`/ServiceNotFound); then Install / Resume → READY |
+| P4 | Reboot the iPhone with Xcode/devicectl closed; Install / Resume | `.developerSupport` takes the `ddiRequired` → mount branch |
