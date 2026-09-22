@@ -80,3 +80,26 @@ production composition. None of it depends on the DDI decision.
 Additional gaps found:
 - M8 does not inventory `com.iossim.remote-pairing.v1`.
 - `--scope v2` does not scan the `Services/` files that the v2 path uses.
+
+## M11-A verification (2026-09-22)
+
+Re-ran the checks from a clean state to confirm the cleanup is exactly what M11-A claims and nothing more:
+
+- `git show --stat 65cddeb`: only `PersonalTeamProvisioningPOC.swift` (removed `AppleSigningIdentityInspector`,
+  `SigningGraphInspector`, `PersonalTeamPOCInspectionReport`) and `IOSSimProvisioner/main.swift` (removed the
+  `personal-team-poc` CLI case and its private helpers) changed. No shared parser, no still-called route touched.
+- `check_legacy_signing_routes.py --scope all`: **14 findings in 7 files** (unchanged from the commit). `--scope v2`: **0**.
+- **13 vs 14 discrepancy, explained:** the scanner's `findings` count is the number of distinct
+  `(file, rule-category)` rows, not the sum of the regex occurrence counts printed in parentheses.
+  `PersonalTeamProvisioningPOC.swift` matched 3 raw occurrences before M11-A (2 `codesign` calls in
+  `SigningGraphInspector`, 1 `security find-identity` call in `AppleSigningIdentityInspector`), but those 2
+  `codesign` occurrences share one rule category and collapse into a single row. Deleting the file therefore
+  removes exactly **2 rows** (`external codesign`, `security CLI mutation`), not 3: 16 → 14, not 16 → 13.
+  Verified by running the scanner against `65cddeb^` (16 rows, `PersonalTeamProvisioningPOC.swift` contributing
+  the `external codesign (2)` and `security CLI mutation (1)` rows) and against current HEAD (14 rows, that file
+  absent from the output). No finding was deleted to force a number; 14 is the correct, re-derived count.
+- `./iossim installation-baseline --defer-m4`: **Overall PASS** (M4 step DEFERRED as designed).
+- `graphify update .`: no topology change from `65cddeb5`; graph stands at 37,066 nodes · 90,886 edges · 1,224 communities.
+
+M11-B (the route switch and the rest of the removal set above) is still blocked on M4 and a physical proof of the
+new route through `ProvisionerEngineClient`/`SetupStore`, per spec 27 — unrelated to this verification pass.

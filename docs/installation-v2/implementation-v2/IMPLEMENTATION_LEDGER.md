@@ -196,3 +196,12 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - M11-A (`65cddeb`): unreachable `personal-team-poc` command removed; scanner `--scope all` 16 → 14.
 - Baseline `--defer-m4` PASS (Swift 509/15/0). Physical P1–P4 NOT_RUN (iPhone not attached).
 - Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Production DDI investigation.
+
+## M11-A verification 2026-09-22
+
+- Re-ran `check_legacy_signing_routes.py`: `--scope all` 14 findings/7 files (confirmed, unchanged); `--scope v2` 0.
+- 13-vs-14 count discrepancy resolved: the scanner counts distinct `(file, rule-category)` rows, not raw regex
+  occurrences; `PersonalTeamProvisioningPOC.swift` removed 2 rows (not 3), so 16 → 14 is correct. Detail: `M11_RESULT.md` § M11-A verification.
+- `./iossim installation-baseline --defer-m4`: Overall PASS.
+- `graphify update .`: no topology change; 37,066 nodes · 90,886 edges · 1,224 communities.
+- M11-B unchanged: still blocked on M4 + physical proof of the route switch.
