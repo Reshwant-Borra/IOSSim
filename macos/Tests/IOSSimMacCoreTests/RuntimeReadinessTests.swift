@@ -68,6 +68,27 @@ final class RuntimeReadinessTests: XCTestCase {
         XCTAssertEqual(prover.proofs, 2, "an expired proof is re-proven, never assumed")
     }
 
+    func testOnDeviceRunBeforeAutomationApprovalIsAUserActionAndRetryReachesReady() async throws {
+        prover.failure = RichRuntimeProofFailure.proofFailed
+        do {
+            _ = try await reconcile()
+            XCTFail("an incomplete on-device run is never READY")
+        } catch let failure as VeyaFailure {
+            XCTAssertEqual(failure, RuntimeReadinessDomain.runtimeActionRequired)
+            XCTAssertNotNil(failure.userAction)
+        }
+        prover.failure = RichRuntimeProofFailure.cleanupFailed
+        do {
+            _ = try await reconcile()
+            XCTFail("cleanup failure is never READY")
+        } catch let failure as RichRuntimeProofFailure {
+            XCTAssertEqual(failure, .cleanupFailed, "cleanup failure stays a product failure, not a user action")
+        }
+        prover.failure = nil
+        let retried = try await reconcile()
+        XCTAssertEqual(retried.status, .ready)
+    }
+
     func testReconnectInvalidatesReadiness() async throws {
         _ = try await reconcile(connection: 1)
         let outcome = try await reconcile(connection: 2)

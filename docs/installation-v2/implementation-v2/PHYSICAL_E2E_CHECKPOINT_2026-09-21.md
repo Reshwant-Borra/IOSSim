@@ -125,3 +125,44 @@ Graphify: 37,059 nodes, 90,894 edges, 1,203 communities.
 Onboarding-pass validation: `./iossim installation-baseline --defer-m4` **Overall PASS** — Swift 508 executed / 15
 skipped / 0 failed (a first run caught `ProductionComposition` still composing pairing before VPN; fixed to match
 `reconciliationOrder`, asserted by `LegacyMigrationTests`). Rust, secret scan, v2 legacy guard all PASS; M4 DEFERRED.
+
+## Physical E2E run — 2026-09-21 21:53–22:17 (after `b0ee224`)
+
+Target verified before any mutation via usbmux + lockdown `GetValue`: `Rishi Borra`, iOS 26.6.2, **23G90**,
+UDID `00008150-00022D581E12401C` (USB + network). The second iPhone (`…001439C43EEA401C`, 26.6.1) was attached on
+network only and never used.
+
+| Phase | Result | Evidence (development journal) |
+|---|---|---|
+| Developer-services launch boundary (opt-in test) | PHYSICAL_PASS | `testOptInPhysicalDeveloperServicesLaunchBoundary` against the rebuilt bridge |
+| Apple sign-in + 2FA in Veya | USER_ACTION_REQUIRED → PHYSICAL_PASS | user entered credentials in Veya only |
+| Signing key / certificate / profiles / signing | AUTOMATIC → PHYSICAL_PASS | gen 15–18 (21:55:10–21:55:25) |
+| Install (Installation Proxy) | AUTOMATIC → PHYSICAL_PASS | gen 19 `deviceInventoryAfterInstall`, connection 1 |
+| Developer support (DDI + AppService) | AUTOMATIC → PHYSICAL_PASS | gen 20 `developerSupportFreshObservation` — first time recorded |
+| LocalDevVPN | USER_ACTION_REQUIRED ("Open LocalDevVPN … allow the VPN configuration") → PHYSICAL_PASS | gen 21 `vpnFreshObservation` 22:08:09 |
+| Pairing | AUTOMATIC (existing bootstrap/delivery; **no manual import**) → PHYSICAL_PASS | gen 22 `pairingFreshObservation` 22:08:35 |
+| Runtime (testmanagerd + XCTest runner + location probe + cleanup) | USER_ACTION_REQUIRED (iOS automation approval) → PHYSICAL_PASS | gen 23 `runtimeFullChainProof` 22:17:03, `rich-runtime-inbox`, connection 1, valid until 22:27:03 |
+| **READY** | **PHYSICAL_PASS (development)** | all 10 required domains active; runtime evidence fresh and bound to the current connection and upstream records |
+
+Physical defects found in this run and fixed (with regression tests):
+
+5. **VPN deadlock on a stale action receipt.** The observer treated the phone's last LocalDevVPN receipt
+   (`vpnPermissionRequired`, ≤ 600 s old) as current `waitingForUser`, so after the user approved, Veya never
+   re-probed. The receipt now yields `invalid` with the action as a hint, so the transition re-probes and re-raises
+   the action only if still needed. Workaround used live: waiting out the 600 s receipt lifetime.
+   Test: `ProductionWiringTests.testVPNObservationIsReadOnlyAndAcceptsOnlyAFreshBoundReachableReceipt`.
+6. **First runtime proof failed while iOS asked to allow automation.** The phone writes a receipt per app
+   activation. The run before approval wrote a failed receipt, which the Mac read and rejected at 22:08:46. The
+   post-approval run succeeded (22:08:52), after the Mac had stopped. `proofFailed`/`receiptUnavailable` now raise a
+   retryable user action (`VEYA-RUNTIME-010`); `cleanupFailed` stays a product failure. An isolated Mac-side
+   reproduction of the coordinator passed (`ready=true`, 6.5 s). Test:
+   `RuntimeReadinessTests.testOnDeviceRunBeforeAutomationApprovalIsAUserActionAndRetryReachesReady`.
+7. **Blank status line in the development UI** after runs (selectable `Text` not relaid out); forced with `.id`.
+   Not yet visually re-verified (needs a relaunch).
+
+Corrections to earlier statements in this document:
+
+- Pairing: the existing automatic delivery **works physically**; manual import was not needed for READY.
+- The development artifact that reached READY predates fixes 5–7 (VPN needed the 600 s wait; runtime needed one retry).
+
+Validation: `./iossim installation-baseline --defer-m4` **Overall PASS** — Swift 509 / 15 skipped / 0 failed.

@@ -80,6 +80,14 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
 
     static let evidenceKind = "runtimeFullChainProof"
 
+    public static let runtimeActionRequired = try! VeyaFailure(
+        namespace: .runtime, number: 10, operation: "prove",
+        safeMessage: "The iPhone runtime check did not complete.",
+        retryable: true,
+        userAction: "If the iPhone asked to allow automation, allow it. Keep the iPhone unlocked with LocalDevVPN "
+            + "connected, then choose Install / Resume.",
+        underlyingSubsystem: "runtime")
+
     public func execute(_ context: TransitionContext) async throws -> TransitionReceipt {
         switch context.planned.kind {
         case .proveCandidate, .promoteCandidate:
@@ -109,7 +117,15 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
             throw InstallationStateFailure.candidateMissing(domain)
         }
         let started = now()
-        let result = try await prover.proveRuntime(binding: binding, scope: context.scope)
+        let result: RuntimeProofResult
+        do {
+            result = try await prover.proveRuntime(binding: binding, scope: context.scope)
+        } catch RichRuntimeProofFailure.proofFailed, RichRuntimeProofFailure.receiptUnavailable {
+            // Physically observed: the first on-device XCTest run fails while iOS waits for the user to allow
+            // automation, and the phone reports that failure before the approval. A retry after approval passes.
+            // Cleanup failures stay terminal and never become READY.
+            throw Self.runtimeActionRequired
+        }
         guard result.completedAt >= started.addingTimeInterval(-5), result.completedAt <= now().addingTimeInterval(5) else {
             throw RichRuntimeProofFailure.receiptInvalid
         }

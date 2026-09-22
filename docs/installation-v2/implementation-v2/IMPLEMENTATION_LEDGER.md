@@ -13,8 +13,8 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 | M6 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (live Apple, development) | Auth v2; SPKI-only certificates; `.authorization/.team/.certificate/.profile` routed through the live backend; retry-safe budget |
 | M7 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (install on iOS 26.6.2) | Two-bundle payload, per-team rewrite approval, exact entitlements, staging GC; composed in production |
 | M8 | SOFTWARE_GATE_PASS / LEGACY_WRITE_REMOVAL_PENDING | Read-only legacy snapshot in the migration ledger; legacy key never imported (plaintext-equivalent at rest) |
-| M9 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (development DDI + AppService) / PARTIAL (pairing manual, VPN NOT_RUN) / PRODUCTION_DDI_BLOCKED_EXTERNAL | DDI via the helper's real coordinator; pairing/VPN bound to the installed app; v2 pairing store fail-closed |
-| M10 | SOFTWARE_GATE_PASS / PHYSICAL NOT_RUN (needs pairing + VPN) | READY only from fresh bound full-chain proof; journal-aware production prover composed |
+| M9 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (development DDI, LocalDevVPN, automatic pairing) / PRODUCTION_DDI_BLOCKED_EXTERNAL | DDI via the helper's real coordinator; pairing/VPN bound to the installed app; v2 pairing store fail-closed |
+| M10 | SOFTWARE_GATE_PASS / PHYSICAL_PASS (development READY 2026-09-21 22:17, fresh bound runtime proof) | READY only from fresh bound full-chain proof; journal-aware production prover composed |
 | M11 | PARTIAL / ROUTE_SWITCH_BLOCKED_HUMAN | v2 cannot reach legacy (retired identity store, subprocess guard); 16 legacy findings remain on the shipping route |
 | M12 | FAIL (M4 open) | 497 Swift (1 required failure: M4), Rust 27/0 both arches, exact payload pass, baseline all other steps PASS |
 
@@ -170,3 +170,11 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - Tests `DeviceDomainsTests` 9/0; focused suites 125/0; full baseline `--defer-m4` PASS (Swift 508/15 skipped/0 failed).
 - Physical E2E after the change NOT_RUN (target iPhone not attached). READY not claimed. M4 DEFERRED.
 - Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Onboarding pass.
+
+## Physical READY 2026-09-21
+
+- Full chain on `Rishi Borra` (iOS 26.6.2 / 23G90) reached development READY: `runtimeFullChainProof` gen 23, connection 1.
+- User actions: Apple sign-in/2FA, LocalDevVPN VPN approval, iOS automation approval. Pairing automatic.
+- Fixed: VPN stale-receipt deadlock; runtime pre-approval failure → user action; blank dev status line.
+- Baseline `--defer-m4` PASS (Swift 509/15/0). M4 DEFERRED; production DDI BLOCKED_EXTERNAL; Build 12 not authorized.
+- Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Physical E2E run.

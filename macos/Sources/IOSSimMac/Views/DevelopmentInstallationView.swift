@@ -132,7 +132,8 @@ struct DevelopmentInstallationView: View {
                 Button("Install / Resume") { Task { await model.run(.reconcile) } }
                 if model.busy { ProgressView().controlSize(.small) }
             }.disabled(model.selected.isEmpty)
-            Text(model.message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            // `.id`: a selectable Text can keep its old (blank) layout when the string changes (observed physically).
+            Text(model.message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).id(model.message)
             if let result = model.result {
                 Text("Last observation (not continuous readiness). Development session: relaunching Veya discards the "
                      + "Apple session and signing key (M4 deferred), so those show waitingForUser/invalid until the next Install / Resume.")

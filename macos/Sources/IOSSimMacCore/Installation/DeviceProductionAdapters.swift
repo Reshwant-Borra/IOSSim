@@ -251,7 +251,12 @@ public enum ProductionDeviceDomains {
                     }
                     let state = receipt.lifecycleState ?? (receipt.status == "ready" ? .runtimeEndpointReachable : .installed)
                     if state == .runtimeEndpointReachable, !receipt.endpointReachable { return .incomplete() }
-                    return DeviceDomainMapping.localDevVPN(state)
+                    let mapped = DeviceDomainMapping.localDevVPN(state)
+                    // The receipt is the phone's report from the last probe, not the current state. Waiting on it
+                    // would never re-probe after the user acted (physically observed deadlock), so it stays a hint
+                    // and the transition re-probes; that throws the same action if it is still needed.
+                    guard mapped.state == .waitingForUser else { return mapped }
+                    return NativeDomainMapping(state: .invalid, userAction: mapped.userAction, failure: nil)
                 } catch {
                     return DeviceFailureMapping.map(error)
                 }
