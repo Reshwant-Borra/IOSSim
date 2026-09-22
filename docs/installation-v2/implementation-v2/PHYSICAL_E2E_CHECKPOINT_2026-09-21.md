@@ -166,3 +166,38 @@ Corrections to earlier statements in this document:
 - The development artifact that reached READY predates fixes 5–7 (VPN needed the 600 s wait; runtime needed one retry).
 
 Validation: `./iossim installation-baseline --defer-m4` **Overall PASS** — Swift 509 / 15 skipped / 0 failed.
+
+## Clean confirmation run — 2026-09-21 22:25–22:43
+
+Fresh development package from `1821a32` (+ fix 8 below), app quit and relaunched (volatile Apple session and
+signing key discarded, M4 deferred). Target re-verified before mutation: `Rishi Borra`, 26.6.2 / 23G90,
+`00008150-00022D581E12401C`.
+
+First attempt (22:26–22:28, LocalDevVPN still connected): whole chain automatic through runtime, `ready` shown.
+The user then disconnected LocalDevVPN; a later click still showed `vpn satisfied`.
+
+8. **VPN satisfied minutes after LocalDevVPN was turned off.** The observer accepted a bound `ready` receipt for
+   600 s. A live product probe at 22:33 correctly returned `vpnNotRunning` while the stored receipt (22:27:41) still
+   said reachable. Bound receipts older than 60 s are now `stale` and force a re-probe; the runtime proof TTL (600 s,
+   M10) is unchanged. Because `.vpn` precedes `.runtime`, a stale/failed VPN blocks READY.
+   Test: `ProductionWiringTests.testVPNObservationIsReadOnlyAndAcceptsOnlyAFreshBoundReachableReceipt`.
+
+Confirmation run after rebuilding with fix 8 (LocalDevVPN disconnected at start):
+
+| Step | Class | Result |
+|---|---|---|
+| Select iPhone (two phones attached: no auto-select, by design) | USER_ACTION_REQUIRED | selected `Rishi Borra - 26.6.2` |
+| Apple sign-in | USER_ACTION_REQUIRED → PHYSICAL_PASS | status "Authorized: Rishi Borra" |
+| Signing key / certificate / profiles / signing | AUTOMATIC → PHYSICAL_PASS | gen 32–35 (22:39:58–22:40:14) |
+| Install | AUTOMATIC → PHYSICAL_PASS | gen 36 `deviceInventoryAfterInstall` 22:40:48, connection 1 |
+| LocalDevVPN off | USER_ACTION_REQUIRED | status "ACTION REQUIRED: Open LocalDevVPN on the iPhone and tap Connect, then continue." (run ended 22:41:07) |
+| LocalDevVPN reconnected, immediate retry | AUTOMATIC → PHYSICAL_PASS | gen 37 `vpnFreshObservation` 22:42:29 — **no 600 s wait** |
+| Pairing | AUTOMATIC → PHYSICAL_PASS | gen 38 `pairingFreshObservation` 22:42:55, no manual import |
+| Runtime | AUTOMATIC → PHYSICAL_PASS | gen 39 `runtimeFullChainProof` 22:43:08, connection 1, valid until 22:53:08 |
+| **READY** | **PHYSICAL_PASS (development)** | status line "ready" (redraw fix 7 confirmed) |
+
+Not re-exercised physically: the automation-approval action (fix 6) — iOS did not prompt again because approval was
+already granted; covered by `RuntimeReadinessTests`.
+
+Validation: `./iossim installation-baseline --defer-m4` **Overall PASS** — Swift 509 / 15 skipped / 0 failed;
+Rust bridge 18/0, signer 12/0 (+1 ignored); M4 DEFERRED.

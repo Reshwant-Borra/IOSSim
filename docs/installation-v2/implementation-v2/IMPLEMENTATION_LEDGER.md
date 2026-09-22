@@ -178,3 +178,10 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - Fixed: VPN stale-receipt deadlock; runtime pre-approval failure → user action; blank dev status line.
 - Baseline `--defer-m4` PASS (Swift 509/15/0). M4 DEFERRED; production DDI BLOCKED_EXTERNAL; Build 12 not authorized.
 - Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Physical E2E run.
+
+## Clean confirmation run 2026-09-21 22:43
+
+- Rebuilt development package; READY again from scratch: `runtimeFullChainProof` gen 39, connection 1.
+- Confirmed physically: immediate VPN re-check (no 600 s wait), LocalDevVPN connect action shown, automatic
+  pairing, status-line redraw. Fixed: VPN receipts older than 60 s are stale (reported satisfied while off).
+- Baseline `--defer-m4` PASS (Swift 509/15/0). Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-21.md` § Clean confirmation run.

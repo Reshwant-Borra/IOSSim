@@ -227,7 +227,9 @@ public enum ProductionDeviceDomains {
         coordinator: LocalDevVPNSetupCoordinator,
         repository: InstallationJournalRepository,
         device: @escaping DeviceProvider,
-        receiptLifetime: TimeInterval = 600,
+        // Physically observed: a 600 s window reported `satisfied` minutes after LocalDevVPN was turned off. Older
+        // bound receipts are `stale`, so the next run re-probes the phone instead of trusting them.
+        receiptLifetime: TimeInterval = 60,
         now: @escaping @Sendable () -> Date = { Date() }
     ) -> CoordinatedDeviceDomain {
         CoordinatedDeviceDomain(
@@ -245,9 +247,11 @@ public enum ProductionDeviceDomains {
                     }
                     guard let receipt = try? JSONDecoder().decode(LocalDevVPNSetupReceiptPayload.self, from: data),
                           receipt.deviceUDID == target.udid, receipt.teamIdentifier == payload.teamIdentifier,
-                          receipt.releaseIdentity == payload.releaseIdentity,
-                          abs(now().timeIntervalSince(receipt.timestamp)) <= receiptLifetime else {
+                          receipt.releaseIdentity == payload.releaseIdentity else {
                         return .missing()
+                    }
+                    guard abs(now().timeIntervalSince(receipt.timestamp)) <= receiptLifetime else {
+                        return NativeDomainMapping(state: .stale, userAction: nil, failure: nil)
                     }
                     let state = receipt.lifecycleState ?? (receipt.status == "ready" ? .runtimeEndpointReachable : .installed)
                     if state == .runtimeEndpointReachable, !receipt.endpointReachable { return .incomplete() }

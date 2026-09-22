@@ -164,9 +164,11 @@ final class ProductionWiringTests: XCTestCase {
         observation = try await domain.observe(scope: scope, journal: journal)
         XCTAssertEqual(observation.state, .missing, "a receipt from another iPhone proves nothing")
         try receipt(state: .runtimeEndpointReachable, reachable: true)
-        clock.seconds = 601
         observation = try await domain.observe(scope: scope, journal: journal)
-        XCTAssertEqual(observation.state, .missing, "an old receipt proves nothing")
+        XCTAssertEqual(observation.state, .missing, "a fresh reachable receipt without a proven record is not satisfied")
+        clock.seconds = 61
+        observation = try await domain.observe(scope: scope, journal: journal)
+        XCTAssertEqual(observation.state, .stale, "a minute-old receipt must be re-probed: LocalDevVPN may be off now")
         XCTAssertEqual(service.writes, 0, "observation never writes to the device")
         XCTAssertEqual(service.launches, 0, "observation never launches apps")
     }
