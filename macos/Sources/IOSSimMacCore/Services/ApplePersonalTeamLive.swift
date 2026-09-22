@@ -1003,11 +1003,34 @@ protocol IOSSimManagedIdentityKeychain: Sendable {
     func saveRecoveryIntent(_ intent: CertificateRecoveryIntent) throws
     func clearRecoveryIntent(teamIdentifier: String) throws
     func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup
+    func managedKeyTags(teamIdentifier: String) throws -> [Data]
     func persistentReference(applicationTag: Data) throws -> Data
     func createPrivateKey(applicationTag: Data) throws -> SecKey
     func authorizePrivateKeyForSigning(applicationTag: Data) throws
     func addCertificate(_ certificate: SecCertificate, teamIdentifier: String) throws
     func verifySigningKeyUsable(certificate: SecCertificate) throws
+}
+
+/// Installation V2 guard: the legacy Keychain identity store, refusing everything. Reaching it means a
+/// v2 path called the Build 1-11 signer, which must fail instead of silently falling back.
+struct RetiredLegacyIdentityKeychain: IOSSimManagedIdentityKeychain {
+    private func refuse() -> Error { ExperimentalBackendError.adapterDisabled }
+    func load(teamIdentifier: String) throws -> IOSSimIdentityMetadata? { throw refuse() }
+    func loadCandidate(teamIdentifier: String) throws -> IOSSimIdentityMetadata? { throw refuse() }
+    func save(_ metadata: IOSSimIdentityMetadata) throws { throw refuse() }
+    func saveCandidate(_ metadata: IOSSimIdentityMetadata) throws { throw refuse() }
+    func promoteCandidate(teamIdentifier: String) throws { throw refuse() }
+    func installationIdentifier() throws -> String { throw refuse() }
+    func loadRecoveryIntent(teamIdentifier: String) throws -> CertificateRecoveryIntent? { throw refuse() }
+    func saveRecoveryIntent(_ intent: CertificateRecoveryIntent) throws { throw refuse() }
+    func clearRecoveryIntent(teamIdentifier: String) throws { throw refuse() }
+    func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup { ManagedPrivateKeyLookup(key: nil, status: errSecNotAvailable) }
+    func managedKeyTags(teamIdentifier: String) throws -> [Data] { throw refuse() }
+    func persistentReference(applicationTag: Data) throws -> Data { throw refuse() }
+    func createPrivateKey(applicationTag: Data) throws -> SecKey { throw refuse() }
+    func authorizePrivateKeyForSigning(applicationTag: Data) throws { throw refuse() }
+    func addCertificate(_ certificate: SecCertificate, teamIdentifier: String) throws { throw refuse() }
+    func verifySigningKeyUsable(certificate: SecCertificate) throws { throw refuse() }
 }
 
 struct IOSSimSigningKeyAccessPolicy: Equatable, Sendable {
@@ -1044,17 +1067,24 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     private let keyLabel: String
     private let signingAccessPolicy: IOSSimSigningKeyAccessPolicy
     private let signingKeychain: VeyaSigningKeychain
+    private let metadataDirectory: URL
+    private let fileManager: FileManager
 
     init(
         service: String = "com.iossim.mac.personal-team-signing",
         keyLabel: String = "IOSSim Personal Team Signing Key",
         signingAccessPolicy: IOSSimSigningKeyAccessPolicy = IOSSimSigningKeyAccessPolicy(),
-        signingKeychain: VeyaSigningKeychain = VeyaSigningKeychain()
+        signingKeychain: VeyaSigningKeychain = VeyaSigningKeychain(),
+        metadataDirectory: URL? = nil,
+        fileManager: FileManager = .default
     ) {
         self.service = service
         self.keyLabel = keyLabel
         self.signingAccessPolicy = signingAccessPolicy
         self.signingKeychain = signingKeychain
+        self.fileManager = fileManager
+        self.metadataDirectory = metadataDirectory ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/IOSSim/signing-metadata-v1", isDirectory: true)
     }
 
     /// Restricts a key query to the Veya signing Keychain. A key found anywhere
@@ -1063,8 +1093,8 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     /// the reuse path treats it as missing and issues a fresh candidate rather
     /// than resurrecting a key `/usr/bin/codesign` can never use. Nothing in
     /// the login Keychain is read, modified or deleted.
-    private func scopedToSigningKeychain(_ query: [String: Any]) -> [String: Any] {
-        guard let keychain = try? signingKeychain.open() else { return query }
+    private func scopedToSigningKeychain(_ query: [String: Any]) -> [String: Any]? {
+        guard let keychain = try? signingKeychain.open() else { return nil }
         var scoped = query
         scoped[kSecMatchSearchList as String] = [keychain] as CFArray
         return scoped
@@ -1079,6 +1109,25 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     }
 
     private func load(account: String) throws -> IOSSimIdentityMetadata? {
+        if let data = try loadRaw(account: account) {
+            return try PropertyListDecoder().decode(IOSSimIdentityMetadata.self, from: data)
+        }
+        if let legacy = legacyKeychainData(account: account) {
+            try saveRaw(legacy, account: account)
+            return try PropertyListDecoder().decode(IOSSimIdentityMetadata.self, from: legacy)
+        }
+        return nil
+    }
+
+    private func legacyKeychainData(account: String) -> Data? {
+        var previous = DarwinBoolean(false)
+        let changed = SecKeychainGetUserInteractionAllowed(&previous) == errSecSuccess
+            && SecKeychainSetUserInteractionAllowed(false) == errSecSuccess
+        defer {
+            if changed {
+                _ = SecKeychainSetUserInteractionAllowed(previous.boolValue)
+            }
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -1089,11 +1138,8 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw ExperimentalBackendError.missingPrivateKey
-        }
-        return try PropertyListDecoder().decode(IOSSimIdentityMetadata.self, from: data)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return data
     }
 
     func save(_ metadata: IOSSimIdentityMetadata) throws {
@@ -1109,36 +1155,12 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
             return
         }
         try save(candidate)
-        let status = SecItemDelete([
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: candidateAccount(teamIdentifier),
-            kSecAttrSynchronizable as String: false,
-        ] as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw ExperimentalBackendError.certificateRequestFailed
-        }
+        try removeRaw(account: candidateAccount(teamIdentifier))
     }
 
     private func save(_ metadata: IOSSimIdentityMetadata, account: String) throws {
         let data = try PropertyListEncoder().encode(metadata)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: false
-        ]
-        let replacement: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        ]
-        var status = SecItemUpdate(query as CFDictionary, replacement as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query
-            replacement.forEach { attributes[$0.key] = $0.value }
-            status = SecItemAdd(attributes as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw ExperimentalBackendError.certificateRequestFailed }
+        try saveRaw(data, account: account)
     }
 
     private func candidateAccount(_ teamIdentifier: String) -> String {
@@ -1162,18 +1184,11 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     }
 
     private func loadRawString(account: String) throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: false,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data,
+        let data = try loadRaw(account: account) ?? legacyKeychainData(account: account)
+        if let data, (try? loadRaw(account: account)) == nil {
+            try? saveRaw(data, account: account)
+        }
+        guard let data,
               let value = String(data: data, encoding: .utf8), !value.isEmpty else {
             return nil
         }
@@ -1181,38 +1196,17 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     }
 
     private func saveRaw(_ data: Data, account: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: false
-        ]
-        let replacement: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        ]
-        var status = SecItemUpdate(query as CFDictionary, replacement as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query
-            replacement.forEach { attributes[$0.key] = $0.value }
-            status = SecItemAdd(attributes as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw ExperimentalBackendError.certificateRequestFailed }
+        try ensureMetadataDirectory()
+        try data.write(to: metadataURL(account: account), options: [.atomic, .completeFileProtection])
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: metadataURL(account: account).path)
     }
 
     func loadRecoveryIntent(teamIdentifier: String) throws -> CertificateRecoveryIntent? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: recoveryAccount(teamIdentifier),
-            kSecAttrSynchronizable as String: false,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        let account = recoveryAccount(teamIdentifier)
+        guard let data = try loadRaw(account: account) ?? legacyKeychainData(account: account) else { return nil }
+        if (try? loadRaw(account: account)) == nil {
+            try? saveRaw(data, account: account)
+        }
         return try? PropertyListDecoder().decode(CertificateRecoveryIntent.self, from: data)
     }
 
@@ -1222,19 +1216,46 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
     }
 
     func clearRecoveryIntent(teamIdentifier: String) throws {
-        let status = SecItemDelete([
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: recoveryAccount(teamIdentifier),
-            kSecAttrSynchronizable as String: false
-        ] as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+        try removeRaw(account: recoveryAccount(teamIdentifier))
+    }
+
+    private func removeRaw(account: String) throws {
+        do {
+            try fileManager.removeItem(at: metadataURL(account: account))
+        } catch CocoaError.fileNoSuchFile {
+            return
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == CocoaError.fileNoSuchFile.rawValue {
+            return
+        } catch {
             throw ExperimentalBackendError.certificateRequestFailed
         }
     }
 
+    private func ensureMetadataDirectory() throws {
+        try fileManager.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: metadataDirectory.path)
+    }
+
+    private func loadRaw(account: String) throws -> Data? {
+        let url = metadataURL(account: account)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
+    }
+
+    private func metadataURL(account: String) -> URL {
+        let digest = SHA256.hash(data: Data("\(service)\u{0}\(account)".utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return metadataDirectory.appendingPathComponent("\(digest).plist", isDirectory: false)
+    }
+
     func lookupPrivateKey(applicationTag: Data) -> ManagedPrivateKeyLookup {
-        let query = scopedToSigningKeychain([
+        guard let query = scopedToSigningKeychain([
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: applicationTag,
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
@@ -1242,15 +1263,48 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
             kSecAttrSynchronizable as String: false,
             kSecReturnRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
-        ])
+        ]) else {
+            return ManagedPrivateKeyLookup(key: nil, status: errSecNoSuchKeychain)
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         let key = status == errSecSuccess && result != nil ? (result! as! SecKey) : nil
         return ManagedPrivateKeyLookup(key: key, status: status)
     }
 
+    func managedKeyTags(teamIdentifier: String) throws -> [Data] {
+        guard let query = scopedToSigningKeychain([
+            kSecClass as String: kSecClassKey,
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrSynchronizable as String: false,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]) else { return [] }
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess else { return [] }
+        let records: [[String: Any]]
+        if let many = result as? [[String: Any]] {
+            records = many
+        } else if let one = result as? [String: Any] {
+            records = [one]
+        } else {
+            records = []
+        }
+        var tags: [Data] = []
+        for record in records {
+            guard let tag = record[kSecAttrApplicationTag as String] as? Data,
+                  canonicalManagedKeyTag(tag, teamIdentifier: teamIdentifier) != nil,
+                  !tags.contains(tag) else { continue }
+            tags.append(tag)
+        }
+        return tags
+    }
+
     func persistentReference(applicationTag: Data) throws -> Data {
-        let query = scopedToSigningKeychain([
+        guard let query = scopedToSigningKeychain([
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: applicationTag,
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
@@ -1258,7 +1312,7 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
             kSecAttrSynchronizable as String: false,
             kSecReturnPersistentRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
-        ])
+        ]) else { throw ExperimentalBackendError.missingPrivateKey }
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data else { throw ExperimentalBackendError.missingPrivateKey }
@@ -1294,47 +1348,45 @@ final class IOSSimIdentityMetadataStore: IOSSimManagedIdentityKeychain, @uncheck
         guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
             throw ExperimentalBackendError.certificateRequestFailed
         }
+        try? signingKeychain.authorizeAppleSigningToolPartitions(label: keyLabel)
         return key
     }
 
     func authorizePrivateKeyForSigning(applicationTag: Data) throws {
         signingKeychain.ensureInUserSearchList()
-        let query = scopedToSigningKeychain([
-            kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: applicationTag,
-            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
-            kSecAttrSynchronizable as String: false,
-            kSecReturnPersistentRef as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ])
-        var persistentResult: CFTypeRef?
-        let lookupStatus = SecItemCopyMatching(query as CFDictionary, &persistentResult)
-        guard lookupStatus == errSecSuccess, let persistentReference = persistentResult as? Data else {
+        guard lookupPrivateKey(applicationTag: applicationTag).key != nil else {
             throw ExperimentalBackendError.missingPrivateKey
         }
-        var item: SecKeychainItem?
-        let itemStatus = SecKeychainItemCopyFromPersistentReference(persistentReference as CFData, &item)
-        guard itemStatus == errSecSuccess, let item else { throw ExperimentalBackendError.missingPrivateKey }
-        let updateStatus = SecKeychainItemSetAccess(item, try signingKeyAccess())
-        guard updateStatus == errSecSuccess else { throw ExperimentalBackendError.missingPrivateKey }
+        try? signingKeychain.authorizeAppleSigningToolPartitions(label: keyLabel)
     }
 
     private func signingKeyAccess() throws -> SecAccess {
         var trustedApplications: [SecTrustedApplication] = []
         var currentApplication: SecTrustedApplication?
-        guard SecTrustedApplicationCreateFromPath(nil, &currentApplication) == errSecSuccess,
-              let currentApplication else {
-            throw ExperimentalBackendError.certificateRequestFailed
+        if SecTrustedApplicationCreateFromPath(nil, &currentApplication) == errSecSuccess,
+           let currentApplication {
+            trustedApplications.append(currentApplication)
         }
-        trustedApplications.append(currentApplication)
         for path in signingAccessPolicy.trustedExecutablePaths {
             var application: SecTrustedApplication?
-            guard SecTrustedApplicationCreateFromPath(path, &application) == errSecSuccess,
-                  let application else {
-                throw ExperimentalBackendError.certificateRequestFailed
+            let status = SecTrustedApplicationCreateFromPath(path, &application)
+            guard status == errSecSuccess, let application else {
+                if path == IOSSimSigningKeyAccessPolicy.codesignPath {
+                    throw ExperimentalBackendError.certificateRequestFailed
+                }
+                continue
             }
             trustedApplications.append(application)
+        }
+        if trustedApplications.isEmpty {
+            var codesign: SecTrustedApplication?
+            guard SecTrustedApplicationCreateFromPath(
+                IOSSimSigningKeyAccessPolicy.codesignPath,
+                &codesign
+            ) == errSecSuccess, let codesign else {
+                throw ExperimentalBackendError.certificateRequestFailed
+            }
+            trustedApplications.append(codesign)
         }
         var access: SecAccess?
         guard SecAccessCreate(
@@ -1681,6 +1733,13 @@ extension LiveApplePersonalTeamBackend {
             generation: generation,
             counts: ["developmentCertificateCount": certificates.count]
         )
+        if let recovered = try recoverIdentityFromLocalSigningKeys(
+            team: team,
+            generation: generation,
+            certificates: certificates
+        ) {
+            return recovered
+        }
         try await ensureCertificateCapacity(
             team: team,
             generation: generation,
@@ -1691,6 +1750,58 @@ extension LiveApplePersonalTeamBackend {
             exhaustedError: .certificateLimit
         )
         return try await createManagedIdentity(team: team, generation: generation, recovering: false)
+    }
+
+    private func recoverIdentityFromLocalSigningKeys(
+        team: ExperimentalAppleTeam,
+        generation: UInt64,
+        certificates: [[String: Any]]
+    ) throws -> ExperimentalSigningIdentity? {
+        for tag in try identityKeychain.managedKeyTags(teamIdentifier: team.id) {
+            recordIdentity(.privateKeyLookupStarted, generation: generation, tag: tag)
+            let lookup = identityKeychain.lookupPrivateKey(applicationTag: tag)
+            guard let key = lookup.key else { continue }
+            try? identityKeychain.authorizePrivateKeyForSigning(applicationTag: tag)
+            guard let match = matchingCertificate(in: certificates, key: key, teamIdentifier: team.id) else {
+                continue
+            }
+            do {
+                try identityKeychain.verifySigningKeyUsable(certificate: match.certificate)
+            } catch {
+                recordIdentity(
+                    .signingKeyUsabilityFailed,
+                    generation: generation,
+                    tag: tag,
+                    fingerprint: match.fingerprint
+                )
+                continue
+            }
+            recordIdentity(
+                .certificatePublicKeyMatch,
+                generation: generation,
+                tag: tag,
+                fingerprint: match.fingerprint,
+                flags: ["certificatePublicKeyMatchesPrivateKey": true]
+            )
+            recordIdentity(
+                .managedIdentityRecoverySucceeded,
+                generation: generation,
+                tag: tag,
+                fingerprint: match.fingerprint
+            )
+            return try finishManagedIdentity(
+                match,
+                key: key,
+                tag: tag,
+                createdAt: Date(),
+                team: team,
+                generation: generation,
+                reused: true,
+                pendingPromotion: false,
+                recovered: true
+            )
+        }
+        return nil
     }
 
     static let defaultCapacityRetryDelay: TimeInterval = 2
@@ -1985,29 +2096,24 @@ extension LiveApplePersonalTeamBackend {
         recordIdentity(.csrCreated, generation: generation, tag: tag)
         var submittedCertificate: [String: Any]?
         do {
-            let submitted = try await developerRequest(
-                operation: "ios/submitDevelopmentCSR",
-                parameters: [
-                    "teamId": team.id,
-                    // Stable across every request from this installation, so a
-                    // later run can attribute the certificate to this Mac even
-                    // if the local key is gone -- and can recognise another
-                    // Mac's certificate as not its own. Build 1 and Build 2 sent
-                    // a fresh random UUID here, which threw that evidence away.
-                    "machineId": installationIdentifier,
-                    "machineName": veyaMachineName(installationIdentifier: installationIdentifier),
-                    "csrContent": csr
-                ]
+            submittedCertificate = try await submitDevelopmentCSR(
+                csr: csr,
+                team: team,
+                installationIdentifier: installationIdentifier
             )
-            guard let request = submitted["certRequest"] as? [String: Any],
-                  certificateData(request) != nil
-                    || !(certificateString(request, names: ["certRequestId", "requestId", "certificateId"]) ?? "").isEmpty else {
-                throw ExperimentalBackendError.certificateRequestFailed
-            }
-            submittedCertificate = request
-        } catch let failure as AppleServiceFailure {
-            if failure.error == .certificateLimit { throw ExperimentalBackendError.certificateLimit }
-            throw ExperimentalBackendError.certificateRequestFailed
+        } catch let error as ExperimentalBackendError where error == .certificateLimit {
+            // Some Developer Services responses do not report exhausted
+            // capacity in listAllDevelopmentCerts, but later reject the CSR with
+            // Apple's 7460 certificate-limit code. Treat that rejection as the
+            // authoritative capacity signal and run the same ownership-proofed
+            // reclaim ladder before retrying the identical CSR once.
+            try await recoverCertificateCapacityAfterCSRLimit(team: team, generation: generation)
+            submittedCertificate = try await submitDevelopmentCSRAfterReclaim(
+                csr: csr,
+                team: team,
+                installationIdentifier: installationIdentifier,
+                generation: generation
+            )
         }
         var match = submittedCertificate.flatMap {
             matchingCertificate(in: [$0], key: key, teamIdentifier: team.id)
@@ -2059,6 +2165,90 @@ extension LiveApplePersonalTeamBackend {
             reused: false,
             pendingPromotion: pendingPromotion,
             recovered: recovering
+        )
+    }
+
+    private func submitDevelopmentCSR(
+        csr: String,
+        team: ExperimentalAppleTeam,
+        installationIdentifier: String
+    ) async throws -> [String: Any] {
+        do {
+            let submitted = try await developerRequest(
+                operation: "ios/submitDevelopmentCSR",
+                parameters: [
+                    "teamId": team.id,
+                    // Stable across every request from this installation, so a
+                    // later run can attribute the certificate to this Mac even
+                    // if the local key is gone -- and can recognise another
+                    // Mac's certificate as not its own. Build 1 and Build 2 sent
+                    // a fresh random UUID here, which threw that evidence away.
+                    "machineId": installationIdentifier,
+                    "machineName": veyaMachineName(installationIdentifier: installationIdentifier),
+                    "csrContent": csr
+                ]
+            )
+            guard let request = submitted["certRequest"] as? [String: Any],
+                  certificateData(request) != nil
+                    || !(certificateString(request, names: ["certRequestId", "requestId", "certificateId"]) ?? "").isEmpty else {
+                throw ExperimentalBackendError.certificateRequestFailed
+            }
+            return request
+        } catch let failure as AppleServiceFailure {
+            if failure.error == .certificateLimit { throw ExperimentalBackendError.certificateLimit }
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
+    }
+
+    private func submitDevelopmentCSRAfterReclaim(
+        csr: String,
+        team: ExperimentalAppleTeam,
+        installationIdentifier: String,
+        generation: UInt64
+    ) async throws -> [String: Any] {
+        for attempt in 1...Self.capacityConfirmationAttempts {
+            do {
+                return try await submitDevelopmentCSR(
+                    csr: csr,
+                    team: team,
+                    installationIdentifier: installationIdentifier
+                )
+            } catch let error as ExperimentalBackendError where error == .certificateLimit {
+                guard attempt < Self.capacityConfirmationAttempts else { throw error }
+                recordIdentity(
+                    .certificateCapacityPropagating,
+                    generation: generation,
+                    counts: ["capacityConfirmationAttempts": attempt]
+                )
+                if certificateCapacityRetryDelay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(certificateCapacityRetryDelay * 1_000_000_000))
+                }
+            }
+        }
+        throw ExperimentalBackendError.certificateLimit
+    }
+
+    private func recoverCertificateCapacityAfterCSRLimit(
+        team: ExperimentalAppleTeam,
+        generation: UInt64
+    ) async throws {
+        let refreshed = try await developerRequest(
+            operation: "ios/listAllDevelopmentCerts",
+            parameters: ["teamId": team.id]
+        )
+        guard let certificates = refreshed["certificates"] as? [[String: Any]], certificates.count <= 100 else {
+            throw ExperimentalBackendError.certificateRequestFailed
+        }
+        let activeMetadata = try identityKeychain.load(teamIdentifier: team.id)
+        let candidateMetadata = try identityKeychain.loadCandidate(teamIdentifier: team.id)
+        try await ensureCertificateCapacity(
+            team: team,
+            generation: generation,
+            availableQuantity: 0,
+            certificates: certificates,
+            activeMetadata: activeMetadata,
+            candidateMetadata: candidateMetadata,
+            exhaustedError: .certificateLimit
         )
     }
 
@@ -2832,8 +3022,9 @@ func createCertificateSigningRequest(key: SecKey, teamIdentifier: String? = nil)
         ASN1.oid([0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B]), ASN1.null
     ])
     let der = ASN1.sequence([requestInfo, signatureAlgorithm, ASN1.bitString(signature)])
+    // Foundation adds no line ending after the final base64 line; RFC 7468 requires one before the footer.
     let encoded = der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
-    return "-----BEGIN CERTIFICATE REQUEST-----\n\(encoded)-----END CERTIFICATE REQUEST-----\n"
+    return "-----BEGIN CERTIFICATE REQUEST-----\n\(encoded)\n-----END CERTIFICATE REQUEST-----\n"
 }
 
 private enum ASN1 {
@@ -2855,13 +3046,8 @@ private enum ASN1 {
     }
 }
 
-private func decodeAndValidateProfile(
-    _ encoded: Data,
-    expectedBundleIdentifier: String,
-    expectedTeamIdentifier: String,
-    selectedDeviceIdentifier: String,
-    certificateFingerprint expectedCertificateFingerprint: String
-) throws -> ExperimentalProfile {
+/// Signature-checked CMS content of a provisioning profile (in process; never `security cms`).
+func developmentProfileContent(_ encoded: Data) throws -> [String: Any] {
     var decoder: CMSDecoder?
     guard CMSDecoderCreate(&decoder) == errSecSuccess, let decoder,
           !encoded.isEmpty,
@@ -2880,8 +3066,22 @@ private func decodeAndValidateProfile(
     var content: CFData?
     guard CMSDecoderCopyContent(decoder, &content) == errSecSuccess,
           let plistData = content as Data?, plistData.count <= 1_048_576,
-          let plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
-          let team = (plist["TeamIdentifier"] as? [String])?.first, team == expectedTeamIdentifier,
+          let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+        throw ExperimentalBackendError.invalidProfile
+    }
+    return plist
+}
+
+private func decodeAndValidateProfile(
+    _ encoded: Data,
+    expectedBundleIdentifier: String,
+    expectedTeamIdentifier: String,
+    selectedDeviceIdentifier: String,
+    certificateFingerprint expectedCertificateFingerprint: String,
+    now: Date = Date()
+) throws -> ExperimentalProfile {
+    let plist = try developmentProfileContent(encoded)
+    guard let team = (plist["TeamIdentifier"] as? [String])?.first, team == expectedTeamIdentifier,
           let prefix = (plist["ApplicationIdentifierPrefix"] as? [String])?.first, prefix == expectedTeamIdentifier,
           let entitlements = plist["Entitlements"] as? [String: Any],
           let applicationIdentifier = entitlements["application-identifier"] as? String,
@@ -2892,7 +3092,7 @@ private func decodeAndValidateProfile(
           plist["ProvisionsAllDevices"] as? Bool != true,
           let issuedAt = plist["CreationDate"] as? Date,
           let expiresAt = plist["ExpirationDate"] as? Date,
-          issuedAt <= Date(), expiresAt > Date(),
+          issuedAt <= now, expiresAt > now,
           let developerCertificates = plist["DeveloperCertificates"] as? [Data],
           developerCertificates.contains(where: { certificateFingerprint($0) == expectedCertificateFingerprint }) else {
         throw ExperimentalBackendError.invalidProfile
@@ -3180,6 +3380,33 @@ public actor LiveApplePersonalTeamBackend: ExperimentalPersonalTeamBackend {
         self.identityKeychain = identityKeychain
         self.srpRandomBytesForTesting = srpRandomBytesForTesting
         self.certificateCapacityRetryDelay = certificateCapacityRetryDelay
+        clientIdentityVersion = adapter.version
+    }
+
+    /// Installation V2: Developer Services and the v2 session store only. The Build 1-11 Keychain signing
+    /// identity path (`prepareIdentity`, `/usr/bin/codesign` probes) refuses every call on this instance.
+    /// `sessionStore` is injected only by isolated qualification roots; production uses the v2 store.
+    public static func installationV2(
+        diagnostics: ApplePersonalTeamDiagnosticsStore = ApplePersonalTeamDiagnosticsStore(),
+        sessionStore: any AppleAuthorizationSessionStoring = KeychainAppleAuthorizationSessionStore()
+    ) -> LiveApplePersonalTeamBackend {
+        LiveApplePersonalTeamBackend(retiredIdentityKeychain: RetiredLegacyIdentityKeychain(), diagnostics: diagnostics,
+                                     sessionStore: sessionStore)
+    }
+
+    private init(retiredIdentityKeychain: RetiredLegacyIdentityKeychain, diagnostics: ApplePersonalTeamDiagnosticsStore,
+                 sessionStore: any AppleAuthorizationSessionStoring) {
+        let adapter = PrivateAppleProtocolAdapter.researched2026
+        let transport = BoundedAppleHTTPTransport()
+        self.adapter = adapter
+        self.transport = transport
+        machineIdentity = LocalMacAppleMachineIdentityProvider()
+        endpointResolver = URLBagGrandSlamEndpointResolver(transport: transport)
+        self.sessionStore = sessionStore
+        self.diagnostics = diagnostics
+        identityKeychain = retiredIdentityKeychain
+        srpRandomBytesForTesting = nil
+        certificateCapacityRetryDelay = LiveApplePersonalTeamBackend.defaultCapacityRetryDelay
         clientIdentityVersion = adapter.version
     }
 
@@ -4422,4 +4649,124 @@ private extension Data {
         Swift.withUnsafeBytes(of: &length) { append(contentsOf: $0) }
         append(value)
     }
+}
+
+// MARK: - Installation V2 Developer Services boundary (M6)
+//
+// Stateless calls over the already-authenticated session. Certificate ownership, attempt limits and
+// journaling live in `CertificateReconciler` and the engine domains; nothing here reads legacy identity
+// metadata, the Keychain, or `machineId` markers.
+
+extension LiveApplePersonalTeamBackend: AppleDeveloperServices {
+    public func currentPersonalTeam() async throws -> ExperimentalAppleTeam {
+        let teams: [ExperimentalAppleTeam]
+        if let session {
+            teams = try await listTeams(using: session)
+        } else {
+            guard let resumed = try await resumeSession() else { throw ExperimentalBackendError.sessionExpired }
+            teams = resumed
+        }
+        guard let teamID = authorizedTeamIdentifier, let team = teams.first(where: { $0.id == teamID && $0.isPersonalTeam }) else {
+            throw ExperimentalBackendError.noTeam
+        }
+        return team
+    }
+
+    public func listDevelopmentCertificates(teamID: String) async throws -> [AppleCertificateObservation] {
+        let response = try await developerRequest(operation: "ios/listAllDevelopmentCerts", parameters: ["teamId": teamID])
+        guard let certificates = response["certificates"] as? [[String: Any]], certificates.count <= 100 else {
+            throw ExperimentalBackendError.responseChanged
+        }
+        // An entry without parseable DER can never be proven owned, so it can never be reused or revoked.
+        return certificates.compactMap { entry in
+            guard let serial = certificateSerialNumber(entry), let der = certificateData(entry) else { return nil }
+            return AppleCertificateObservation(serial: serial, der: der)
+        }
+    }
+
+    public func submitDevelopmentCSR(teamID: String, csrPEM: String) async throws -> AppleCertificateObservation? {
+        let installation = VeyaSigningKeyStore.sha256(Data("veya-machine|\(teamID)".utf8))
+        do {
+            let submitted = try await developerRequest(operation: "ios/submitDevelopmentCSR", parameters: [
+                "teamId": teamID,
+                // Display-only: ownership is proven by SPKI, never by this marker.
+                "machineId": String(installation.dropFirst(7).prefix(32)),
+                "machineName": "Veya",
+                "csrContent": csrPEM,
+            ])
+            guard let request = submitted["certRequest"] as? [String: Any] else { return nil }
+            guard let serial = certificateSerialNumber(request), let der = certificateData(request) else { return nil }
+            return AppleCertificateObservation(serial: serial, der: der)
+        } catch let failure as AppleServiceFailure where failure.error == .certificateLimit {
+            throw AppleCertificateServiceError.capacityReached
+        } catch let failure as AppleServiceFailure {
+            throw failure.error
+        }
+    }
+
+    public func revokeDevelopmentCertificate(teamID: String, serial: String) async throws {
+        do {
+            _ = try await developerRequest(operation: "ios/revokeDevelopmentCert",
+                                           parameters: ["teamId": teamID, "serialNumber": serial])
+        } catch let failure as AppleServiceFailure {
+            throw failure.error == .sessionExpired ? failure.error : ExperimentalBackendError.certificateRevocationFailed
+        }
+    }
+
+    public func ensureDeviceRegistered(team: ExperimentalAppleTeam, udid: String, name: String) async throws {
+        try await registerDevice(ExperimentalProvisioningRequest(
+            selectedDeviceIdentifier: udid,
+            selectedDeviceRegistrationIdentifier: udid,
+            deviceIdentifierSource: .physicalUDID,
+            selectedDeviceName: name,
+            operation: .install
+        ), team: team)
+    }
+
+    public func ensureAppIdentifiers(_ identifiers: PersonalTeamBundleIdentifierSet, team: ExperimentalAppleTeam) async throws {
+        try await registerIdentifiers(identifiers, team: team)
+    }
+
+    public func downloadDevelopmentProfile(teamID: String, bundleIdentifier: String) async throws -> Data {
+        guard authorizedTeamIdentifier == teamID else { throw ExperimentalBackendError.invalidTeam }
+        let appID: String
+        if let cached = appIdentifierIDs[bundleIdentifier] {
+            appID = cached
+        } else {
+            guard let listed = try await listAppIdentifiers(teamID: teamID).first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
+                throw ExperimentalBackendError.appIDRegistrationFailed
+            }
+            appID = listed.identifier
+        }
+        let response: [String: Any]
+        do {
+            response = try await developerRequest(operation: "ios/downloadTeamProvisioningProfile",
+                                                  parameters: ["teamId": teamID, "appIdId": appID])
+        } catch let failure as AppleServiceFailure where failure.error == .sessionExpired {
+            throw failure.error
+        } catch {
+            throw ExperimentalBackendError.profileRequestFailed
+        }
+        return try AppleDeveloperResponseParser.encodedProfile(response)
+    }
+}
+
+/// Offline validation of an Apple development profile against the exact team, bundle, device and
+/// certificate DER. Used by the `.profile` domain on every observation, so it never touches the network.
+func validateDevelopmentProfile(
+    _ encoded: Data,
+    bundleIdentifier: String,
+    teamIdentifier: String,
+    deviceUDID: String,
+    certificateDER: Data,
+    now: Date
+) throws -> ExperimentalProfile {
+    try decodeAndValidateProfile(
+        encoded,
+        expectedBundleIdentifier: bundleIdentifier,
+        expectedTeamIdentifier: teamIdentifier,
+        selectedDeviceIdentifier: deviceUDID,
+        certificateFingerprint: certificateFingerprint(certificateDER),
+        now: now
+    )
 }

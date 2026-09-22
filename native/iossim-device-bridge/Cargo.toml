@@ -13,9 +13,10 @@ idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "1838db107d38
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.48", features = ["rt-multi-thread", "time", "sync", "fs"] }
+veya-signing-core = { path = "../veya-signing-core" }
+zeroize = "1.8"
+libc = "0.2"
+plist = "1.8"
 
-[profile.release]
-codegen-units = 1
-lto = "thin"
-panic = "abort"
-strip = "symbols"
+[dev-dependencies]
+tempfile = "3.14"

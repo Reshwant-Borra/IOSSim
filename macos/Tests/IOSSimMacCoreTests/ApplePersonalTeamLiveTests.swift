@@ -483,6 +483,41 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         XCTAssertEqual(event?.continuity?["certificatePublicKeyMatchesPrivateKey"], true)
     }
 
+    func testMissingMetadataRecoversExistingUsableVeyaSigningKeyWithoutCreatingCertificate() async throws {
+        let synthetic = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let tag = canonicalFixtureTag()
+        let keychain = FixtureManagedIdentityKeychain(
+            metadata: nil,
+            keys: [tag: synthetic.privateKey],
+            keysToCreate: []
+        )
+        let transport = ScriptedAppleTransport([
+            .plist(teamResponse()),
+            .plist(certificateInventory([
+                certificateObject(synthetic.certificateData, serial: "LOCALRECOVERY")
+            ], available: 0))
+        ])
+        let diagnostics = temporaryDiagnostics()
+        defer { try? FileManager.default.removeItem(at: diagnostics.url) }
+        let backend = makeIdentityBackend(transport: transport, keychain: keychain, diagnostics: diagnostics.store)
+        _ = try await backend.resumeSession()
+
+        let identity = try await backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertTrue(identity.reused)
+        XCTAssertFalse(identity.pendingPromotion)
+        XCTAssertEqual(keychain.createdKeyCount, 0)
+        XCTAssertEqual(keychain.authorizedTags, [tag])
+        XCTAssertEqual(keychain.addedCertificateCount, 1)
+        XCTAssertEqual(keychain.metadata?.keyApplicationTag, tag)
+        XCTAssertEqual(keychain.metadata?.certificateSerial, "LOCALRECOVERY")
+        let requests = await transport.requests()
+        XCTAssertFalse(requests.contains { ($0.url?.path.lowercased() ?? "").contains("submitdevelopmentcsr") })
+        XCTAssertTrue(diagnostics.store.load()?.events.contains(where: {
+            $0.checkpoint == "MANAGED_IDENTITY_RECOVERY_SUCCEEDED"
+        }) == true)
+    }
+
     func testProvisionalManagedMetadataResumesCSRWithExistingPrivateKey() async throws {
         let synthetic = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
         let tag = canonicalFixtureTag()
@@ -655,7 +690,18 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
         let service = "com.iossim.tests.personal-team-signing.\(identifier)"
         let team = "ABCDEFGHIJ"
         let tag = Data("com.iossim.personal-team.\(team).\(identifier)".utf8)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iossim-managed-keychain-\(identifier)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let signingKeychain = VeyaSigningKeychain(
+            keychainURL: root.appendingPathComponent("Veya-Signing.keychain-db"),
+            passwordURL: root.appendingPathComponent("signing-keychain.secret")
+        )
         defer {
+            if let keychain = try? signingKeychain.open() {
+                _ = SecKeychainDelete(keychain)
+            }
+            try? FileManager.default.removeItem(at: root)
             SecItemDelete([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
@@ -669,10 +715,20 @@ final class ApplePersonalTeamLiveTests: XCTestCase {
             ] as CFDictionary)
         }
 
-        let first = IOSSimIdentityMetadataStore(service: service, keyLabel: "IOSSim Test Signing Key")
+        let first = IOSSimIdentityMetadataStore(
+            service: service,
+            keyLabel: "IOSSim Test Signing Key",
+            signingKeychain: signingKeychain,
+            metadataDirectory: root.appendingPathComponent("metadata", isDirectory: true)
+        )
         let key = try first.createPrivateKey(applicationTag: tag)
         try first.save(fixtureIdentityMetadata(tag: tag))
-        let restarted = IOSSimIdentityMetadataStore(service: service, keyLabel: "IOSSim Test Signing Key")
+        let restarted = IOSSimIdentityMetadataStore(
+            service: service,
+            keyLabel: "IOSSim Test Signing Key",
+            signingKeychain: signingKeychain,
+            metadataDirectory: root.appendingPathComponent("metadata", isDirectory: true)
+        )
         let lookup = restarted.lookupPrivateKey(applicationTag: tag)
 
         XCTAssertEqual(lookup.status, errSecSuccess)
@@ -1549,7 +1605,7 @@ private actor ScriptedAppleTransport: AppleHTTPTransport {
     func urlBagRequestCount() -> Int { lookupCount }
 }
 
-private final class MemoryAuthorizationSessionStore: AppleAuthorizationSessionStoring, @unchecked Sendable {
+final class MemoryAuthorizationSessionStore: AppleAuthorizationSessionStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var metadata: AppleAuthorizationSessionMetadata?
     private var payload: Data?
@@ -1589,7 +1645,7 @@ private final class MemoryAuthorizationSessionStore: AppleAuthorizationSessionSt
     }
 }
 
-private func fixtureSession() -> AppleAuthorizationSession {
+func fixtureSession() -> AppleAuthorizationSession {
     let payload = try! PropertyListEncoder().encode(FixtureSessionEnvelope(
         dsid: "123456789",
         xcodeToken: "synthetic-session-token",
@@ -1612,7 +1668,7 @@ private struct FixtureSessionEnvelope: Codable {
     let tokenExpiresAt: Date?
 }
 
-private func teamResponse() -> [String: Any] {
+func teamResponse() -> [String: Any] {
     [
         "resultCode": 0,
         "teams": [[
@@ -1832,6 +1888,10 @@ private final class FixtureManagedIdentityKeychain: IOSSimManagedIdentityKeychai
             return ManagedPrivateKeyLookup(key: nil, status: missingKeyStatus)
         }
         return ManagedPrivateKeyLookup(key: key, status: errSecSuccess)
+    }
+
+    func managedKeyTags(teamIdentifier: String) throws -> [Data] {
+        keys.keys.filter { canonicalManagedKeyTag($0, teamIdentifier: teamIdentifier) != nil }
     }
 
     func persistentReference(applicationTag: Data) throws -> Data {

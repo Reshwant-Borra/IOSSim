@@ -9,6 +9,18 @@
 extern "C" {
 #endif
 #define IOSSIM_DEVICE_BRIDGE_ABI_VERSION 2u
+#define VEYA_SIGNING_ABI_VERSION 1u
+
+/* Signing ABI is versioned independently of device ABI. All calls are
+ * synchronous. UTF-8 JSON is bounded at 32 MiB; PKCS#8 at 64 KiB, paths at
+ * 4096 bytes. Inputs remain caller-owned and valid until return. Sign copies
+ * PKCS#8 into zeroizing memory; the caller MUST zero its original on return.
+ * No private key may be put in JSON. Every result is owned by the caller and
+ * freed exactly once, including failures. Cancellation is cooperative between
+ * signing phases; cancellation before publication removes only the candidate.
+ * Sign disables process core dumps and leaves them disabled.
+ * Operation free must not race any sign/cancel call. */
+typedef struct VeyaSigningOperation VeyaSigningOperation;
 
 typedef enum iossim_bridge_connection_kind {
     IOSSIM_BRIDGE_CONNECTION_UNKNOWN = 0,
@@ -52,6 +64,22 @@ typedef struct iossim_bridge_result {
     size_t payload_len;
     char *diagnostic;
 } iossim_bridge_result;
+
+uint32_t veya_signing_abi_version(void);
+VeyaSigningOperation *veya_signing_operation_create(void);
+void veya_signing_cancel(VeyaSigningOperation *operation);
+void veya_signing_operation_free(VeyaSigningOperation *operation);
+/* inspect/verify JSON: {schemaVersion:1,bundlePath:absolutePath}.
+ * sign JSON: {schemaVersion:1,request:{inputBundle,outputBundle,
+ * certificateChainDer:[[byte]],profiles:{bundleID:[byte]},
+ * entitlements:{bundleID:plistDictionary},expected:ExpectedBundleGraph}}.
+ * Error payload: {schemaVersion:1,code:stableCode}; diagnostic is a safe code.
+ * verify is a Mach-O cryptographic check, not installation eligibility. */
+iossim_bridge_result *veya_signing_inspect(const uint8_t *json, size_t json_len);
+iossim_bridge_result *veya_signing_verify(const uint8_t *json, size_t json_len);
+iossim_bridge_result *veya_signing_sign(VeyaSigningOperation *operation,
+    const uint8_t *json, size_t json_len, const uint8_t *pkcs8, size_t pkcs8_len);
+void veya_signing_result_free(iossim_bridge_result *result);
 
 typedef struct iossim_device_handle iossim_device_handle;
 

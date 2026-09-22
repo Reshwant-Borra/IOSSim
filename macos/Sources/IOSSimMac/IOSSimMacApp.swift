@@ -29,16 +29,29 @@ struct IOSSimMacApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if VEYA_QUALIFICATION
+            if Bundle.main.object(forInfoDictionaryKey: "VeyaDevelopmentSession") as? Bool == true
+                || ProcessInfo.processInfo.environment["VEYA_DEVELOPMENT_SESSION"] == "1" {
+                DevelopmentInstallationView().frame(minWidth: 720, minHeight: 620)
+            } else {
+                setupView
+            }
+            #else
+            setupView
+            #endif
+        }
+        .windowStyle(.titleBar)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
+    }
+
+    private var setupView: some View {
             RootView()
                 .environmentObject(store)
                 .frame(minWidth: 720, minHeight: 520)
                 .task {
                     store.bootstrap()
                 }
-        }
-        .windowStyle(.titleBar)
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-        }
     }
 }

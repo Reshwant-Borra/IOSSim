@@ -176,22 +176,14 @@ public enum ApplePersonalTeamDiscovery {
         }
         var evidence: [LocalProvisioningProfileEvidence] = []
         for url in urls {
-            if let value = await decodeProfile(url: url, runner: runner) { evidence.append(value) }
+            if let value = decodeProfile(url: url) { evidence.append(value) }
         }
         return evidence
     }
 
-    private static func decodeProfile(url: URL, runner: ProcessRunner) async -> LocalProvisioningProfileEvidence? {
-        let security = URL(fileURLWithPath: "/usr/bin/security")
-        guard let result = try? await runner.run(
-            executableURL: security,
-            arguments: ["cms", "-D", "-i", url.path],
-            workingDirectory: url.deletingLastPathComponent(),
-            environment: RuntimeProvisioning.deterministicEnvironment()
-        ), result.exitCode == 0,
-        let data = result.stdout.data(using: .utf8),
-        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-        let teamIdentifier = (plist["TeamIdentifier"] as? [String])?.first else {
+    private static func decodeProfile(url: URL) -> LocalProvisioningProfileEvidence? {
+        guard let data = try? Data(contentsOf: url), let plist = try? developmentProfileContent(data),
+              let teamIdentifier = (plist["TeamIdentifier"] as? [String])?.first else {
             return nil
         }
         let fingerprints = (plist["DeveloperCertificates"] as? [Data] ?? []).map {

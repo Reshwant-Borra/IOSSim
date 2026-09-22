@@ -2,6 +2,86 @@ import XCTest
 @testable import IOSSimMacCore
 
 final class NativeDeviceBridgeTests: XCTestCase {
+    func testOptInPhysicalDeveloperServicesLaunchBoundary() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let udid = environment["VEYA_PHYSICAL_DEVICE_UDID"],
+              let launchBundleIdentifier = environment["VEYA_PHYSICAL_LAUNCH_BUNDLE_ID"] else {
+            throw XCTSkip(
+                "PHYSICAL_DEVICE_REQUIRED: set VEYA_PHYSICAL_DEVICE_UDID and VEYA_PHYSICAL_LAUNCH_BUNDLE_ID"
+            )
+        }
+        let bridge = IOSSimDeviceBridge()
+        let devices = try await bridge.listDevices()
+        let selected = try XCTUnwrap(devices.first { $0.identity.udid == udid })
+        let inspection = try await bridge.inspect(selected.identity)
+        XCTAssertEqual(inspection.name, "Rishi Borra")
+
+        let receipt = try await NativeDeveloperServicesCoordinator(
+            providers: [ThirdPartyMirrorDevelopmentProvider()],
+            providerPolicy: .localTest
+        ).prepare(
+            device: inspection.identity,
+            context: DeveloperServicesProofContext(
+                releaseIdentity: "veya-physical-boundary-test",
+                pairingGeneration: nil,
+                targetBundleIdentifier: launchBundleIdentifier
+            )
+        )
+
+        XCTAssertTrue(receipt.transportReady)
+        XCTAssertEqual(receipt.targetBundleIdentifier, launchBundleIdentifier)
+        XCTAssertEqual(receipt.launchReceipt?.bundleIdentifier, launchBundleIdentifier)
+        XCTAssertEqual(receipt.launchReceipt?.appServiceConnected, true)
+        XCTAssertGreaterThan(receipt.launchReceipt?.pid ?? 0, 0)
+    }
+
+    func testOptInPhysicalSignedApplicationInstallBoundary() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let udid = environment["VEYA_PHYSICAL_DEVICE_UDID"],
+              let appPath = environment["VEYA_PHYSICAL_SIGNED_APP"] else {
+            throw XCTSkip("PHYSICAL_DEVICE_REQUIRED: set VEYA_PHYSICAL_DEVICE_UDID and VEYA_PHYSICAL_SIGNED_APP")
+        }
+        let appURL = URL(fileURLWithPath: appPath, isDirectory: true)
+        guard let info = NSDictionary(contentsOf: appURL.appendingPathComponent("Info.plist")),
+              let bundleIdentifier = info["CFBundleIdentifier"] as? String else {
+            XCTFail("physical install fixture has no bundle identifier")
+            return
+        }
+
+        let bridge = IOSSimDeviceBridge()
+        let devices = try await bridge.listDevices()
+        let selected = try XCTUnwrap(devices.first { $0.identity.udid == udid })
+        let inspection = try await bridge.inspect(selected.identity)
+        XCTAssertEqual(inspection.identity.udid, udid)
+        XCTAssertEqual(inspection.name, "Rishi Borra")
+
+        let profile = await ProvisioningProfileInspector.inspect(
+            appURL: appURL,
+            bundleIdentifier: bundleIdentifier,
+            selectedDeviceIdentifier: udid
+        )
+        let teamIdentifier = try XCTUnwrap(profile.teamIdentifier)
+        let inventory = try await NativeApplicationService().inventory(on: inspection.identity)
+        if let installed = inventory.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            guard let installedTeam = installed.teamIdentifier else {
+                XCTFail("Installation Proxy omitted TeamIdentifier for the existing target application")
+                return
+            }
+            guard installedTeam == teamIdentifier else {
+                XCTFail("existing target application belongs to a different nonempty team")
+                return
+            }
+        }
+        let receipt = try await NativeApplicationManager().installOrUpgradeReceipt(
+            appURL: appURL,
+            expectedBundleIdentifier: bundleIdentifier,
+            expectedTeamIdentifier: teamIdentifier,
+            on: inspection.identity
+        )
+        XCTAssertEqual(receipt.bundleIdentifier, bundleIdentifier)
+        XCTAssertEqual(receipt.teamIdentifier, teamIdentifier)
+    }
+
     func testZeroDevices() async throws {
         let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(devices: []))
         let devices = try await bridge.listDevices()
@@ -38,6 +118,44 @@ final class NativeDeviceBridgeTests: XCTestCase {
         XCTAssertEqual(devices[0].connection, .usb)
         XCTAssertEqual(devices[0].identity.usbmuxIdentifier, 9)
         XCTAssertEqual(devices[0].identity.connection, .usb)
+    }
+
+    func testInspectionFallsBackToLiveWirelessRecordWhenPreferredUSBRecordIsStale() async throws {
+        let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(
+            devices: [
+                try descriptor("PHONE-0001", connection: .wireless, mux: 5),
+                try descriptor("PHONE-0001", connection: .usb, mux: 9)
+            ],
+            unavailableMuxes: [9]
+        ))
+        let listed = try await bridge.listDevices()
+        XCTAssertEqual(listed[0].connection, .usb)
+
+        let inspected = try await bridge.inspect(listed[0].identity)
+
+        XCTAssertEqual(inspected.identity.udid, "PHONE-0001")
+        XCTAssertEqual(inspected.identity.usbmuxIdentifier, 5)
+        XCTAssertEqual(inspected.identity.connectionGeneration, listed[0].identity.connectionGeneration)
+        XCTAssertEqual(inspected.connection, .wireless)
+    }
+
+    func testInspectionDoesNotUseAlternativesFromANewerDiscoveryGeneration() async throws {
+        let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(
+            devices: [
+                try descriptor("PHONE-0001", connection: .wireless, mux: 5),
+                try descriptor("PHONE-0001", connection: .usb, mux: 9)
+            ],
+            unavailableMuxes: [9]
+        ))
+        let firstGeneration = try await bridge.listDevices()[0].identity
+        _ = try await bridge.listDevices()
+
+        do {
+            _ = try await bridge.inspect(firstGeneration)
+            XCTFail("expected stale discovery generation to fail closed")
+        } catch let error as NativeDeviceBridgeError {
+            XCTAssertEqual(error, .deviceNotFound)
+        }
     }
 
     func testDuplicateUSBRecordsChooseLowestMuxDeterministically() async throws {
@@ -298,6 +416,7 @@ private actor FakeNativeTransport: NativeDeviceTransport {
     let developerMode: DeveloperModeReadiness
     let failure: NativeDeviceBridgeError?
     let listFailure: NativeDeviceBridgeError?
+    let unavailableMuxes: Set<UInt32>
 
     init(
         devices: [NativeDeviceDescriptor],
@@ -305,7 +424,8 @@ private actor FakeNativeTransport: NativeDeviceTransport {
         lockState: DeviceLockState = .unlocked,
         developerMode: DeveloperModeReadiness = .enabled,
         failure: NativeDeviceBridgeError? = nil,
-        listFailure: NativeDeviceBridgeError? = nil
+        listFailure: NativeDeviceBridgeError? = nil,
+        unavailableMuxes: Set<UInt32> = []
     ) {
         self.devices = devices
         self.trust = trust
@@ -313,6 +433,7 @@ private actor FakeNativeTransport: NativeDeviceTransport {
         self.developerMode = developerMode
         self.failure = failure
         self.listFailure = listFailure
+        self.unavailableMuxes = unavailableMuxes
     }
 
     func listDevices(timeout: Duration) async throws -> [NativeDeviceDescriptor] {
@@ -322,12 +443,19 @@ private actor FakeNativeTransport: NativeDeviceTransport {
 
     func inspect(_ identity: IOSSimDeviceIdentity, timeout: Duration) async throws -> NativeDeviceInspection {
         if let failure { throw failure }
-        guard devices.contains(where: { $0.identity.udid == identity.udid }) else {
+        if let mux = identity.usbmuxIdentifier, unavailableMuxes.contains(mux) {
+            throw NativeDeviceBridgeError.deviceNotFound
+        }
+        guard let device = devices.first(where: {
+            $0.identity.udid == identity.udid
+                && $0.identity.usbmuxIdentifier == identity.usbmuxIdentifier
+                && $0.connection == identity.connection
+        }) else {
             throw NativeDeviceBridgeError.deviceNotFound
         }
         return NativeDeviceInspection(
             identity: identity,
-            connection: devices.first(where: { $0.identity.udid == identity.udid })?.connection ?? .unknown,
+            connection: device.connection,
             name: "Test iPhone",
             model: "iPhone99,1",
             osVersion: "26.0",

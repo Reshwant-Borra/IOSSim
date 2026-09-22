@@ -42,7 +42,8 @@ ROOT = Path(__file__).resolve().parents[2]
 IOS_DIR = ROOT / "ios"
 MAC_DIR = ROOT / "macos"
 HOST_BRIDGE_DIR = ROOT / "native" / "iossim-device-bridge"
-HOST_BRIDGE_LIB = HOST_BRIDGE_DIR / "target" / "release" / "libiossim_device_bridge.dylib"
+NATIVE_WORKSPACE_DIR = ROOT / "native"
+HOST_BRIDGE_LIB = NATIVE_WORKSPACE_DIR / "target" / "release" / "libiossim_device_bridge.dylib"
 HOST_BRIDGE_MANIFEST = HOST_BRIDGE_DIR / "Cargo.toml"
 RELEASE_CONFIG_PATH = ROOT / "config" / "release.json"
 RELEASE_OUTPUT_DIR = ROOT / ".build" / "iossim" / "release"
@@ -292,9 +293,16 @@ def print_step(state: str, message: str, detail: str | None = None) -> None:
         print(f"[{state}] {message}")
 
 
-def run_step(runner: Runner, message: str, name: str, args: list[str], cwd: Path = ROOT) -> bool:
+def run_step(
+    runner: Runner,
+    message: str,
+    name: str,
+    args: list[str],
+    cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
+) -> bool:
     try:
-        runner.run(name, args, cwd=cwd)
+        runner.run(name, args, cwd=cwd, env=env)
         print_step("PASS", message)
         return True
     except CommandError as exc:
@@ -949,12 +957,21 @@ def ensure_rust(runner: Runner) -> bool:
         print_step("ACTION", "Rust toolchain required", "install rustup from https://rustup.rs/")
         return False
     ok = True
-    ok &= run_step(runner, "Install Rust iOS target", "rust-target-ios", [rustup, "target", "add", "aarch64-apple-ios"])
-    component = runner.run("rust-llvm-tools", [rustup, "component", "add", "llvm-tools-preview"], check=False)
-    if component.code == 0:
-        print_step("PASS", "Install Rust llvm-tools-preview")
-    else:
-        print_step("WARN", "Install Rust llvm-tools-preview", f"not available; symbol verification can fall back. See {component.log_path}")
+    required_targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios"]
+    for target in required_targets:
+        ok &= run_step(
+            runner,
+            f"Install Rust target {target}",
+            f"rust-target-{target}",
+            [rustup, "target", "add", target],
+        )
+    for component_name in ["rustfmt", "clippy", "llvm-tools-preview"]:
+        ok &= run_step(
+            runner,
+            f"Install Rust component {component_name}",
+            f"rust-component-{component_name}",
+            [rustup, "component", "add", component_name],
+        )
     return bool(ok)
 
 
@@ -981,7 +998,7 @@ def build_host_device_bridge(runner: Runner) -> bool:
             ],
         ):
             return False
-        artifact = HOST_BRIDGE_DIR / "target" / target / "release" / HOST_BRIDGE_LIB.name
+        artifact = NATIVE_WORKSPACE_DIR / "target" / target / "release" / HOST_BRIDGE_LIB.name
         if not artifact.is_file():
             print_step("FAIL", "Native Mac device bridge", f"missing {artifact}")
             return False
@@ -1185,6 +1202,62 @@ def command_test(args: argparse.Namespace) -> int:
         ok &= run_step(runner, "Backend tests", "backend-pytest", [str(venv_python), "-m", "pytest", "backend"])
     else:
         print_step("NOT APPLICABLE", "Backend tests", "no backend tests")
+    print("")
+    print(f"Overall: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+def command_installation_baseline(args: argparse.Namespace) -> int:
+    """Run the reproducible build-only baseline required before Installation V2."""
+    runner = Runner(verbose=args.verbose)
+    print("Veya Installation V2 Baseline")
+    print("")
+    cargo = discover_tool("cargo")
+    rustc = discover_tool("rustc")
+    rustfmt = discover_tool("rustfmt")
+    if not cargo or not rustc or not rustfmt:
+        print_step("FAIL", "Pinned Rust tools", "cargo, rustc, and rustfmt must resolve through rustup")
+        return 1
+
+    # Workspace manifest: the signer crate is tested, linted, and formatted with the bridge.
+    manifest = NATIVE_WORKSPACE_DIR / "Cargo.toml"
+    ok = True
+    ok &= run_step(runner, "Bundle identifier inventory", "baseline-bundle-identifiers", [sys.executable, str(ROOT / "scripts" / "checks" / "check_bundle_identifiers.py")])
+    ok &= run_step(runner, "No-Xcode consumer runtime policy", "baseline-no-xcode-runtime", [sys.executable, str(ROOT / "scripts" / "checks" / "check_no_xcode_consumer_runtime.py")])
+    ok &= run_step(runner, "No-Xcode install routing policy", "baseline-no-xcode-routing", [sys.executable, str(ROOT / "scripts" / "checks" / "check_no_xcode_install_routing.py")])
+    ok &= run_step(runner, "Artifact identity checks", "baseline-artifact-identity", [sys.executable, str(ROOT / "scripts" / "checks" / "test_artifact_identity.py")])
+    ok &= run_step(runner, "Device discovery CLI checks", "baseline-device-discovery", [sys.executable, str(ROOT / "scripts" / "checks" / "test_device_discovery_cli.py")])
+    ok &= run_step(runner, "Installation V2 secret scan", "baseline-v2-secrets", [sys.executable, str(ROOT / "scripts" / "checks" / "check_installation_v2_secrets.py")])
+    ok &= run_step(runner, "Installation V2 legacy-signing guard", "baseline-v2-legacy-guard", [sys.executable, str(ROOT / "scripts" / "checks" / "check_legacy_signing_routes.py"), "--scope", "v2"])
+    ok &= run_step(runner, "Rust formatting", "baseline-rust-fmt", [cargo, "fmt", "--manifest-path", str(manifest), "--all", "--check"])
+    ok &= run_step(runner, "Rust check", "baseline-rust-check", [cargo, "check", "--manifest-path", str(manifest), "--workspace", "--locked"])
+    ok &= run_step(runner, "Rust clippy", "baseline-rust-clippy", [cargo, "clippy", "--manifest-path", str(manifest), "--all-targets", "--workspace", "--locked", "--", "-D", "warnings"])
+    ok &= run_step(runner, "Rust tests", "baseline-rust-test", [cargo, "test", "--manifest-path", str(manifest), "--workspace", "--locked"])
+    module_cache = ROOT / ".build" / "implementation-v2-module-cache"
+    module_cache.mkdir(parents=True, exist_ok=True)
+    # The Swift signer facade tests load the real bridge dylib; without it they would skip.
+    ok &= run_step(runner, "Rust debug bridge for Swift signer tests", "baseline-rust-debug-bridge",
+                   [cargo, "build", "--manifest-path", str(manifest), "--locked", "-p", "iossim-device-bridge"])
+    swift_env = merged_env({
+        "CLANG_MODULE_CACHE_PATH": str(module_cache),
+        "SWIFTPM_MODULECACHE_OVERRIDE": str(module_cache),
+        "VEYA_SIGNING_TEST_LIBRARY": str(NATIVE_WORKSPACE_DIR / "target" / "debug" / "libiossim_device_bridge.dylib"),
+    })
+    swift_command = ["swift", "test", "--package-path", str(MAC_DIR)]
+    if args.defer_m4:
+        print_step("DEFERRED", "M4", "DEVELOPMENT ONLY; secure persistence remains a pre-release blocker")
+        swift_command += ["--skip", "SigningKeyStoreTests.testPackagedHelperCreateReopenAndUpgradeWithoutUserInteraction"]
+    ok &= run_step(runner, "macOS Swift tests", "baseline-macos-swift", swift_command, env=swift_env)
+    ok &= run_step(runner, "iOS shared unit checks", "baseline-ios-unit", ["swift", "run", "--package-path", str(IOS_DIR), "POCUnitChecks"], env=swift_env)
+    for architecture in RELEASE_CONFIG.architectures:
+        rust_architecture = "aarch64" if architecture == "arm64" else architecture
+        target = f"{rust_architecture}-apple-darwin"
+        ok &= run_step(
+            runner,
+            f"Rust release build {target}",
+            f"baseline-rust-release-{target}",
+            [cargo, "build", "--manifest-path", str(manifest), "--release", "--locked", "--target", target],
+        )
     print("")
     print(f"Overall: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
@@ -1430,7 +1503,9 @@ def macos_bin_path(runner: Runner) -> Path:
     return Path(result.stdout.strip())
 
 
-def build_universal_macos_products(runner: Runner, local_test_only: bool = False) -> Path:
+def build_universal_macos_products(runner: Runner, local_test_only: bool = False, configuration: str = "release") -> Path:
+    if configuration not in {"debug", "release"}:
+        raise ValueError("unsupported Mac configuration")
     intermediates = RELEASE_OUTPUT_DIR / "intermediates"
     architecture_products: dict[str, Path] = {}
     sdk = subprocess.run(
@@ -1442,13 +1517,13 @@ def build_universal_macos_products(runner: Runner, local_test_only: bool = False
     if sdk.returncode != 0:
         raise RuntimeError("the macOS SDK could not be resolved with xcrun")
     for architecture in RELEASE_CONFIG.architectures:
-        scratch = intermediates / f"macos-{architecture}"
+        scratch = intermediates / (f"macos-{architecture}" if configuration == "release" else f"macos-development-{architecture}")
         triple = f"{architecture}-apple-macosx{RELEASE_CONFIG.minimum_macos}"
         base = [
             "swift", "build",
             "--package-path", str(MAC_DIR),
             "--scratch-path", str(scratch),
-            "--configuration", "release",
+            "--configuration", configuration,
             "--triple", triple,
             "--sdk", sdk.stdout.strip(),
             "-Xswiftc", "-D", "-Xswiftc", "IOSSIM_BUNDLED_ENGINE",
@@ -1469,7 +1544,7 @@ def build_universal_macos_products(runner: Runner, local_test_only: bool = False
         )
         architecture_products[architecture] = Path(bin_result.stdout.strip())
 
-    universal = intermediates / "macos-universal"
+    universal = intermediates / ("macos-universal" if configuration == "release" else "macos-development-universal")
     universal.mkdir(parents=True, exist_ok=True)
     for product in ["IOSSimMac", "IOSSimProvisioner"]:
         inputs = [str(architecture_products[architecture] / product) for architecture in RELEASE_CONFIG.architectures]
@@ -1536,7 +1611,7 @@ def write_app_info_plist(contents_dir: Path) -> None:
 
 
 def write_dependency_sbom(resources_dir: Path) -> Path:
-    cargo_lock_path = HOST_BRIDGE_DIR / "Cargo.lock"
+    cargo_lock_path = NATIVE_WORKSPACE_DIR / "Cargo.lock"
     swift_lock_path = MAC_DIR / "Package.resolved"
     cargo_lock = tomllib.loads(cargo_lock_path.read_text(encoding="utf-8"))
     swift_lock = json.loads(swift_lock_path.read_text(encoding="utf-8"))
@@ -1628,6 +1703,57 @@ def write_dependency_sbom(resources_dir: Path) -> Path:
     return destination
 
 
+def write_mpl_notices(notices_dir: Path) -> int:
+    """MPL-2.0 §3.2: ship each covered crate's license and where its source is."""
+    cargo = discover_tool("cargo")
+    if not cargo:
+        raise RuntimeError("cargo is required to generate MPL-2.0 notices")
+    metadata = json.loads(subprocess.run(
+        [cargo, "metadata", "--format-version", "1", "--locked",
+         "--manifest-path", str(NATIVE_WORKSPACE_DIR / "Cargo.toml")],
+        check=True, text=True, stdout=subprocess.PIPE,
+        # The toolchain cargo needs its sibling rustc on PATH.
+        env={**os.environ, "PATH": f"{Path(cargo).parent}{os.pathsep}{os.environ.get('PATH', '')}"},
+    ).stdout)
+    packages = {package["id"]: package for package in metadata["packages"]}
+    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    # Walk only normal (shipped) dependencies from the bridge; dev/build tools do not ship.
+    root = next(p["id"] for p in metadata["packages"] if p["name"] == "iossim-device-bridge")
+    shipped, pending = set(), [root]
+    while pending:
+        current = pending.pop()
+        if current in shipped:
+            continue
+        shipped.add(current)
+        for dep in nodes[current]["deps"]:
+            if any(kind.get("kind") is None for kind in dep["dep_kinds"]):
+                pending.append(dep["pkg"])
+    sections = []
+    for package in sorted((packages[i] for i in shipped), key=lambda p: (p["name"], p["version"])):
+        if "MPL-2.0" not in (package.get("license") or ""):
+            continue
+        crate_dir = Path(package["manifest_path"]).parent
+        license_file = next((crate_dir / n for n in ("LICENSE", "LICENSE.txt", "LICENSE-MPL") if (crate_dir / n).is_file()), None)
+        if license_file is None:
+            raise RuntimeError(f"MPL-2.0 crate {package['name']} {package['version']} has no license file")
+        source = (f"https://crates.io/crates/{package['name']}/{package['version']}"
+                  if package.get("source") else "Veya source distribution: native/" + crate_dir.name)
+        sections.append(
+            f"== {package['name']} {package['version']} (MPL-2.0)\n"
+            f"Source Code Form: {source}\n"
+            f"Repository: {package.get('repository') or 'n/a'}\n\n"
+            f"{license_file.read_text(encoding='utf-8').strip()}\n"
+        )
+    if not sections:
+        raise RuntimeError("expected MPL-2.0 signer dependencies in the shipped bridge graph")
+    (notices_dir / "MPL-2.0-Notices.txt").write_text(
+        "The native bridge includes the following MPL-2.0 covered software, unmodified.\n"
+        "The Source Code Form of each is available at the location listed.\n\n" + "\n".join(sections),
+        encoding="utf-8",
+    )
+    return len(sections)
+
+
 def assemble_self_contained_app(
     runner: Runner,
     ios_configuration: str = "Release",
@@ -1654,6 +1780,7 @@ def assemble_self_contained_app(
     notices.mkdir()
     shutil.copy2(IDEVICE_LICENSE_SOURCE, notices / "idevice-LICENSE.txt")
     shutil.copy2(BIGINT_LICENSE_SOURCE, notices / "BigInt-LICENSE.txt")
+    write_mpl_notices(notices)
     write_dependency_sbom(resources)
     if not HOST_BRIDGE_LIB.is_file():
         raise RuntimeError("native Mac device bridge dylib is missing; run the host bridge build first")
@@ -3614,6 +3741,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("release-local", "build and audit an ad-hoc signed local-test-only DMG"),
         ("release-local-audit", "verify a local-test-only DMG without public release claims"),
         ("test", "run current main validation suite"),
+        ("installation-baseline", "run the pinned Installation V2 build-only baseline"),
         ("diagnose-apple-srp-init", "run the password-free Apple SRP initialization probe"),
         ("device-debug", "trace no-Xcode device discovery at every boundary"),
         ("readiness-debug", "probe CoreDevice/RSD/AppService readiness without starting runtime"),
@@ -3623,6 +3751,8 @@ def build_parser() -> argparse.ArgumentParser:
     ]:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--verbose", action="store_true", help="print detailed command output")
+        if name == "installation-baseline":
+            p.add_argument("--defer-m4", action="store_true", help="development only: defer the M4 packaged persistence gate; release still requires it")
         if name == "doctor":
             p.add_argument("--json", action="store_true", help="emit machine-readable status")
         if name == "device":
@@ -3665,6 +3795,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_local_release_audit(args)
     if args.command == "test":
         return command_test(args)
+    if args.command == "installation-baseline":
+        return command_installation_baseline(args)
     if args.command == "diagnose-apple-srp-init":
         return subprocess.run(
             ["swift", "run", "IOSSimAuthDiagnostic"],

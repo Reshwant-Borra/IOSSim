@@ -1536,7 +1536,7 @@ public actor ConsumerArtifactProvisioner {
             let proofContext = DeveloperServicesProofContext(
                 releaseIdentity: "\(manifest.appVersion):\(manifest.provisionerVersion)",
                 pairingGeneration: nil,
-                targetBundleIdentifier: manifest.installedRunnerBundleID
+                targetBundleIdentifier: manifest.installedMainBundleID
             )
             let receipt = try await developerServicesCoordinator.prepare(
                 device: identity,
@@ -2106,29 +2106,17 @@ public actor ConsumerArtifactProvisioner {
 
     private func decodedProfile(_ url: URL) throws -> [String: Any] {
         if let data = try? Data(contentsOf: url),
-           let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
+           let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any])
+            ?? (try? developmentProfileContent(data)) {
             return plist
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["cms", "-D", "-i", url.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0,
-              let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
-            throw ConsumerProvisioningFailure(
-                code: .profileUnavailable,
-                stage: .preparingIdentities,
-                userMessage: "IOSSim could not validate its prepared signing profile.",
-                remediation: "Try provisioning again; your Apple authorization remains valid.",
-                developerDetail: "security cms failed for generated profile."
-            )
-        }
-        return plist
+        throw ConsumerProvisioningFailure(
+            code: .profileUnavailable,
+            stage: .preparingIdentities,
+            userMessage: "IOSSim could not validate its prepared signing profile.",
+            remediation: "Try provisioning again; your Apple authorization remains valid.",
+            developerDetail: "In-process CMS decoding failed for generated profile."
+        )
     }
 
     private func nestedSignables(in appURL: URL) -> [URL] {

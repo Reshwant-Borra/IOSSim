@@ -120,7 +120,8 @@ final class VeyaSigningKeychainRegressionTests: XCTestCase {
     // reproduces the consumer's authorization conditions.
 
     /// The fix. A key created through the production path in the Veya-owned
-    /// Keychain must be signable by real `/usr/bin/codesign` with no prompt.
+    /// Keychain must carry a codesign-compatible Apple partition and be
+    /// signable by real `/usr/bin/codesign` with no prompt.
     func testPackagedHelperCreatedKeyIsSignableByRealCodesignWithoutAnyPrompt() throws {
         try requireLocalSystemTests()
         let result = try runQualificationHelper(destination: "veya")
@@ -128,26 +129,26 @@ final class VeyaSigningKeychainRegressionTests: XCTestCase {
             result.exitCode, 0,
             "Veya-owned Keychain key must sign without a prompt. Helper output: \(result.output)"
         )
-        XCTAssertTrue(
-            result.output.contains("partition list: <none>"),
-            "A Veya-owned Keychain key must receive no partition ACL. Helper output: \(result.output)"
+        XCTAssertFalse(
+            result.output.contains("partition list: cdhash:"),
+            "The fixed Veya-owned Keychain path must not leave a cdhash-only partition. Helper output: \(result.output)"
         )
         XCTAssertTrue(result.output.contains("codesign signed with no prompt"))
     }
 
-    /// The defect itself, kept executable so the gate is proved to discriminate
-    /// rather than merely to pass. A login-Keychain key created by a
-    /// non-Apple-signed process is stamped `cdhash:<creator>` and is unusable.
-    func testLoginKeychainKeyCreatedByAPackagedHelperIsBlockedByItsPartitionList() throws {
+    /// Upgrade/retry repair must heal an already-created Veya-owned key without
+    /// prompting for the login-Keychain password.
+    func testVeyaOwnedKeyRepairPathIsIdempotentAndSignsWithRealCodesign() throws {
         try requireLocalSystemTests()
-        let result = try runQualificationHelper(destination: "login")
+        let result = try runQualificationHelper(destination: "veya-poisoned-repaired")
         XCTAssertEqual(
-            result.exitCode, 3,
-            "A login-Keychain key must remain unusable; this is the shipped defect. Helper output: \(result.output)"
+            result.exitCode, 0,
+            "A Veya-owned key must be repairable with Veya's own Keychain password. Helper output: \(result.output)"
         )
-        XCTAssertTrue(
+        XCTAssertTrue(result.output.contains("codesign signed with no prompt"))
+        XCTAssertFalse(
             result.output.contains("partition list: cdhash:"),
-            "securityd must be stamping the creator's cdhash partition. Helper output: \(result.output)"
+            "The production repair path must not leave a cdhash-only partition. Helper output: \(result.output)"
         )
     }
 

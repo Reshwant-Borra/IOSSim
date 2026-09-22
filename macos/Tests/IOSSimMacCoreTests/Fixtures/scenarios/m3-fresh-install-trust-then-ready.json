@@ -1,0 +1,170 @@
+{
+  "capabilities": {
+    "allowedDomains": [
+      "artifact",
+      "migration",
+      "authorization",
+      "team",
+      "signingKey",
+      "certificate",
+      "profile",
+      "payload",
+      "application",
+      "developerSupport",
+      "pairing",
+      "vpn",
+      "runtime"
+    ],
+    "maximumPermission": 1,
+    "maximumTransitions": 64,
+    "schemaVersion": 1
+  },
+  "clockStartMilliseconds": 1800000000000,
+  "domains": [
+    {
+      "connectionBound": false,
+      "domain": "artifact",
+      "initial": "satisfied",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "migration",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "authorization",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "team",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "signingKey",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "certificate",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "profile",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "payload",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "application",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "developerSupport",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "pairing",
+      "initial": "waitingForUser",
+      "userAction": "Unlock the iPhone and tap Trust."
+    },
+    {
+      "connectionBound": true,
+      "domain": "vpn",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "runtime",
+      "initial": "missing",
+      "userAction": null
+    }
+  ],
+  "injections": [],
+  "name": "m3-fresh-install-trust-then-ready",
+  "schemaVersion": 1,
+  "stage": "runtime",
+  "steps": [
+    {
+      "command": "inspect",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 0,
+        "satisfiedDomains": [
+          "artifact"
+        ],
+        "status": "inspected"
+      }
+    },
+    {
+      "command": "plan",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 0,
+        "status": "transitionRequired"
+      }
+    },
+    {
+      "command": "reconcile",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 2,
+        "status": "userActionRequired"
+      }
+    },
+    {
+      "command": "reconcile",
+      "completeUserActions": [
+        "pairing"
+      ],
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 0,
+        "satisfiedDomains": [
+          "artifact",
+          "migration",
+          "authorization",
+          "team",
+          "signingKey",
+          "certificate",
+          "profile",
+          "payload",
+          "application",
+          "developerSupport",
+          "pairing",
+          "vpn",
+          "runtime"
+        ],
+        "status": "ready"
+      }
+    },
+    {
+      "command": "verify",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 0,
+        "status": "verified"
+      }
+    }
+  ]
+}

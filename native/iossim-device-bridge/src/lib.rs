@@ -1,3 +1,4 @@
+mod signing_ffi;
 use idevice::remote_pairing::{RemotePairingLockdownService, RpPairingFile};
 use idevice::{
     IdeviceService, RsdService,
@@ -33,7 +34,7 @@ const MAX_CONTAINER_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 
 #[repr(i32)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Status {
     Ok = 0,
     InvalidArgument = 1,
@@ -232,18 +233,33 @@ fn runtime() -> Result<tokio::runtime::Runtime, *mut BridgeResult> {
         })
 }
 
-fn block_on_timeout<F>(
+fn block_on_timeout<F, Make>(
     runtime: &tokio::runtime::Runtime,
     duration: Duration,
-    future: F,
+    make_future: Make,
 ) -> Result<F::Output, tokio::time::error::Elapsed>
 where
     F: Future,
+    Make: FnOnce() -> F + Send,
+    F::Output: Send,
 {
-    // Tokio timer futures must be created while the runtime is entered. Creating
-    // `tokio::time::timeout(...)` as the argument to `Runtime::block_on` panics
-    // before block_on has a chance to establish the reactor context.
-    runtime.block_on(async move { tokio::time::timeout(duration, future).await })
+    // Swift cooperative threads have ~512 KiB stacks. Debug idevice futures can
+    // exceed that while polling, even when the future itself lives on the heap.
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("veya-device-call".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, move || {
+                let future = Box::pin(make_future());
+                // Construct the timer after entering Tokio's reactor context.
+                runtime.block_on(async move { tokio::time::timeout(duration, future).await })
+            })
+            .expect("native device thread unavailable");
+        match worker.join() {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
 }
 
 fn timeout_ms(value: u64) -> Result<u64, *mut BridgeResult> {
@@ -344,6 +360,120 @@ fn validate_container_path(value: &str) -> bool {
         && value
             .split('/')
             .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn valid_team_identifier(value: &str) -> bool {
+    value.len() == 10
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+fn application_team_identifier(
+    dictionary: &plist::Dictionary,
+    bundle_identifier: &str,
+) -> Option<String> {
+    if let Some(team) = dictionary
+        .get("TeamIdentifier")
+        .and_then(plist::Value::as_string)
+        .filter(|team| valid_team_identifier(team))
+    {
+        return Some(team.to_owned());
+    }
+    let entitlements = dictionary
+        .get("Entitlements")
+        .and_then(plist::Value::as_dictionary)?;
+    if let Some(team) = entitlements
+        .get("com.apple.developer.team-identifier")
+        .and_then(plist::Value::as_string)
+        .filter(|team| valid_team_identifier(team))
+    {
+        return Some(team.to_owned());
+    }
+    let application_identifier = entitlements
+        .get("application-identifier")
+        .and_then(plist::Value::as_string)?;
+    let (team, signed_bundle_identifier) = application_identifier.split_once('.')?;
+    (signed_bundle_identifier == bundle_identifier && valid_team_identifier(team))
+        .then(|| team.to_owned())
+}
+
+async fn installation_proxy_inventory(
+    proxy: &mut InstallationProxyClient,
+) -> Result<Vec<AppRecord>, idevice::IdeviceError> {
+    let request = plist::plist!({
+        "Command": "Lookup",
+        "ClientOptions": {
+            "ApplicationType": "User",
+            "ReturnAttributes": [
+                "CFBundleIdentifier",
+                "CFBundleShortVersionString",
+                "CFBundleVersion",
+                "TeamIdentifier",
+                "Entitlements",
+                "ApplicationIdentifier",
+                "SignerIdentity",
+            ],
+        },
+    });
+    let mut encoded = Vec::new();
+    request.to_writer_xml(&mut encoded)?;
+    let length = u32::try_from(encoded.len()).map_err(|_| {
+        idevice::IdeviceError::UnexpectedResponse("installation proxy request is too large".into())
+    })?;
+    let mut framed = Vec::with_capacity(encoded.len() + 4);
+    framed.extend_from_slice(&length.to_be_bytes());
+    framed.extend_from_slice(&encoded);
+    proxy.idevice.send_raw(&framed).await?;
+
+    let length_bytes = proxy.idevice.read_raw(4).await?;
+    let length = u32::from_be_bytes(length_bytes.try_into().map_err(|_| {
+        idevice::IdeviceError::UnexpectedResponse(
+            "installation proxy response length is invalid".into(),
+        )
+    })?) as usize;
+    if length == 0 || length > MAX_CONTAINER_BYTES {
+        return Err(idevice::IdeviceError::UnexpectedResponse(
+            "installation proxy response is outside the supported size".into(),
+        ));
+    }
+    let payload = proxy.idevice.read_raw(length).await?;
+    let response: plist::Value = plist::from_bytes(&payload)?;
+    let mut response = response.into_dictionary().ok_or_else(|| {
+        idevice::IdeviceError::UnexpectedResponse(
+            "installation proxy response is not a dictionary".into(),
+        )
+    })?;
+    if response.contains_key("Error") {
+        return Err(idevice::IdeviceError::UnexpectedResponse(
+            "installation proxy rejected the inventory request".into(),
+        ));
+    }
+    let applications = response
+        .remove("LookupResult")
+        .and_then(plist::Value::into_dictionary)
+        .ok_or_else(|| {
+            idevice::IdeviceError::UnexpectedResponse(
+                "installation proxy response omitted LookupResult".into(),
+            )
+        })?;
+    Ok(applications
+        .into_iter()
+        .filter_map(|(bundle_id, value)| {
+            let dictionary = value.into_dictionary()?;
+            let version = dictionary
+                .get("CFBundleShortVersionString")
+                .or_else(|| dictionary.get("CFBundleVersion"))
+                .and_then(plist::Value::as_string)
+                .map(ToOwned::to_owned);
+            let team_id = application_team_identifier(&dictionary, &bundle_id);
+            Some(AppRecord {
+                bundle_id,
+                version,
+                team_id,
+            })
+        })
+        .collect())
 }
 
 async fn devices() -> Result<Vec<idevice::usbmuxd::UsbmuxdDevice>, idevice::IdeviceError> {
@@ -456,6 +586,14 @@ fn staged_error(status: Status, stage: &str, error: impl std::fmt::Display) -> *
     make_result(status, vec![], format!("{stage}: {error}"))
 }
 
+fn missing_app_service_status(ddi_mounted: Option<bool>) -> Status {
+    if ddi_mounted == Some(false) {
+        Status::DdiRequired
+    } else {
+        Status::AppServiceUnavailable
+    }
+}
+
 async fn personalized_image_mounted(
     provider: &dyn IdeviceProvider,
 ) -> Result<bool, idevice::IdeviceError> {
@@ -499,7 +637,7 @@ pub extern "C" fn iossim_bridge_list_devices(timeout: u64) -> *mut BridgeResult 
             Ok(value) => value,
             Err(result) => return result,
         };
-        match block_on_timeout(&runtime, Duration::from_millis(timeout), devices()) {
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), devices) {
             Ok(Ok(devices)) => {
                 let values: Vec<_> = devices
                     .into_iter()
@@ -518,6 +656,11 @@ pub extern "C" fn iossim_bridge_list_devices(timeout: u64) -> *mut BridgeResult 
 }
 
 #[unsafe(no_mangle)]
+/// Opens the exact device selected by the caller.
+///
+/// # Safety
+/// Pointer arguments must be valid for their declared lengths. `out_handle`
+/// must be writable and is owned by the caller after success.
 pub unsafe extern "C" fn iossim_bridge_open_device(
     stable_id: *const u8,
     stable_id_len: usize,
@@ -556,7 +699,7 @@ pub unsafe extern "C" fn iossim_bridge_open_device(
                 );
             }
         };
-        let selected = match block_on_timeout(&runtime, Duration::from_millis(timeout), devices()) {
+        let selected = match block_on_timeout(&runtime, Duration::from_millis(timeout), devices) {
             Ok(Ok(devices)) => match select_exact_device(
                 devices,
                 &stable_id,
@@ -598,6 +741,11 @@ pub unsafe extern "C" fn iossim_bridge_open_device(
 }
 
 #[unsafe(no_mangle)]
+/// Inspects a previously opened device.
+///
+/// # Safety
+/// `handle` must be a live handle returned by `iossim_bridge_open_device` and
+/// must not be closed for the duration of this call.
 pub unsafe extern "C" fn iossim_bridge_inspect_device(
     handle: *mut DeviceHandle,
     timeout: u64,
@@ -623,7 +771,7 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let connection = connection_name(&selected.connection_type);
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
@@ -640,11 +788,6 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
                 .and_then(|value| value.as_string().map(ToOwned::to_owned));
             let os_version = lockdown
                 .get_value(Some("ProductVersion"), None)
-                .await
-                .ok()
-                .and_then(|value| value.as_string().map(ToOwned::to_owned));
-            let os_build = lockdown
-                .get_value(Some("BuildVersion"), None)
                 .await
                 .ok()
                 .and_then(|value| value.as_string().map(ToOwned::to_owned));
@@ -677,6 +820,12 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
                     }
                 }
             }
+            // Newer devices restrict BuildVersion until the paired Lockdown session starts.
+            let os_build = lockdown
+                .get_value(Some("BuildVersion"), None)
+                .await
+                .ok()
+                .and_then(|value| value.as_string().map(ToOwned::to_owned));
             if cancelled.load(Ordering::Acquire) {
                 return Err(idevice::IdeviceError::NotFound);
             }
@@ -708,6 +857,10 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
 /// Attempts Lockdown pairing exactly once. Apple's pending/denied/locked
 /// responses are returned as typed statuses. Pairing material is persisted
 /// directly through usbmuxd and never leaves this native boundary.
+///
+/// # Safety
+/// `handle` must be live and `host_name` must be readable for
+/// `host_name_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iossim_bridge_pair_lockdown_once(
     handle: *mut DeviceHandle,
@@ -749,24 +902,24 @@ pub unsafe extern "C" fn iossim_bridge_pair_lockdown_once(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut lockdown = LockdownClient::connect(&provider).await?;
-            if let Ok(existing) = provider.get_pairing_file().await {
-                if lockdown.start_session(&existing).await.is_ok() {
-                    return Ok(LockdownPairingReceipt {
-                        schema_version: 1,
-                        state: "LOCKDOWN_SESSION_VALIDATED",
-                        stable_id,
-                        usbmux_id: expected_mux,
-                        connection_generation: generation,
-                        connection: connection_kind_name(connection),
-                        pair_record_created: false,
-                        pair_record_persisted: true,
-                        session_validated: true,
-                    });
-                }
+            if let Ok(existing) = provider.get_pairing_file().await
+                && lockdown.start_session(&existing).await.is_ok()
+            {
+                return Ok(LockdownPairingReceipt {
+                    schema_version: 1,
+                    state: "LOCKDOWN_SESSION_VALIDATED",
+                    stable_id,
+                    usbmux_id: expected_mux,
+                    connection_generation: generation,
+                    connection: connection_kind_name(connection),
+                    pair_record_created: false,
+                    pair_record_persisted: true,
+                    session_validated: true,
+                });
             }
 
             let mut mux = UsbmuxdAddr::default().connect(0x4953_0002).await?;
@@ -817,6 +970,10 @@ pub unsafe extern "C" fn iossim_bridge_pair_lockdown_once(
 /// Creates and stores a legitimate RPPairing record over the already trusted
 /// USB lockdown channel. The private key is returned only in the bounded
 /// result buffer so the Swift layer can put it directly into Keychain.
+///
+/// # Safety
+/// `handle` must be live and `hostname` must be readable for `hostname_len`
+/// bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iossim_bridge_create_remote_pairing(
     handle: *mut DeviceHandle,
@@ -847,7 +1004,7 @@ pub unsafe extern "C" fn iossim_bridge_create_remote_pairing(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let service = RemotePairingLockdownService::connect(&provider).await?;
@@ -873,6 +1030,10 @@ pub unsafe extern "C" fn iossim_bridge_create_remote_pairing(
 /// Validates an existing RPPairing record against the selected phone. This
 /// never regenerates a record; callers decide whether a targeted repair is
 /// appropriate after this proof fails.
+///
+/// # Safety
+/// `handle` must be live. `hostname` and `pairing_bytes` must be readable for
+/// their declared lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
     handle: *mut DeviceHandle,
@@ -909,7 +1070,7 @@ pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let mut pairing = RpPairingFile::from_bytes(&bytes)?;
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
@@ -922,11 +1083,12 @@ pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
             Ok(Ok(())) => make_result(Status::Ok, vec![], "ok"),
             Ok(Err(error)) => {
                 let lower = error.to_string().to_ascii_lowercase();
-                if matches!(&error, idevice::IdeviceError::DeviceNotFound) {
-                    error_result(&error)
-                } else if matches!(&error, idevice::IdeviceError::DeviceLocked) {
-                    error_result(&error)
-                } else if lower.contains("trust dialog") || lower.contains("invalid host") {
+                if matches!(
+                    &error,
+                    idevice::IdeviceError::DeviceNotFound | idevice::IdeviceError::DeviceLocked
+                ) || lower.contains("trust dialog")
+                    || lower.contains("invalid host")
+                {
                     error_result(&error)
                 } else {
                     staged_error(Status::PairingRejected, "remote_pairing_validate", error)
@@ -942,6 +1104,10 @@ pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
 }
 
 #[unsafe(no_mangle)]
+/// Reads developer-support mount status for an opened device.
+///
+/// # Safety
+/// `handle` must be a live bridge handle for the duration of this call.
 pub unsafe extern "C" fn iossim_bridge_developer_support_status(
     handle: *mut DeviceHandle,
     timeout: u64,
@@ -962,7 +1128,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_support_status(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut mounter = ImageMounter::connect(&provider).await?;
@@ -981,6 +1147,11 @@ pub unsafe extern "C" fn iossim_bridge_developer_support_status(
 }
 
 #[unsafe(no_mangle)]
+/// Mounts developer-support artifacts on an opened device.
+///
+/// # Safety
+/// `handle` must be live and every path/signature pointer must be readable for
+/// its declared length.
 pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
     handle: *mut DeviceHandle,
     image_path: *const u8,
@@ -1021,7 +1192,7 @@ pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut lockdown = LockdownClient::connect(&provider).await?;
@@ -1065,6 +1236,10 @@ pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
 }
 
 #[unsafe(no_mangle)]
+/// Returns the application inventory for an opened device.
+///
+/// # Safety
+/// `handle` must be a live bridge handle for the duration of this call.
 pub unsafe extern "C" fn iossim_bridge_app_inventory(
     handle: *mut DeviceHandle,
     timeout: u64,
@@ -1085,33 +1260,11 @@ pub unsafe extern "C" fn iossim_bridge_app_inventory(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut proxy = InstallationProxyClient::connect(&provider).await?;
-            let apps = proxy.get_apps(Some("User"), None).await?;
-            Ok(apps
-                .into_iter()
-                .map(|(bundle_id, value)| {
-                    let dictionary = value.as_dictionary();
-                    let version = dictionary
-                        .and_then(|item| {
-                            item.get("CFBundleShortVersionString")
-                                .or_else(|| item.get("CFBundleVersion"))
-                        })
-                        .and_then(|item| item.as_string())
-                        .map(ToOwned::to_owned);
-                    let team_id = dictionary
-                        .and_then(|item| item.get("TeamIdentifier"))
-                        .and_then(|item| item.as_string())
-                        .map(ToOwned::to_owned);
-                    AppRecord {
-                        bundle_id,
-                        version,
-                        team_id,
-                    }
-                })
-                .collect::<Vec<_>>())
+            installation_proxy_inventory(&mut proxy).await
         };
         match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(records)) => json_result(&records),
@@ -1122,6 +1275,11 @@ pub unsafe extern "C" fn iossim_bridge_app_inventory(
 }
 
 #[unsafe(no_mangle)]
+/// Installs or upgrades an application package on an opened device.
+///
+/// # Safety
+/// `handle` must be live and `local_path` must be readable for
+/// `local_path_len` bytes.
 pub unsafe extern "C" fn iossim_bridge_install_app(
     handle: *mut DeviceHandle,
     local_path: *const u8,
@@ -1150,7 +1308,7 @@ pub unsafe extern "C" fn iossim_bridge_install_app(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             if upgrade {
@@ -1168,6 +1326,11 @@ pub unsafe extern "C" fn iossim_bridge_install_app(
 }
 
 #[unsafe(no_mangle)]
+/// Uninstalls an application from an opened device.
+///
+/// # Safety
+/// `handle` must be live and `bundle_id` must be readable for
+/// `bundle_id_len` bytes.
 pub unsafe extern "C" fn iossim_bridge_uninstall_app(
     handle: *mut DeviceHandle,
     bundle_id: *const u8,
@@ -1204,7 +1367,7 @@ pub unsafe extern "C" fn iossim_bridge_uninstall_app(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut proxy = InstallationProxyClient::connect(&provider).await?;
@@ -1219,6 +1382,10 @@ pub unsafe extern "C" fn iossim_bridge_uninstall_app(
 }
 
 #[unsafe(no_mangle)]
+/// Probes developer-service readiness for an opened device.
+///
+/// # Safety
+/// `handle` must be a live bridge handle for the duration of this call.
 pub unsafe extern "C" fn iossim_bridge_developer_services_status(
     handle: *mut DeviceHandle,
     timeout: u64,
@@ -1239,7 +1406,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux)
                 .await
                 .map_err(|error| {
@@ -1281,7 +1448,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
             let app_service_name = AppServiceClient::rsd_service_name();
             let Some(service) = handshake.services.get(app_service_name.as_ref()) else {
                 return Err((
-                    Status::AppServiceUnavailable,
+                    missing_app_service_status(ddi_mounted),
                     "appservice_resolution",
                     "com.apple.coredevice.appservice is absent from the RSD service map"
                         .to_string(),
@@ -1330,6 +1497,11 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
 }
 
 #[unsafe(no_mangle)]
+/// Launches an exact bundle identifier through AppService.
+///
+/// # Safety
+/// `handle` must be live and `bundle_id` must be readable for
+/// `bundle_id_len` bytes.
 pub unsafe extern "C" fn iossim_bridge_launch_app(
     handle: *mut DeviceHandle,
     bundle_id: *const u8,
@@ -1366,7 +1538,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux)
                 .await
                 .map_err(|error| {
@@ -1477,6 +1649,11 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
 
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
+/// Writes bounded bytes into an exact application container path.
+///
+/// # Safety
+/// `handle` must be live. All pointer arguments must be readable for their
+/// declared lengths.
 pub unsafe extern "C" fn iossim_bridge_container_write(
     handle: *mut DeviceHandle,
     bundle_id: *const u8,
@@ -1532,7 +1709,7 @@ pub unsafe extern "C" fn iossim_bridge_container_write(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let house = HouseArrestClient::connect(&provider).await?;
@@ -1567,6 +1744,11 @@ pub unsafe extern "C" fn iossim_bridge_container_write(
 }
 
 #[unsafe(no_mangle)]
+/// Reads bounded bytes from an exact application container path.
+///
+/// # Safety
+/// `handle` must be live. String pointers must be readable for their declared
+/// lengths.
 pub unsafe extern "C" fn iossim_bridge_container_read(
     handle: *mut DeviceHandle,
     bundle_id: *const u8,
@@ -1614,7 +1796,7 @@ pub unsafe extern "C" fn iossim_bridge_container_read(
             Ok(value) => value,
             Err(result) => return result,
         };
-        let task = async move {
+        let task = move || async move {
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let house = HouseArrestClient::connect(&provider).await?;
@@ -1647,6 +1829,10 @@ pub unsafe extern "C" fn iossim_bridge_container_read(
 }
 
 #[unsafe(no_mangle)]
+/// Requests cooperative cancellation for a live device handle.
+///
+/// # Safety
+/// `handle` must be null or a live handle that is not concurrently closed.
 pub unsafe extern "C" fn iossim_bridge_cancel(handle: *mut DeviceHandle) {
     if !handle.is_null() {
         // SAFETY: caller owns this live handle; only the atomic flag is accessed.
@@ -1657,6 +1843,11 @@ pub unsafe extern "C" fn iossim_bridge_cancel(handle: *mut DeviceHandle) {
 }
 
 #[unsafe(no_mangle)]
+/// Releases a device handle.
+///
+/// # Safety
+/// `handle` must be null or a live handle returned by this library and must be
+/// transferred exactly once.
 pub unsafe extern "C" fn iossim_bridge_close_device(handle: *mut DeviceHandle) {
     if !handle.is_null() {
         // SAFETY: caller transfers the handle exactly once.
@@ -1667,6 +1858,11 @@ pub unsafe extern "C" fn iossim_bridge_close_device(handle: *mut DeviceHandle) {
 }
 
 #[unsafe(no_mangle)]
+/// Releases a bridge result and its owned buffers.
+///
+/// # Safety
+/// `result` must be null or a result returned by this library and must be
+/// transferred exactly once.
 pub unsafe extern "C" fn iossim_bridge_result_free(result: *mut BridgeResult) {
     if result.is_null() {
         return;
@@ -1723,8 +1919,94 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let result = block_on_timeout(&runtime, Duration::from_millis(50), async { 42 });
+        let result = block_on_timeout(&runtime, Duration::from_millis(50), || async { 42 });
         assert_eq!(result.expect("timer should run"), 42);
+    }
+
+    #[test]
+    fn absent_appservice_requests_ddi_only_when_mount_is_known_missing() {
+        assert_eq!(missing_app_service_status(Some(false)), Status::DdiRequired);
+        assert_eq!(
+            missing_app_service_status(Some(true)),
+            Status::AppServiceUnavailable
+        );
+        assert_eq!(
+            missing_app_service_status(None),
+            Status::AppServiceUnavailable
+        );
+    }
+
+    #[test]
+    fn inventory_team_uses_signed_entitlements_when_top_level_field_is_absent() {
+        let bundle = "com.example.veya";
+        let direct = plist::plist!({
+            "TeamIdentifier": "ABCDE12345",
+        })
+        .into_dictionary()
+        .unwrap();
+        assert_eq!(
+            application_team_identifier(&direct, bundle).as_deref(),
+            Some("ABCDE12345")
+        );
+
+        let entitlement_team = plist::plist!({
+            "Entitlements": {
+                "com.apple.developer.team-identifier": "ABCDE12345",
+            },
+        })
+        .into_dictionary()
+        .unwrap();
+        assert_eq!(
+            application_team_identifier(&entitlement_team, bundle).as_deref(),
+            Some("ABCDE12345")
+        );
+
+        let application_identifier = plist::plist!({
+            "Entitlements": {
+                "application-identifier": "ABCDE12345.com.example.veya",
+            },
+        })
+        .into_dictionary()
+        .unwrap();
+        assert_eq!(
+            application_team_identifier(&application_identifier, bundle).as_deref(),
+            Some("ABCDE12345")
+        );
+        assert_eq!(
+            application_team_identifier(&application_identifier, "com.example.other"),
+            None,
+            "an entitlement for another bundle must never prove ownership"
+        );
+    }
+
+    #[test]
+    fn device_future_polling_does_not_use_the_swift_sized_caller_stack() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let caller = std::thread::current().id();
+                let result = block_on_timeout(&runtime, Duration::from_secs(1), || async {
+                    #[inline(never)]
+                    fn large_poll_frame() -> usize {
+                        let bytes = std::hint::black_box([7u8; 768 * 1024]);
+                        bytes.iter().map(|value| *value as usize).sum()
+                    }
+                    assert_ne!(std::thread::current().id(), caller);
+                    large_poll_frame()
+                });
+                assert_eq!(result.unwrap(), 7 * 768 * 1024);
+                let timeout = block_on_timeout(&runtime, Duration::from_millis(1), || async {
+                    std::future::pending::<()>().await;
+                });
+                assert!(timeout.is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

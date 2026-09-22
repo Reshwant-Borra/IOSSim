@@ -11,7 +11,7 @@ APP_DIR="${BUILD_ROOT}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-BRIDGE_SOURCE="${ROOT_DIR}/native/iossim-device-bridge/target/release/libiossim_device_bridge.dylib"
+BRIDGE_SOURCE="${ROOT_DIR}/native/target/release/libiossim_device_bridge.dylib"
 BRIDGE_DIR="${RESOURCES_DIR}/NativeDeviceBridge"
 HELPER_ENTITLEMENTS="${MAC_DIR}/Release/IOSSimProvisionerLocal.entitlements"
 APP_ENTITLEMENTS="${MAC_DIR}/Release/IOSSim.entitlements"
@@ -24,6 +24,13 @@ fi
 BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_VARIANT="${IOSSIM_MAC_BUILD_VARIANT:-LOCAL_NO_XCODE_CONSUMER}"
 DEVICE_ARTIFACTS_SOURCE="${IOSSIM_DEVICE_ARTIFACTS_SOURCE:-}"
+if [[ "${BUILD_VARIANT}" == "VEYA_DEVELOPMENT_SESSION" && "${CONFIGURATION}" != "debug" ]]; then
+  echo "DEVELOPMENT_ONLY: the volatile session requires a debug build." >&2
+  exit 1
+fi
+if [[ "${BUILD_VARIANT}" == "VEYA_DEVELOPMENT_SESSION" && "${SIGN_IDENTITY}" == "-" ]]; then
+  APP_ENTITLEMENTS="${HELPER_ENTITLEMENTS}"
+fi
 
 if [[ -z "${DEVICE_ARTIFACTS_SOURCE}" || ! -f "${DEVICE_ARTIFACTS_SOURCE}/manifest.json" ]]; then
   echo "PAYLOAD_MISSING_FROM_DISTRIBUTION: set IOSSIM_DEVICE_ARTIFACTS_SOURCE to a verified prebuilt DeviceArtifacts directory." >&2
@@ -69,7 +76,19 @@ SWIFT_FLAGS=(
 
 if [[ ! -f "${BRIDGE_SOURCE}" ]]; then
   echo "Native device bridge is missing: ${BRIDGE_SOURCE}" >&2
-  echo "Build it first with ./iossim build or cargo build --release in native/iossim-device-bridge." >&2
+  echo "Build it first with ./iossim build (universal lipo of the native workspace targets)." >&2
+  exit 1
+fi
+# A plain `cargo build --release` writes a host-only dylib to the same path;
+# refuse it and any bridge predating the in-process signer ABI.
+EXPECTED_BRIDGE_ARCHS="$(/usr/bin/python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1]))["architectures"])))' "${ROOT_DIR}/config/release.json")"
+ACTUAL_BRIDGE_ARCHS="$(/usr/bin/lipo -archs "${BRIDGE_SOURCE}" | tr ' ' '\n' | sort | xargs)"
+if [[ "${ACTUAL_BRIDGE_ARCHS}" != "${EXPECTED_BRIDGE_ARCHS}" ]]; then
+  echo "BRIDGE_ARCHITECTURE_MISMATCH: ${BRIDGE_SOURCE} has '${ACTUAL_BRIDGE_ARCHS}', expected '${EXPECTED_BRIDGE_ARCHS}'." >&2
+  exit 1
+fi
+if ! /usr/bin/nm -gU "${BRIDGE_SOURCE}" | grep -q '_veya_signing_abi_version$'; then
+  echo "BRIDGE_SIGNING_ABI_MISSING: ${BRIDGE_SOURCE} predates the in-process signer." >&2
   exit 1
 fi
 BRIDGE_SHA256="$(shasum -a 256 "${BRIDGE_SOURCE}" | awk '{print $1}')"
@@ -79,9 +98,12 @@ if [[ -z "${BRIDGE_VERSION}" ]]; then
 fi
 IDEVICE_REVISION="$(sed -n 's/.*rev = "\([0-9a-f]*\)".*/\1/p' "${ROOT_DIR}/native/iossim-device-bridge/Cargo.toml" | head -1)"
 
-swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" "${SWIFT_FLAGS[@]}" --product IOSSimMac
-swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" "${SWIFT_FLAGS[@]}" --product IOSSimProvisioner
-BIN_PATH="$(swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" --show-bin-path)"
+BIN_PATH="${IOSSIM_MAC_PRODUCTS_PATH:-}"
+if [[ -z "${BIN_PATH}" ]]; then
+  swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" "${SWIFT_FLAGS[@]}" --product IOSSimMac
+  swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" "${SWIFT_FLAGS[@]}" --product IOSSimProvisioner
+  BIN_PATH="$(swift build --package-path "${MAC_DIR}" -c "${CONFIGURATION}" --show-bin-path)"
+fi
 
 rm -rf "${APP_DIR}"
 mkdir -p "${MACOS_DIR}" "${BRIDGE_DIR}"
@@ -140,6 +162,16 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if [[ "${BUILD_VARIANT}" == "VEYA_DEVELOPMENT_SESSION" ]]; then
+  /usr/bin/plutil -insert VeyaDevelopmentSession -bool true "${CONTENTS_DIR}/Info.plist"
+  /usr/bin/plutil -replace CFBundleDisplayName -string "${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
+  /usr/bin/plutil -replace CFBundleName -string "${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
+fi
+mkdir -p "${RESOURCES_DIR}/ThirdPartyNotices"
+cp "${ROOT_DIR}/ios/Vendor/idevice/LICENSE.txt" "${RESOURCES_DIR}/ThirdPartyNotices/idevice-LICENSE.txt"
+cp "${MAC_DIR}/ThirdPartyNotices/BigInt-LICENSE.txt" "${RESOURCES_DIR}/ThirdPartyNotices/BigInt-LICENSE.txt"
+PYTHONPATH="${ROOT_DIR}/scripts/bootstrap" python3 -c 'from pathlib import Path; import sys; from iossim_cli import write_mpl_notices, write_dependency_sbom; write_mpl_notices(Path(sys.argv[1]) / "ThirdPartyNotices"); write_dependency_sbom(Path(sys.argv[1]))' "${RESOURCES_DIR}"
 
 cat > "${RESOURCES_DIR}/BuildProvenance.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

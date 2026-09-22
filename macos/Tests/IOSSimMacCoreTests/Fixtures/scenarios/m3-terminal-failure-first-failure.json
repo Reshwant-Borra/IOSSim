@@ -1,0 +1,130 @@
+{
+  "capabilities": {
+    "allowedDomains": [
+      "artifact",
+      "migration",
+      "authorization",
+      "team",
+      "signingKey",
+      "certificate",
+      "profile",
+      "payload",
+      "application",
+      "developerSupport",
+      "pairing",
+      "vpn",
+      "runtime"
+    ],
+    "maximumPermission": 1,
+    "maximumTransitions": 64,
+    "schemaVersion": 1
+  },
+  "clockStartMilliseconds": 1800000000000,
+  "domains": [
+    {
+      "connectionBound": false,
+      "domain": "artifact",
+      "initial": "satisfied",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "migration",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "authorization",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "team",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "signingKey",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "certificate",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "profile",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "payload",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "application",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "developerSupport",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "pairing",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "vpn",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "runtime",
+      "initial": "missing",
+      "userAction": null
+    }
+  ],
+  "expectedCalls": {
+    "payload": {},
+    "profile": {
+      "execute": 1
+    }
+  },
+  "injections": [
+    {
+      "action": "terminalFailure",
+      "domain": "profile",
+      "operation": "execute",
+      "ordinal": 1
+    }
+  ],
+  "name": "m3-terminal-failure-first-failure",
+  "schemaVersion": 1,
+  "stage": "profile",
+  "steps": [
+    {
+      "command": "reconcile",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 5,
+        "firstFailureCode": "VEYA-PROFILE-091"
+      }
+    }
+  ]
+}

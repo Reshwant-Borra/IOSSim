@@ -1,0 +1,110 @@
+{
+  "capabilities": {
+    "allowedDomains": [
+      "artifact",
+      "migration",
+      "authorization",
+      "team",
+      "signingKey"
+    ],
+    "maximumPermission": 1,
+    "maximumTransitions": 64,
+    "schemaVersion": 1
+  },
+  "clockStartMilliseconds": 1800000000000,
+  "domains": [
+    {
+      "connectionBound": false,
+      "domain": "artifact",
+      "initial": "satisfied",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "migration",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "authorization",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "team",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "signingKey",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "certificate",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "profile",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "payload",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "application",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "developerSupport",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "pairing",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "vpn",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "runtime",
+      "initial": "missing",
+      "userAction": null
+    }
+  ],
+  "injections": [],
+  "name": "m3-capability-refusal",
+  "schemaVersion": 1,
+  "stage": "certificate",
+  "steps": [
+    {
+      "command": "reconcile",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 6,
+        "firstFailureCode": "VEYA-STATE-012",
+        "status": "blocked"
+      }
+    }
+  ]
+}

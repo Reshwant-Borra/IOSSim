@@ -120,6 +120,110 @@ final class CertificateCapacityRecoveryTests: XCTestCase {
         XCTAssertTrue(checkpoints.contains("CERTIFICATE_CAPACITY_RESTORED"))
     }
 
+    /// Build-4 physical retest regression: Apple sometimes omits or misreports
+    /// capacity in the certificate listing, then rejects the CSR with code 7460.
+    /// That CSR-time limit must be treated as the capacity signal and run the
+    /// same ownership-proofed reclaim ladder before retrying the exact CSR.
+    func testCSRLimitTriggersOwnedRecoveryWhenListedCapacityWasNotAuthoritative() async throws {
+        let build1 = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let foreign = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let replacement = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let build1Tag = recoveryFixtureTag()
+        let keychain = FixtureRecoveryKeychain(
+            metadata: recoveryMetadata(tag: build1Tag, certificate: build1, serial: "BUILD1"),
+            keys: [:],
+            keysToCreate: [replacement.privateKey]
+        )
+        let transport = ScriptedRecoveryTransport([
+            .plist(recoveryTeamResponse()),
+            .plist(recoveryInventory([
+                recoveryCertificate(build1.certificateData, serial: "BUILD1"),
+                recoveryCertificate(foreign.certificateData, serial: "XCODE", machineName: "Someone's MacBook Pro")
+            ], available: nil)),
+            .plist(recoveryCertificateLimitResponse()),
+            .plist(recoveryInventory([
+                recoveryCertificate(build1.certificateData, serial: "BUILD1"),
+                recoveryCertificate(foreign.certificateData, serial: "XCODE", machineName: "Someone's MacBook Pro")
+            ], available: nil)),
+            .plist(["resultCode": 0]),
+            .plist(recoveryInventory([
+                recoveryCertificate(foreign.certificateData, serial: "XCODE", machineName: "Someone's MacBook Pro")
+            ], available: 1)),
+            .plist(recoverySubmission(replacement.certificateData, serial: "REPLACEMENT"))
+        ])
+        let harness = try await makeHarness(transport: transport, keychain: keychain)
+        defer { harness.cleanup() }
+
+        let resolved = try await harness.backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertFalse(resolved.reused)
+        let revocations = await revocationRequests(transport)
+        XCTAssertEqual(revocations.count, 1, "CSR-time capacity recovery may revoke exactly one proven-owned cert")
+        XCTAssertEqual(revocations.first?["serialNumber"] as? String, "BUILD1")
+        let operations = await transport.operations()
+        let submitIndices = operations.indices.filter { operations[$0].contains("submitDevelopmentCSR") }
+        let revokeIndex = operations.firstIndex { $0.contains("revokeDevelopmentCert") }
+        XCTAssertEqual(submitIndices.count, 2, "The original CSR is retried once after safe reclaim")
+        XCTAssertNotNil(revokeIndex)
+        XCTAssertLessThan(submitIndices[0], revokeIndex!)
+        XCTAssertLessThan(revokeIndex!, submitIndices[1])
+
+        let checkpoints = harness.checkpoints()
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_CAPACITY_EXHAUSTED"))
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_OWNERSHIP_CLASSIFIED"))
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_REVOKED"))
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_CAPACITY_RESTORED"))
+    }
+
+    /// Physical Build-6 follow-up: even after Apple reports capacity restored,
+    /// the immediate post-reclaim CSR can still receive 7460 while issuance
+    /// propagates. Veya must retry the same CSR, not revoke another cert and not
+    /// fail the consumer immediately.
+    func testPostReclaimCSRLimitIsRetriedWithoutAdditionalRevocation() async throws {
+        let build1 = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let foreign = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let replacement = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let build1Tag = recoveryFixtureTag()
+        let keychain = FixtureRecoveryKeychain(
+            metadata: recoveryMetadata(tag: build1Tag, certificate: build1, serial: "BUILD1"),
+            keys: [:],
+            keysToCreate: [replacement.privateKey]
+        )
+        let transport = ScriptedRecoveryTransport([
+            .plist(recoveryTeamResponse()),
+            .plist(recoveryInventory([
+                recoveryCertificate(build1.certificateData, serial: "BUILD1"),
+                recoveryCertificate(foreign.certificateData, serial: "XCODE", machineName: "Someone's MacBook Pro")
+            ], available: nil)),
+            .plist(recoveryCertificateLimitResponse()),
+            .plist(recoveryInventory([
+                recoveryCertificate(build1.certificateData, serial: "BUILD1"),
+                recoveryCertificate(foreign.certificateData, serial: "XCODE", machineName: "Someone's MacBook Pro")
+            ], available: nil)),
+            .plist(["resultCode": 0]),
+            .plist(recoveryInventory([
+                recoveryCertificate(foreign.certificateData, serial: "XCODE", machineName: "Someone's MacBook Pro")
+            ], available: 1)),
+            .plist(recoveryCertificateLimitResponse()),
+            .plist(recoverySubmission(replacement.certificateData, serial: "REPLACEMENT"))
+        ])
+        let harness = try await makeHarness(transport: transport, keychain: keychain)
+        defer { harness.cleanup() }
+
+        let resolved = try await harness.backend.prepareIdentity(team: .fixturePersonal)
+
+        XCTAssertFalse(resolved.reused)
+        let revocations = await revocationRequests(transport)
+        XCTAssertEqual(revocations.count, 1, "Post-reclaim CSR propagation must never revoke a second certificate")
+        XCTAssertEqual(revocations.first?["serialNumber"] as? String, "BUILD1")
+        let operations = await transport.operations()
+        let submitCount = operations.filter { $0.contains("submitDevelopmentCSR") }.count
+        XCTAssertEqual(submitCount, 3, "Initial CSR, one post-reclaim propagation failure, then bounded retry success")
+        let checkpoints = harness.checkpoints()
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_CAPACITY_PROPAGATING"))
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_CAPACITY_RESTORED"))
+    }
+
     // MARK: - Fail-closed cases
 
     /// Case E -- every slot is held by a certificate Veya cannot attribute to
@@ -144,6 +248,46 @@ final class CertificateCapacityRecoveryTests: XCTestCase {
         await assertNoRevocation(transport)
         XCTAssertEqual(keychain.createdKeyCount, 0)
         XCTAssertTrue(harness.checkpoints().contains("CERTIFICATE_RECLAIM_UNAVAILABLE"))
+    }
+
+    /// The CSR-time capacity signal still fails closed when Veya cannot prove a
+    /// listed certificate belongs to this installation. The failed probe may
+    /// leave a reusable candidate key, but it must not revoke an unknown cert.
+    func testCSRLimitWithUnknownCertificatesFailsClosedWithoutRevocation() async throws {
+        let foreignA = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let foreignB = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let candidate = try SyntheticDevelopmentIdentity(teamIdentifier: "ABCDEFGHIJ")
+        let keychain = FixtureRecoveryKeychain(
+            metadata: nil,
+            keys: [:],
+            keysToCreate: [candidate.privateKey]
+        )
+        let transport = ScriptedRecoveryTransport([
+            .plist(recoveryTeamResponse()),
+            .plist(recoveryInventory([
+                recoveryCertificate(foreignA.certificateData, serial: "FOREIGN-A"),
+                recoveryCertificate(foreignB.certificateData, serial: "FOREIGN-B")
+            ], available: nil)),
+            .plist(recoveryCertificateLimitResponse()),
+            .plist(recoveryInventory([
+                recoveryCertificate(foreignA.certificateData, serial: "FOREIGN-A"),
+                recoveryCertificate(foreignB.certificateData, serial: "FOREIGN-B")
+            ], available: nil))
+        ])
+        let harness = try await makeHarness(transport: transport, keychain: keychain)
+        defer { harness.cleanup() }
+
+        await assertThrows(.certificateLimit) {
+            _ = try await harness.backend.prepareIdentity(team: .fixturePersonal)
+        }
+
+        await assertNoRevocation(transport)
+        XCTAssertEqual(keychain.createdKeyCount, 1, "The candidate key is created before Apple reveals the limit")
+        XCTAssertNotNil(keychain.candidateMetadata, "The candidate remains available for a later safe retry")
+        let checkpoints = harness.checkpoints()
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_CAPACITY_EXHAUSTED"))
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_OWNERSHIP_CLASSIFIED"))
+        XCTAssertTrue(checkpoints.contains("CERTIFICATE_RECLAIM_UNAVAILABLE"))
     }
 
     /// Case L -- an Xcode certificate carries no Veya marker and must be left
@@ -692,6 +836,10 @@ private final class FixtureRecoveryKeychain: IOSSimManagedIdentityKeychain, @unc
         return ManagedPrivateKeyLookup(key: key, status: errSecSuccess)
     }
 
+    func managedKeyTags(teamIdentifier: String) throws -> [Data] {
+        keys.keys.filter { canonicalManagedKeyTag($0, teamIdentifier: teamIdentifier) != nil }
+    }
+
     func persistentReference(applicationTag: Data) throws -> Data {
         guard keys[applicationTag] != nil else { throw ExperimentalBackendError.missingPrivateKey }
         return Data(SHA256.hash(data: applicationTag))
@@ -798,12 +946,21 @@ private func recoveryCertificate(
     return object
 }
 
-private func recoveryInventory(_ certificates: [[String: Any]], available: Int) -> [String: Any] {
-    ["resultCode": 0, "certificates": certificates, "availableQuantity": available]
+private func recoveryInventory(_ certificates: [[String: Any]], available: Int?) -> [String: Any] {
+    var inventory: [String: Any] = ["resultCode": 0, "certificates": certificates]
+    if let available { inventory["availableQuantity"] = available }
+    return inventory
 }
 
 private func recoverySubmission(_ data: Data, serial: String) -> [String: Any] {
     ["resultCode": 0, "certRequest": recoveryCertificate(data, serial: serial)]
+}
+
+private func recoveryCertificateLimitResponse() -> [String: Any] {
+    [
+        "resultCode": 7460,
+        "userString": "You already have a current iOS Development certificate or a pending certificate request."
+    ]
 }
 
 private func recoveryFixtureTag() -> Data {

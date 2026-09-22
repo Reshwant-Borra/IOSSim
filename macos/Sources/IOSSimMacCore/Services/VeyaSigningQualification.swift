@@ -9,9 +9,11 @@ import Security
 /// Apple-signed binary, so `securityd` stamps keys it creates in the login
 /// Keychain with a partition `/usr/bin/codesign` is able to match. A packaged
 /// Veya build is not Apple-signed, so its login-Keychain keys are stamped
-/// `cdhash:<Veya>`, which codesign can never match. That difference in
-/// *process identity between the test runner and the shipped binary* is why a
-/// green suite coexisted with a clean-Mac failure.
+/// `cdhash:<Veya>`, which codesign can never match. The same can happen in a
+/// Veya-created Keychain on current macOS unless Veya explicitly rewrites the
+/// partition list using its own generated Keychain password. That difference
+/// in *process identity between the test runner and the shipped binary* is why
+/// a green suite coexisted with a clean-Mac failure.
 ///
 /// Running this from `IOSSimSigningKeyTestHelper` — an ordinary ad-hoc-signed
 /// SwiftPM executable, signed the way the packaged helper is — reproduces the
@@ -26,6 +28,12 @@ public enum VeyaSigningQualification {
     public enum Destination: String {
         /// The fix: the Veya-owned Keychain.
         case veyaKeychain = "veya"
+        /// A Veya-owned Keychain key deliberately forced into the live failure
+        /// shape: a partition list `codesign` cannot satisfy.
+        case veyaKeychainPoisoned = "veya-poisoned"
+        /// The same poisoned Veya-owned key, then repaired through the
+        /// production ACL/partition path.
+        case veyaKeychainPoisonedRepaired = "veya-poisoned-repaired"
         /// The shipped-and-broken behaviour, kept so the gate can demonstrate
         /// that it actually discriminates.
         case loginKeychain = "login"
@@ -59,15 +67,17 @@ public enum VeyaSigningQualification {
             passwordURL: root.appendingPathComponent("signing-keychain.secret")
         )
         var ownedKeychain: SecKeychain?
+        var ownedStore: IOSSimIdentityMetadataStore?
 
         let key: SecKey
         switch destination {
-        case .veyaKeychain:
+        case .veyaKeychain, .veyaKeychainPoisoned, .veyaKeychainPoisonedRepaired:
             let store = IOSSimIdentityMetadataStore(
                 service: service,
                 keyLabel: keyLabel,
                 signingKeychain: signingKeychain
             )
+            ownedStore = store
             guard let created = try? store.createPrivateKey(applicationTag: tag) else {
                 log("key creation failed")
                 return .setupFailed
@@ -130,6 +140,27 @@ public enum VeyaSigningQualification {
             ] as CFDictionary, nil)
         }
         if ownedKeychain != nil { signingKeychain.ensureInUserSearchList() }
+
+        if destination == .veyaKeychainPoisoned || destination == .veyaKeychainPoisonedRepaired {
+            guard setPartitionList(
+                ["cdhash:0000000000000000000000000000000000000000"],
+                label: keyLabel,
+                signingKeychain: signingKeychain,
+                log: log
+            ) else {
+                log("partition poisoning failed")
+                return .setupFailed
+            }
+            log("poisoned partition list: \(partitionListDescription(tag: tag, keychain: ownedKeychain))")
+        }
+        if destination == .veyaKeychainPoisonedRepaired {
+            do {
+                try ownedStore?.authorizePrivateKeyForSigning(applicationTag: tag)
+            } catch {
+                log("partition repair failed: \(Redactor.redact(String(describing: error)))")
+                return .setupFailed
+            }
+        }
 
         log("partition list: \(partitionListDescription(tag: tag, keychain: ownedKeychain))")
         return codesignProbe(certificate: certificate, in: root, log: log)
@@ -319,6 +350,55 @@ public enum VeyaSigningQualification {
                 .joined(separator: ",")
         }
         return "<none>"
+    }
+
+    private static func setPartitionList(
+        _ partitions: [String],
+        label: String,
+        signingKeychain: VeyaSigningKeychain,
+        log: (String) -> Void
+    ) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = [
+            "set-key-partition-list",
+            "-S", partitions.joined(separator: ","),
+            "-s",
+            "-l", label,
+            signingKeychain.path,
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        let input = Pipe()
+        process.standardInput = input.fileHandleForReading
+        do {
+            try process.run()
+            let password = try signingKeychain.password()
+            var data = Data(password.utf8)
+            data.append(0x0A)
+            input.fileHandleForWriting.write(data)
+            try? input.fileHandleForWriting.close()
+        } catch {
+            try? input.fileHandleForWriting.close()
+            log("set partition list launch failed: \(Redactor.redact(String(describing: error)))")
+            return false
+        }
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning, Date() < deadline { usleep(100_000) }
+        if process.isRunning {
+            process.terminate()
+            usleep(300_000)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            return false
+        }
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            let output = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            log("set partition list failed: \(Redactor.redact(output))")
+        }
+        return process.terminationStatus == 0
     }
 
     private static func removeFromSearchList(matching fragment: String) {

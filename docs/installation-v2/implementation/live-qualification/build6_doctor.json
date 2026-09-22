@@ -1,0 +1,137 @@
+{
+  "actionsRequired" : [
+    "Keep your iPhone unlocked while Veya prepares the secure connection.",
+    "Open LocalDevVPN on your iPhone and approve Apple's VPN configuration prompt."
+  ],
+  "checks" : [
+    {
+      "component" : "Mac",
+      "detail" : "26.6.2",
+      "name" : "macOS supported",
+      "requiredFor" : "mac",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Provisioning",
+      "detail" : "preference=NATIVE_PERSONAL_TEAM backend=NATIVE_PERSONAL_TEAM zeroXcodeMode=true",
+      "name" : "backend selection",
+      "requiredFor" : "authorization",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Provisioning",
+      "detail" : "true",
+      "name" : "xcodePresent",
+      "requiredFor" : "diagnostics",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Provisioning",
+      "detail" : "ready",
+      "name" : "native Personal Team backend",
+      "requiredFor" : "authorization",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Bundled Artifacts",
+      "detail" : "verified",
+      "name" : "iosMain",
+      "requiredFor" : "mac",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Bundled Artifacts",
+      "detail" : "verified",
+      "name" : "locationControlRunner",
+      "requiredFor" : "mac",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Bundled Artifacts",
+      "detail" : "verified",
+      "name" : "bundle identifiers",
+      "requiredFor" : "mac",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Device",
+      "detail" : "Rishi Borra 26.6.2 id=000081...401C",
+      "name" : "iPhone detected",
+      "requiredFor" : "device",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Device",
+      "detail" : "unlocked",
+      "name" : "iPhone unlocked",
+      "requiredFor" : "device",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Device",
+      "detail" : "paired",
+      "name" : "device trusted",
+      "requiredFor" : "device",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Device",
+      "detail" : "enabled",
+      "name" : "Developer Mode",
+      "requiredFor" : "device",
+      "state" : "PASS"
+    },
+    {
+      "component" : "Device",
+      "detail" : "not-checked",
+      "name" : "CoreDevice tunnel",
+      "requiredFor" : "device",
+      "state" : "WARN"
+    },
+    {
+      "action" : "Keep your iPhone unlocked while IOSSim prepares and verifies the secure connection.",
+      "component" : "Runtime",
+      "detail" : "stored on iPhone; never bundled",
+      "name" : "PAIRING MATERIAL",
+      "requiredFor" : "device",
+      "state" : "ACTION"
+    },
+    {
+      "action" : "Install or open LocalDevVPN on your iPhone and approve Apple's VPN prompt.",
+      "component" : "Runtime",
+      "detail" : "external iPhone app required",
+      "name" : "LocalDevVPN",
+      "requiredFor" : "device",
+      "state" : "ACTION"
+    }
+  ],
+  "device" : {
+    "connected" : true,
+    "devices" : [
+      {
+        "developerModeStatus" : "enabled",
+        "expectedProjectBundleCount" : 2,
+        "identifier" : "000081...401C",
+        "installedProjectBundleIdentifiers" : [
+          "com.personalteam.iossim.t026e0910b111.on-device-dvt-poc",
+          "com.personalteam.iossim.t026e0910b111.location-control-uitests.xctrunner"
+        ],
+        "isLocked" : false,
+        "model" : "iPhone18,1",
+        "name" : "Rishi Borra",
+        "osVersion" : "26.6.2",
+        "pairingState" : "paired",
+        "provisioningEligibilityDetail" : "Prepared during Personal Team install.",
+        "provisioningEligibilityStatus" : "INSTALLABLE",
+        "selectionIdentifier" : "00008150-00022D581E12401C",
+        "tunnelState" : "not-checked",
+        "udidRedacted" : "000081...401C"
+      }
+    ],
+    "ready" : false
+  },
+  "mac" : {
+    "ready" : true
+  },
+  "ready" : false
+}

@@ -1,0 +1,140 @@
+{
+  "capabilities": {
+    "allowedDomains": [
+      "artifact",
+      "migration",
+      "authorization",
+      "team",
+      "signingKey",
+      "certificate",
+      "profile",
+      "payload",
+      "application",
+      "developerSupport",
+      "pairing",
+      "vpn",
+      "runtime"
+    ],
+    "maximumPermission": 1,
+    "maximumTransitions": 64,
+    "schemaVersion": 1
+  },
+  "clockStartMilliseconds": 1800000000000,
+  "domains": [
+    {
+      "connectionBound": false,
+      "domain": "artifact",
+      "initial": "satisfied",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "migration",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "authorization",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "team",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "signingKey",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "certificate",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "profile",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "payload",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "application",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "developerSupport",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": false,
+      "domain": "pairing",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "vpn",
+      "initial": "missing",
+      "userAction": null
+    },
+    {
+      "connectionBound": true,
+      "domain": "runtime",
+      "initial": "missing",
+      "userAction": null
+    }
+  ],
+  "injections": [
+    {
+      "action": "crashBefore",
+      "domain": "profile",
+      "operation": "prove",
+      "ordinal": 1
+    }
+  ],
+  "name": "m3-dead-run-lease-expiry-new-run",
+  "schemaVersion": 1,
+  "stage": "runtime",
+  "steps": [
+    {
+      "command": "reconcile",
+      "connectionGeneration": 1,
+      "expect": {
+        "helperTerminated": true
+      }
+    },
+    {
+      "command": "reconcile",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 5,
+        "firstFailureCode": "VEYA-STATE-006"
+      }
+    },
+    {
+      "advanceClockSeconds": 31,
+      "command": "reconcile",
+      "connectionGeneration": 1,
+      "expect": {
+        "exitCode": 0,
+        "status": "ready"
+      }
+    }
+  ]
+}

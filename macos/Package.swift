@@ -1,6 +1,10 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+// Scenario fixtures and failure injection exist only in debug (qualification) builds; release
+// helpers are compiled without them and refuse scenario requests.
+let qualificationSettings: [SwiftSetting] = [.define("VEYA_QUALIFICATION", .when(configuration: .debug))]
+
 let package = Package(
     name: "IOSSimMac",
     platforms: [
@@ -10,7 +14,8 @@ let package = Package(
         .library(name: "IOSSimMacCore", targets: ["IOSSimMacCore"]),
         .executable(name: "IOSSimMac", targets: ["IOSSimMac"]),
         .executable(name: "IOSSimProvisioner", targets: ["IOSSimProvisioner"]),
-        .executable(name: "IOSSimAuthDiagnostic", targets: ["IOSSimAuthDiagnostic"])
+        .executable(name: "IOSSimAuthDiagnostic", targets: ["IOSSimAuthDiagnostic"]),
+        .executable(name: "VeyaQualify", targets: ["VeyaQualify"])
     ],
     dependencies: [
         // Pure-Swift arbitrary precision arithmetic used only for the
@@ -23,14 +28,21 @@ let package = Package(
     targets: [
         .target(
             name: "IOSSimMacCore",
-            dependencies: ["BigInt"]
+            dependencies: ["BigInt"],
+            swiftSettings: qualificationSettings
         ),
         .executableTarget(
             name: "IOSSimMac",
-            dependencies: ["IOSSimMacCore"]
+            dependencies: ["IOSSimMacCore"],
+            swiftSettings: qualificationSettings
         ),
         .executableTarget(
             name: "IOSSimProvisioner",
+            dependencies: ["IOSSimMacCore"],
+            swiftSettings: qualificationSettings
+        ),
+        .executableTarget(
+            name: "VeyaQualify",
             dependencies: ["IOSSimMacCore"]
         ),
         .executableTarget(
@@ -43,7 +55,10 @@ let package = Package(
         ),
         .testTarget(
             name: "IOSSimMacCoreTests",
-            dependencies: ["IOSSimMacCore", "IOSSimSigningKeyTestHelper", "BigInt"],
+            dependencies: [
+                "IOSSimMacCore", "IOSSimAuthDiagnostic", "IOSSimSigningKeyTestHelper", "BigInt",
+                "IOSSimProvisioner", "VeyaQualify",
+            ],
             exclude: ["Fixtures"]
         )
     ]

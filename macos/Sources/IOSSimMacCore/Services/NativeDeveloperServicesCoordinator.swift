@@ -156,6 +156,9 @@ public actor NativeDeveloperServicesCoordinator: DeveloperServicesPreparing {
         context: DeveloperServicesProofContext,
         developerSupportIdentity: String
     ) throws -> DeveloperServicesReadinessReceipt {
+        // This proves AppService can launch this signed installation. XCTest runners are
+        // started through testmanagerd with an XCTest configuration; a plain AppService
+        // launch is rejected by current iOS even when the runner is correctly installed.
         let launch = try transport.launchApplication(
             on: inspection.identity,
             bundleIdentifier: context.targetBundleIdentifier,

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Metadata is safe to journal; `pairingData` is deliberately kept out of
@@ -53,6 +54,8 @@ public enum RemotePairingFailure: String, Error, Codable, Equatable, Sendable {
     case deliveryFailed, receiptMissing, receiptInvalid, receiptRejected
     case bootstrapMissing, bootstrapInvalid, bootstrapExpired, pairingRejected
     case transientTransport, operationalProofFailed, nativeBridgeUnavailable, unsafePath
+    /// The fail-closed secure store cannot be used without interaction (or is unavailable in this build).
+    case secureStorageUnavailable
 }
 
 public struct RemotePairingMaterial: Sendable {
@@ -222,11 +225,28 @@ public protocol RemotePairingStore: Sendable {
 /// A dedicated generic-password item per physical phone/team. Pairing bytes
 /// never enter setup journals, logs, or support bundles.
 public final class KeychainRemotePairingStore: RemotePairingStore, @unchecked Sendable {
+    /// Installation V2 service: same fail-closed backend as the signing key store (M4).
+    public static let v2Service = "com.veya.remote-pairing.v2"
     private let service: String
     private let accessible: CFString
+    /// nil: the Build 1-11 login-Keychain behavior (legacy route only). Otherwise the M4 backend: Data
+    /// Protection Keychain without UI, or `.unavailable`, which fails closed and never prompts.
+    private let backend: WrappingSecretBackendKind?
     public init(service: String = "com.iossim.remote-pairing.v1",
-                accessible: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly) {
-        self.service = service; self.accessible = accessible
+                accessible: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                backend: WrappingSecretBackendKind? = nil) {
+        self.service = service; self.accessible = accessible; self.backend = backend
+    }
+
+    /// The Installation V2 store: never shows Keychain UI and never falls back to the login Keychain.
+    public static func installationV2(backend: WrappingSecretBackendKind = .forRunningCode()) -> KeychainRemotePairingStore {
+        KeychainRemotePairingStore(service: v2Service, backend: backend)
+    }
+
+    private func check(_ status: OSStatus) throws {
+        if backend != nil, [errSecInteractionNotAllowed, errSecAuthFailed, errSecMissingEntitlement, errSecNotAvailable].contains(status) {
+            throw RemotePairingFailure.secureStorageUnavailable
+        }
     }
 
     public func load(deviceUDID: String, teamIdentifier: String) throws -> RemotePairingRecord? {
@@ -238,11 +258,12 @@ public final class KeychainRemotePairingStore: RemotePairingStore, @unchecked Se
     }
 
     private func load(deviceUDID: String, teamIdentifier: String, candidate: Bool) throws -> RemotePairingRecord? {
-        var query = baseQuery(deviceUDID: deviceUDID, teamIdentifier: teamIdentifier, candidate: candidate)
+        var query = try baseQuery(deviceUDID: deviceUDID, teamIdentifier: teamIdentifier, candidate: candidate)
         query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
+        try check(status)
         guard status == errSecSuccess, let data = item as? Data else { throw RemotePairingFailure.invalidRecord }
         do { return try JSONDecoder().decode(RemotePairingRecord.self, from: data) }
         catch { throw RemotePairingFailure.invalidRecord }
@@ -267,13 +288,14 @@ public final class KeychainRemotePairingStore: RemotePairingStore, @unchecked Se
             throw RemotePairingFailure.invalidRecord
         }
         let data = try JSONEncoder().encode(record)
-        let query = baseQuery(deviceUDID: record.metadata.deviceUDID, teamIdentifier: record.metadata.teamIdentifier, candidate: candidate)
+        let query = try baseQuery(deviceUDID: record.metadata.deviceUDID, teamIdentifier: record.metadata.teamIdentifier, candidate: candidate)
         let replacement: [String: Any] = [kSecValueData as String: data, kSecAttrAccessible as String: accessible]
         var status = SecItemUpdate(query as CFDictionary, replacement as CFDictionary)
         if status == errSecItemNotFound {
             var attrs = query; replacement.forEach { attrs[$0.key] = $0.value }
             status = SecItemAdd(attrs as CFDictionary, nil)
         }
+        try check(status)
         guard status == errSecSuccess else { throw RemotePairingFailure.invalidRecord }
     }
 
@@ -282,18 +304,35 @@ public final class KeychainRemotePairingStore: RemotePairingStore, @unchecked Se
             throw RemotePairingFailure.invalidRecord
         }
         try save(candidate)
-        let status = SecItemDelete(baseQuery(deviceUDID: deviceUDID, teamIdentifier: teamIdentifier, candidate: true) as CFDictionary)
+        let status = SecItemDelete(try baseQuery(deviceUDID: deviceUDID, teamIdentifier: teamIdentifier, candidate: true) as CFDictionary)
+        try check(status)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw RemotePairingFailure.invalidRecord }
     }
 
     public func delete(deviceUDID: String, teamIdentifier: String) throws {
-        let status = SecItemDelete(baseQuery(deviceUDID: deviceUDID, teamIdentifier: teamIdentifier, candidate: false) as CFDictionary)
+        let status = SecItemDelete(try baseQuery(deviceUDID: deviceUDID, teamIdentifier: teamIdentifier, candidate: false) as CFDictionary)
+        try check(status)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw RemotePairingFailure.invalidRecord }
     }
 
-    private func baseQuery(deviceUDID: String, teamIdentifier: String, candidate: Bool) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+    private func baseQuery(deviceUDID: String, teamIdentifier: String, candidate: Bool) throws -> [String: Any] {
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: "\(teamIdentifier):\(deviceUDID)\(candidate ? ":candidate" : "")"]
+        switch backend {
+        case nil:
+            break
+        case .unavailable?:
+            throw RemotePairingFailure.secureStorageUnavailable
+        case .dataProtectionKeychain?:
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseDataProtectionKeychain as String] = true
+            query[kSecAttrSynchronizable as String] = false
+            query[kSecUseAuthenticationContext as String] = context
+        case .loginKeychain?:
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
+        return query
     }
 }
 
@@ -514,14 +553,14 @@ public struct NativeDeveloperServicesRemotePairingProof: RemotePairingOperationa
                 context: DeveloperServicesProofContext(
                     releaseIdentity: releaseIdentity,
                     pairingGeneration: pairing.metadata.pairingGeneration,
-                    targetBundleIdentifier: identifiers.runner
+                    targetBundleIdentifier: identifiers.main
                 )
             ) { _ in }
             guard receipt.isCurrent(
                 for: device,
                 releaseIdentity: releaseIdentity,
                 pairingGeneration: pairing.metadata.pairingGeneration,
-                targetBundleIdentifier: identifiers.runner
+                targetBundleIdentifier: identifiers.main
             ) else { throw RemotePairingFailure.operationalProofFailed }
         } catch let failure as RemotePairingFailure {
             throw failure

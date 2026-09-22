@@ -57,6 +57,23 @@ final class ArtifactManifestTests: XCTestCase {
         XCTAssertNoThrow(try ArtifactManifestLoader.assertArtifactsVerified(resourcesURL: root, manifest: decoded))
     }
 
+    func testArtifactsUnderPrivateTmpVerify() throws {
+        // `/private/tmp` is the firmlinked form of `/tmp`; enumeration may report either prefix.
+        let fixture = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
+        let root = URL(fileURLWithPath: "/private/tmp/iossim-artifact-tmp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture, to: root)
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: fixture) }
+        let manifest = ArtifactManifest(
+            schemaVersion: ArtifactManifest.currentSchemaVersion,
+            release: ReleaseManifest(sourceCommit: "abc123", buildTimestamp: "2026-09-03T00:00:00Z", macVersion: "0.1", helperSchemaVersion: 1),
+            components: [DeviceArtifactComponent(role: "iosMain", bundleIdentifier: "com.iossim.on-device-dvt-poc", version: "0.1",
+                                                 relativePath: "DeviceArtifacts/IOSSim DVT POC.app",
+                                                 sha256: sha256Tree(fixture.appendingPathComponent("DeviceArtifacts/IOSSim DVT POC.app")))]
+        )
+        try writeManifest(manifest, root: root)
+        XCTAssertEqual(ArtifactManifestLoader.verify(resourcesURL: root, manifest: manifest).first?.state, .pass)
+    }
+
     func testCorruptArtifactFailsChecksumVerification() throws {
         let root = try makeArtifactFixture(bundleIdentifier: "com.iossim.on-device-dvt-poc")
         let manifest = ArtifactManifest(

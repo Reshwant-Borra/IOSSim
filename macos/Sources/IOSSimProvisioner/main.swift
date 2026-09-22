@@ -81,6 +81,55 @@ enum IOSSimProvisioner {
 struct ProvisionerTool {
     let arguments: [String]
 
+    /// Sole entry point for the canonical installation engine. Clients (UI, VeyaQualify) send one
+    /// versioned `EngineRequest`; the helper prints one `QualificationResult` and exits with its class.
+    private func runEngine(arguments: [String]) async -> Int32 {
+        let identity = EngineIdentity(packaged: false, qualificationBuild: ProductionComposition.isQualificationBuild)
+        guard arguments.count == 2, arguments[0] == "--request",
+              let request = try? QualificationResult.decoder().decode(EngineRequest.self, from: Data(arguments[1].utf8)) else {
+            FileHandle.standardError.write(Data("usage: engine --request <EngineRequest JSON>\n".utf8))
+            return QualificationExitCode.usage.rawValue
+        }
+        let result: QualificationResult
+        if let binding = request.scenario {
+            #if VEYA_QUALIFICATION
+            do {
+                let composition = try await ScenarioComposition.make(binding: binding) {
+                    Foundation.exit(ScenarioComposition.injectedCrashExitCode)
+                }
+                result = await EngineHost.handle(request, composition: composition)
+            } catch {
+                result = EngineHost.failureResult(request, error: error, identity: identity)
+            }
+            #else
+            _ = binding
+            result = EngineHost.failureResult(request, error: QualificationRefusal.scenarioUnavailableInRelease, identity: identity)
+            #endif
+        } else if let root = request.isolatedStateRoot {
+            #if VEYA_QUALIFICATION
+            let helperURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            result = await EngineHost.handle(
+                request,
+                composition: ProductionComposition.make(helperURL: helperURL, stateRoot: URL(fileURLWithPath: root, isDirectory: true),
+                                                        device: request.device, connectionGeneration: request.connectionGeneration)
+            )
+            #else
+            _ = root
+            result = EngineHost.failureResult(request, error: QualificationRefusal.isolatedRootUnavailableInRelease, identity: identity)
+            #endif
+        } else {
+            let helperURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            result = await EngineHost.handle(request, composition: ProductionComposition.make(
+                helperURL: helperURL, device: request.device, connectionGeneration: request.connectionGeneration))
+        }
+        do {
+            FileHandle.standardOutput.write(try QualificationResult.encoder().encode(result))
+        } catch {
+            return QualificationExitCode.internalProtocol.rawValue
+        }
+        return result.exitCode.rawValue
+    }
+
     func run() async -> Int32 {
         var args = arguments
         let resourcesURL = consumeResourcesOverride(arguments: &args) ?? defaultResourcesURL()
@@ -91,6 +140,18 @@ struct ProvisionerTool {
         }
         do {
             switch command {
+            case ProvisionerEngineProtocol.helperCommand:
+                return await runEngine(arguments: Array(args.dropFirst()))
+            #if VEYA_QUALIFICATION
+            case "qualification-wrapper-cleanup":
+                // Qualification builds only: the creating build is the only process allowed to delete a
+                // login-Keychain wrapping item (ADR-001), so isolated test runs clean up through the helper.
+                guard args.count == 3, args[1] == "--isolated-root" else { return QualificationExitCode.usage.rawValue }
+                let root = URL(fileURLWithPath: args[2], isDirectory: true)
+                let journal = try await InstallationJournalRepository(rootURL: root.appendingPathComponent("installation")).load()
+                try KeychainWrappingSecretStore().delete(installationID: journal.installationID)
+                return 0
+            #endif
             case "protocol-info":
                 try printJSON(ProvisionerOutput(
                     ok: true,
@@ -389,8 +450,7 @@ struct ProvisionerTool {
             let eligibility = await ArtifactEligibilityEvaluator.summaries(
                 resourcesURL: context.resourcesURL,
                 manifest: manifest,
-                selectedDeviceIdentifier: rawDeviceIdentifier,
-                runner: context.runner
+                selectedDeviceIdentifier: rawDeviceIdentifier
             )
             let aggregateEligibility = ArtifactEligibilityEvaluator.aggregateStatus(eligibility)
             guard aggregateEligibility == .installable else {
@@ -556,8 +616,7 @@ struct ProvisionerTool {
                 let eligibility = await ArtifactEligibilityEvaluator.summaries(
                     resourcesURL: context.resourcesURL,
                     manifest: manifestForEligibility,
-                    selectedDeviceIdentifier: device.selectionIdentifier,
-                    runner: context.runner
+                    selectedDeviceIdentifier: device.selectionIdentifier
                 )
                 let requiresConsumerSigning = manifestForEligibility.components.allSatisfy {
                     $0.signingMode == "personalTeamResign"
@@ -1098,6 +1157,38 @@ struct ProvisionerTool {
                 fputs("DEVICE_SELECTION_REQUIRED: connect exactly one iPhone or pass --device.\n", stderr)
                 return 2
             }
+            if arguments.contains("--check-mount-only") {
+                try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: ["mounted": try transport.developerSupportMounted(on: selected.identity)]))
+                return 0
+            }
+            if arguments.contains("--inspect-build") {
+                let inspection = try await transport.inspect(selected.identity, timeout: .seconds(12))
+                try printJSON(ProvisionerOutput(ok: true, schemaVersion: RuntimeProvisioning.helperSchemaVersion,
+                    data: ["version": inspection.osVersion ?? "unknown", "build": inspection.osBuild ?? "unknown",
+                           "trust": inspection.trust.rawValue, "lock": inspection.lockState.rawValue]))
+                return 0
+            }
+            #if VEYA_QUALIFICATION
+            if arguments.contains("--development-mount-ddi") {
+                let inspection = try await transport.inspect(selected.identity, timeout: .seconds(12))
+                guard let version = inspection.osVersion, let build = inspection.osBuild else {
+                    throw DeveloperSupportFailure.wrongBuildIdentity
+                }
+                fputs("Development DDI target: iOS \(version), build \(build)\n", stderr)
+                guard let artifact = try await ThirdPartyMirrorDevelopmentProvider().artifact(
+                        productVersion: version, buildVersion: build) else {
+                    throw DeveloperSupportFailure.noApprovedSource
+                }
+                try DeveloperSupportIntegrity.validateFiles(artifact, expectedBuildVersion: build)
+                try transport.mountDeveloperSupport(on: inspection.identity, artifact: artifact)
+            }
+            #else
+            if arguments.contains("--development-mount-ddi") {
+                fputs("DEVELOPMENT_ONLY: release helpers refuse development DDI acquisition.\n", stderr)
+                return 6
+            }
+            #endif
             let receipt = try transport.developerServicesReadiness(on: selected.identity)
             try printJSON(ProvisionerOutput(
                 ok: receipt.transportReady,
@@ -1130,8 +1221,7 @@ private func personalTeamPOCReport(arguments: [String], context: RuntimeProvisio
         profiles = await ArtifactEligibilityEvaluator.summaries(
             resourcesURL: context.resourcesURL,
             manifest: manifest,
-            selectedDeviceIdentifier: selectedDevice,
-            runner: context.runner
+            selectedDeviceIdentifier: selectedDevice
         )
         signingGraph = await SigningGraphInspector.graph(
             resourcesURL: context.resourcesURL,

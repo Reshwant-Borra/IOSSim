@@ -1,0 +1,6 @@
+## work/final-no-xcode-setup-v1...origin/work/final-no-xcode-setup-v1
+ M macos/Package.swift
+ M macos/Sources/IOSSimAuthDiagnostic/main.swift
+ M macos/Sources/IOSSimMacCore/Services/ApplePersonalTeamExperimental.swift
+?? docs/installation-v2/implementation/live-qualification/
+?? macos/Tests/IOSSimMacCoreTests/AppleAuthorizationKeychainRegressionTests.swift

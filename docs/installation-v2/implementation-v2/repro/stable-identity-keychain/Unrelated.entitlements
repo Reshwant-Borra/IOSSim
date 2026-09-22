@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.application-identifier</key>
+    <string>T8SL4SG87F.com.veya.keychain-identity-unrelated</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>T8SL4SG87F</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>T8SL4SG87F.com.veya.unrelated-keychain</string>
+    </array>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>T8SL4SG87F.com.veya.unrelated-keychain</string>
+    </array>
+</dict>
+</plist>

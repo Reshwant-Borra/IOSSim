@@ -277,6 +277,9 @@ public actor NativeApplicationManager {
         do {
             try await service.install(appURL: appURL, mode: mode, on: device)
         } catch {
+            // Inventory reports bundle/version/team, not the signature. If a matching app was already
+            // installed (a re-sign of the same version), a lost response is indistinguishable from failure.
+            if existing?.version == expectedVersion { throw error }
             let reconciled = try? await service.inventory(on: device).first {
                 $0.bundleIdentifier == expectedBundleIdentifier
                     && $0.teamIdentifier == expectedTeamIdentifier

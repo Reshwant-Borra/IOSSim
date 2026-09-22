@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Security
 
 /// Isolated boundary for Apple's undocumented free Personal Team protocol.
@@ -116,30 +117,74 @@ public protocol AppleAuthorizationSessionStoring: Sendable {
     func remove() throws
 }
 
+/// Apple authorization session at rest (M6, auth v2).
+///
+/// The session plist is AES-256-GCM sealed in a `0600` file. Its 32-byte key is a separate
+/// wrapping secret held by the same fail-closed backend as the signing key store (M4), under its
+/// own service so the Apple-authorization and signing-key domains never share an item. When the
+/// running build cannot prove a Data Protection Keychain identity the backend is `unavailable`:
+/// the session then lives only in the backend's memory for this launch (the user signs in again
+/// after relaunch) and nothing credential-bearing is written to disk.
+///
+/// Auth v1 kept the AES key as a plaintext `authorization-keychain.secret` file beside the
+/// ciphertext, which is equivalent to plaintext at rest. v1 files are migration input only: they
+/// are re-sealed under v2 when the backend is available and always deleted.
 public final class KeychainAppleAuthorizationSessionStore: AppleAuthorizationSessionStoring, @unchecked Sendable {
+    public static let wrappingService = "com.veya.authorization-wrap.v1"
+    /// Single per-user session; the wrapping item's account is this fixed identifier.
+    static let wrappingAccount = UUID(uuidString: "5645594A-4155-5448-0000-000000000002")!
+    static let sessionFileName = "authorization-session.v2.enc"
+    private static let legacySessionFileName = "authorization-session.enc"
+    private static let legacyPasswordFileName = "authorization-keychain.secret"
+    private static let legacyKeychainFileName = "Veya-Authorization.keychain-db"
+
     private let service: String
     private let account: String
+    private let wrapping: any WrappingSecretStore
+    private let directory: URL
+    private let legacyKeychainURL: URL
+    private let fileManager: FileManager
 
     public init(
         service: String = "com.iossim.mac.apple-authorization",
-        account: String = "personal-team-session"
+        account: String = "personal-team-session",
+        wrapping: any WrappingSecretStore = KeychainWrappingSecretStore(
+            service: KeychainAppleAuthorizationSessionStore.wrappingService,
+            label: "Veya Apple authorization session wrapping secret"
+        ),
+        directory: URL? = nil,
+        legacyKeychainURL: URL? = nil,
+        fileManager: FileManager = .default
     ) {
+        let home = fileManager.homeDirectoryForCurrentUser
         self.service = service
         self.account = account
+        self.wrapping = wrapping
+        self.directory = directory ?? home
+            .appendingPathComponent("Library/Application Support/IOSSim", isDirectory: true)
+        self.legacyKeychainURL = legacyKeychainURL ?? home
+            .appendingPathComponent("Library/Keychains", isDirectory: true)
+            .appendingPathComponent(Self.legacyKeychainFileName)
+        self.fileManager = fileManager
     }
 
+    /// False when sessions cannot be protected at rest by this build and are kept in memory only.
+    public var persistsAcrossLaunches: Bool { wrapping.kind != .unavailable }
+
+    private var sessionFileURL: URL { directory.appendingPathComponent(Self.sessionFileName) }
+
     public func load() throws -> AppleAuthorizationSession? {
-        var query = baseQuery()
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw ExperimentalBackendError.unavailable
+        guard persistsAcrossLaunches else {
+            purgeLegacyState()
+            return nil
         }
-        let envelope = try PropertyListDecoder().decode(KeychainEnvelope.self, from: data)
-        return AppleAuthorizationSession(metadata: envelope.metadata, opaquePayload: envelope.payload)
+        if let session = try loadSealed() {
+            purgeLegacyState()
+            return session
+        }
+        let migrated = try migrateLegacyState()
+        purgeLegacyState()
+        return migrated
     }
 
     public func loadMetadata() throws -> AppleAuthorizationSessionMetadata? {
@@ -149,42 +194,94 @@ public final class KeychainAppleAuthorizationSessionStore: AppleAuthorizationSes
     }
 
     public func save(_ session: AppleAuthorizationSession) throws {
+        purgeLegacyState()
+        // Unavailable backend: memory-only by design, never a weaker at-rest fallback.
+        guard persistsAcrossLaunches else { return }
         var payload = session.withOpaquePayload { Data($0) }
         defer { payload.resetBytes(in: 0..<payload.count) }
-        let encoded = try PropertyListEncoder().encode(
-            KeychainEnvelope(metadata: session.metadata, payload: payload)
-        )
-        let query = baseQuery()
-        let replacement: [String: Any] = [
-            kSecValueData as String: encoded,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-        var status = SecItemUpdate(query as CFDictionary, replacement as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query
-            replacement.forEach { attributes[$0.key] = $0.value }
-            status = SecItemAdd(attributes as CFDictionary, nil)
+        var encoded = try PropertyListEncoder().encode(Envelope(metadata: session.metadata, payload: payload))
+        defer { encoded.resetBytes(in: 0..<encoded.count) }
+        let key = try wrapping.read(installationID: Self.wrappingAccount)
+            ?? wrapping.create(installationID: Self.wrappingAccount)
+        let sealed = try AES.GCM.seal(encoded, using: key, authenticating: associatedData)
+        guard let combined = sealed.combined else { throw ExperimentalBackendError.unavailable }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+        let temporary = directory.appendingPathComponent(".\(Self.sessionFileName).\(UUID().uuidString)")
+        guard fileManager.createFile(atPath: temporary.path, contents: combined,
+                                     attributes: [.posixPermissions: 0o600]) else {
+            throw ExperimentalBackendError.unavailable
         }
-        guard status == errSecSuccess else { throw ExperimentalBackendError.unavailable }
-    }
-
-    public func remove() throws {
-        let status = SecItemDelete(baseQuery() as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+        guard rename(temporary.path, sessionFileURL.path) == 0 else {
+            try? fileManager.removeItem(at: temporary)
             throw ExperimentalBackendError.unavailable
         }
     }
 
-    private func baseQuery() -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: false
-        ]
+    public func remove() throws {
+        purgeLegacyState()
+        try? fileManager.removeItem(at: sessionFileURL)
+        if persistsAcrossLaunches { try? wrapping.delete(installationID: Self.wrappingAccount) }
     }
 
-    private struct KeychainEnvelope: Codable {
+    private var associatedData: Data { Data("veya.apple-authorization.v2|\(service)|\(account)".utf8) }
+
+    private func loadSealed() throws -> AppleAuthorizationSession? {
+        guard fileManager.fileExists(atPath: sessionFileURL.path) else { return nil }
+        // Missing wrapper, tampering, or a foreign file: discard and require sign-in (fail closed).
+        guard let key = try wrapping.read(installationID: Self.wrappingAccount),
+              let combined = try? Data(contentsOf: sessionFileURL),
+              let box = try? AES.GCM.SealedBox(combined: combined),
+              var encoded = try? AES.GCM.open(box, using: key, authenticating: associatedData) else {
+            try? fileManager.removeItem(at: sessionFileURL)
+            return nil
+        }
+        defer { encoded.resetBytes(in: 0..<encoded.count) }
+        guard let envelope = try? PropertyListDecoder().decode(Envelope.self, from: encoded) else {
+            try? fileManager.removeItem(at: sessionFileURL)
+            return nil
+        }
+        return AppleAuthorizationSession(metadata: envelope.metadata, opaquePayload: envelope.payload)
+    }
+
+    /// Auth v1 import. Only reached when the v2 backend is available.
+    private func migrateLegacyState() throws -> AppleAuthorizationSession? {
+        let legacyFile = directory.appendingPathComponent(Self.legacySessionFileName)
+        let legacySecret = directory.appendingPathComponent(Self.legacyPasswordFileName)
+        guard let password = try? String(contentsOf: legacySecret, encoding: .utf8), !password.isEmpty,
+              let combined = try? Data(contentsOf: legacyFile),
+              let box = try? AES.GCM.SealedBox(combined: combined) else { return nil }
+        let key = Data(base64Encoded: password).flatMap { $0.count == 32 ? SymmetricKey(data: $0) : nil }
+            ?? SymmetricKey(data: SHA256.hash(data: Data(password.utf8)))
+        guard var encoded = try? AES.GCM.open(box, using: key) else { return nil }
+        defer { encoded.resetBytes(in: 0..<encoded.count) }
+        guard let envelope = try? PropertyListDecoder().decode(Envelope.self, from: encoded) else { return nil }
+        let session = AppleAuthorizationSession(metadata: envelope.metadata, opaquePayload: envelope.payload)
+        try save(session)
+        return session
+    }
+
+    /// Deletes every v1 artifact, including quarantined copies (which also held the plaintext key).
+    private func purgeLegacyState() {
+        let prefixes = [Self.legacySessionFileName, Self.legacyPasswordFileName]
+        for name in (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+        where prefixes.contains(where: { name == $0 || name.hasPrefix($0 + ".quarantine-") }) {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(name))
+        }
+        let keychainDirectory = legacyKeychainURL.deletingLastPathComponent()
+        for name in (try? fileManager.contentsOfDirectory(atPath: keychainDirectory.path)) ?? []
+        where name == legacyKeychainURL.lastPathComponent
+            || name.hasPrefix(legacyKeychainURL.lastPathComponent + ".quarantine-") {
+            let url = keychainDirectory.appendingPathComponent(name)
+            // SecKeychainDelete also drops the v1 keychain from the user's search list.
+            var keychain: SecKeychain?
+            if SecKeychainOpen(url.path, &keychain) == errSecSuccess, let keychain,
+               SecKeychainDelete(keychain) == errSecSuccess { continue }
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
+    private struct Envelope: Codable {
         let metadata: AppleAuthorizationSessionMetadata
         let payload: Data
     }

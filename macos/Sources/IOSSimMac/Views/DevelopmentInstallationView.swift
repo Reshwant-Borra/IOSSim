@@ -1,0 +1,150 @@
+#if VEYA_QUALIFICATION
+import SwiftUI
+import IOSSimMacCore
+
+@MainActor
+final class DevelopmentInstallationModel: ObservableObject {
+    @Published var devices: [NativeDeviceInspection] = []
+    @Published var selected = ""
+    @Published var message = "M4 DEFERRED - development session only"
+    @Published var busy = false
+    @Published var needsVerification = false
+    @Published var result: QualificationResult?
+    private let session = DevelopmentInstallationSession()
+    private let bridge = IOSSimDeviceBridge()
+    private let transport = DynamicNativeDeviceTransport()
+
+    func refresh() async {
+        await perform {
+            self.result = nil
+            self.devices = []
+            for descriptor in try await self.bridge.listDevices() {
+                self.devices.append(try await self.bridge.inspect(descriptor.identity))
+            }
+            if !self.devices.contains(where: { $0.identity.udid == self.selected }) {
+                self.selected = self.devices.count == 1 ? self.devices[0].identity.udid : ""
+            }
+            self.message = self.devices.isEmpty ? "Connect and unlock your iPhone." : "Device observation complete."
+        }
+    }
+
+    func authorize(account: String, secret: SensitiveInput, verification: Bool) async {
+        defer { secret.clear() }
+        await perform {
+            let response = try await verification
+                ? self.session.apple.submitVerification(code: secret)
+                : self.session.apple.beginAuthorization(account: account, password: secret)
+            switch response {
+            case .verificationRequired:
+                self.needsVerification = true
+                self.message = "Enter the Apple verification code."
+            case .authorized(let teams):
+                self.needsVerification = false
+                self.message = "Authorized: " + teams.map(\.name).joined(separator: ", ")
+            }
+        }
+    }
+
+    func pair() async {
+        guard let device = devices.first(where: { $0.identity.udid == selected }) else { return }
+        await perform {
+            _ = try self.transport.pairLockdownOnce(on: device.identity)
+            self.message = "Lockdown session validated."
+        }
+        await refresh()
+    }
+
+    func run(_ command: EngineCommand) async {
+        guard let device = devices.first(where: { $0.identity.udid == selected }) else { return }
+        await perform {
+            self.result = nil
+            let target = EngineDeviceSelection(udid: device.identity.udid, name: device.name ?? "iPhone",
+                                               transportIdentity: device.identity)
+            let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/IOSSimProvisioner")
+            let composition = self.session.composition(helperURL: helper, device: target,
+                                                       connectionGeneration: device.identity.connectionGeneration)
+            let request = EngineRequest(command: command,
+                capabilities: CapabilityManifest(allowedDomains: InstallationDomain.reconciliationOrder,
+                                                 maximumPermission: .destructiveOwned, maximumTransitions: 64),
+                connectionGeneration: device.identity.connectionGeneration, device: target)
+            let response = await EngineHost.handle(request, composition: composition)
+            self.result = response
+            self.message = response.userAction ?? response.firstFailure?.safeMessage ?? response.status
+        }
+    }
+
+    private func perform(_ body: () async throws -> Void) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do { try await body() }
+        catch { message = (error as? VeyaFailure)?.safeMessage ?? String(describing: error) }
+    }
+}
+
+struct DevelopmentInstallationView: View {
+    @StateObject private var model = DevelopmentInstallationModel()
+    @State private var account = ""
+    @State private var password = ""
+    @State private var code = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Veya Development").font(.title2.bold())
+            Text("M4 DEFERRED - PRE-RELEASE BLOCKER").foregroundStyle(.red)
+            HStack {
+                Picker("iPhone", selection: $model.selected) {
+                    Text("Select iPhone").tag("")
+                    ForEach(model.devices, id: \.identity.udid) { device in
+                        Text("\(device.name ?? "iPhone") - \(device.osVersion ?? "unknown iOS")").tag(device.identity.udid)
+                    }
+                }
+                Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Refresh devices")
+                Button("Trust / Pair") { Task { await model.pair() } }.disabled(model.selected.isEmpty)
+            }
+            HStack {
+                TextField("Apple Account", text: $account)
+                SecureField("Password", text: $password)
+                Button("Sign In") {
+                    let secret = SensitiveInput(password)
+                    password = ""
+                    Task { await model.authorize(account: account, secret: secret, verification: false) }
+                }.disabled(account.isEmpty || password.isEmpty)
+            }
+            if model.needsVerification {
+                HStack {
+                    SecureField("Verification code", text: $code)
+                    Button("Verify") {
+                        let secret = SensitiveInput(code)
+                        code = ""
+                        Task { await model.authorize(account: account, secret: secret, verification: true) }
+                    }.disabled(code.isEmpty)
+                }
+            }
+            HStack {
+                Button("Inspect") { Task { await model.run(.inspect) } }
+                Button("Install / Resume") { Task { await model.run(.reconcile) } }
+                if model.busy { ProgressView().controlSize(.small) }
+            }.disabled(model.selected.isEmpty)
+            Text(model.message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if let result = model.result {
+                Text("Last observation (not continuous readiness)").font(.caption).foregroundStyle(.secondary)
+                List(result.observations, id: \.domain) { observation in
+                    HStack {
+                        Text(observation.domain.rawValue).frame(width: 150, alignment: .leading)
+                        Text(observation.state.rawValue)
+                        Spacer()
+                        Text(observation.capturedAt, style: .time).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .disabled(model.busy)
+        .onChange(of: model.selected) { _ in model.result = nil }
+        .task { await model.refresh() }
+    }
+}
+#endif

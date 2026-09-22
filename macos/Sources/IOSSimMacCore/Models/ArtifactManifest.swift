@@ -334,12 +334,11 @@ public enum ArtifactManifestLoader {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `/private/var` and `/private/tmp` are the firmlinked forms of `/var` and `/tmp`; enumeration may report either.
     private static func normalizedPathForRelativeHash(_ path: String) -> String {
-        if path == "/private/var" {
-            return "/var"
-        }
-        if path.hasPrefix("/private/var/") {
-            return "/var/" + path.dropFirst("/private/var/".count)
+        for (firmlinked, canonical) in [("/private/var", "/var"), ("/private/tmp", "/tmp")] {
+            if path == firmlinked { return canonical }
+            if path.hasPrefix(firmlinked + "/") { return canonical + "/" + path.dropFirst(firmlinked.count + 1) }
         }
         return path
     }

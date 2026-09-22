@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "allowedDomains": ["application", "artifact", "authorization", "certificate", "developerSupport", "migration", "pairing", "payload", "profile", "runtime", "signingKey", "team", "vpn"],
+  "maximumPermission": 3,
+  "maximumTransitions": 32
+}

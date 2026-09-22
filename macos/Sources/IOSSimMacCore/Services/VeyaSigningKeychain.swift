@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Security
 
 /// The Keychain that holds the signing key IOSSim/Veya generates for the
@@ -32,6 +33,7 @@ struct VeyaSigningKeychain {
     enum Failure: Error, Equatable {
         case unavailable(OSStatus)
         case passwordUnavailable
+        case partitionRepairFailed(Int32)
     }
 
     static let keychainFileName = "Veya-Signing.keychain-db"
@@ -163,5 +165,61 @@ struct VeyaSigningKeychain {
         try Data(password.utf8).write(to: passwordURL, options: [.atomic, .completeFileProtection])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: passwordURL.path)
         return password
+    }
+
+    /// Gives Apple's own signing tools a partition they can actually satisfy.
+    ///
+    /// A Veya-created Keychain is still a Keychain: on current macOS releases,
+    /// private keys created by an ad-hoc packaged app can receive a
+    /// `cdhash:<Veya>` partition ACL even outside the login Keychain. A trusted
+    /// application ACL that names `/usr/bin/codesign` is not enough in that
+    /// state; `codesign` fails with `errSecInternalComponent` before the ACL is
+    /// considered. The login Keychain variant is not repairable without the
+    /// user's login password, but this Keychain is Veya-owned and protected by
+    /// Veya's own generated secret, so Veya can safely repair only its managed
+    /// keys.
+    ///
+    /// The secret is passed over stdin, never in argv or the environment.
+    func authorizeAppleSigningToolPartitions(label: String) throws {
+        _ = try open()
+        ensureInUserSearchList()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = [
+            "set-key-partition-list",
+            "-S", "apple-tool:,apple:,codesign:",
+            "-s",
+            "-l", label,
+            keychainURL.path,
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let input = Pipe()
+        process.standardInput = input.fileHandleForReading
+        do {
+            try process.run()
+            let secret = try password()
+            var bytes = Data(secret.utf8)
+            bytes.append(0x0A)
+            input.fileHandleForWriting.write(bytes)
+            try? input.fileHandleForWriting.close()
+        } catch {
+            try? input.fileHandleForWriting.close()
+            throw Failure.partitionRepairFailed(-1)
+        }
+
+        let deadline = Date().addingTimeInterval(20)
+        while process.isRunning, Date() < deadline { usleep(50_000) }
+        if process.isRunning {
+            process.terminate()
+            usleep(200_000)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            throw Failure.partitionRepairFailed(124)
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw Failure.partitionRepairFailed(process.terminationStatus)
+        }
     }
 }

@@ -59,8 +59,7 @@ public enum ProvisioningProfileInspector {
     public static func inspect(
         appURL: URL,
         bundleIdentifier: String,
-        selectedDeviceIdentifier: String?,
-        runner: ProcessRunner = ProcessRunner()
+        selectedDeviceIdentifier: String?
     ) async -> ProvisioningProfileSummary {
         let profileURL = appURL.appendingPathComponent("embedded.mobileprovision")
         guard FileManager.default.fileExists(atPath: profileURL.path) else {
@@ -77,7 +76,7 @@ public enum ProvisioningProfileInspector {
             )
         }
 
-        guard let plist = await decodeProfile(profileURL: profileURL, runner: runner) else {
+        guard let plist = decodeProfile(profileURL: profileURL) else {
             return ProvisioningProfileSummary(
                 status: .signatureInvalid,
                 profileType: "unreadable",
@@ -136,25 +135,13 @@ public enum ProvisioningProfileInspector {
         )
     }
 
-    private static func decodeProfile(profileURL: URL, runner: ProcessRunner) async -> [String: Any]? {
-        if let data = try? Data(contentsOf: profileURL),
-           let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
+    /// Plain plist, or the signature-checked content of a CMS profile decoded in process (no `security cms`).
+    private static func decodeProfile(profileURL: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: profileURL) else { return nil }
+        if let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
             return plist
         }
-        let securityURL = URL(fileURLWithPath: "/usr/bin/security")
-        guard FileManager.default.isExecutableFile(atPath: securityURL.path),
-              let result = try? await runner.run(
-                executableURL: securityURL,
-                arguments: ["cms", "-D", "-i", profileURL.path],
-                workingDirectory: profileURL.deletingLastPathComponent(),
-                environment: RuntimeProvisioning.deterministicEnvironment()
-              ),
-              result.exitCode == 0,
-              let data = result.stdout.data(using: .utf8),
-              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
-            return nil
-        }
-        return plist
+        return try? developmentProfileContent(data)
     }
 
     private static func classifyProfile(
@@ -203,16 +190,14 @@ public enum ArtifactEligibilityEvaluator {
     public static func summaries(
         resourcesURL: URL,
         manifest: ArtifactManifest,
-        selectedDeviceIdentifier: String?,
-        runner: ProcessRunner = ProcessRunner()
+        selectedDeviceIdentifier: String?
     ) async -> [ProvisioningProfileSummary] {
         var summaries: [ProvisioningProfileSummary] = []
         for component in manifest.components {
             summaries.append(await ProvisioningProfileInspector.inspect(
                 appURL: resourcesURL.appendingPathComponent(component.relativePath),
                 bundleIdentifier: component.bundleIdentifier,
-                selectedDeviceIdentifier: selectedDeviceIdentifier,
-                runner: runner
+                selectedDeviceIdentifier: selectedDeviceIdentifier
             ))
         }
         return summaries

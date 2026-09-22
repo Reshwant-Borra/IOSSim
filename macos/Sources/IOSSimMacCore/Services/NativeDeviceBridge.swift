@@ -330,6 +330,7 @@ public protocol NativeDeviceTransport: Sendable {
 public actor IOSSimDeviceBridge {
     private let transport: any NativeDeviceTransport
     private var generation: UInt64 = 0
+    private var alternativesByUDID: [String: [NativeDeviceDescriptor]] = [:]
 
     public init(transport: any NativeDeviceTransport = DynamicNativeDeviceTransport()) {
         self.transport = transport
@@ -338,7 +339,7 @@ public actor IOSSimDeviceBridge {
     public func listDevices(timeout: Duration = .seconds(8)) async throws -> [NativeDeviceDescriptor] {
         generation &+= 1
         let observed = try await transport.listDevices(timeout: timeout)
-        var byUDID: [String: NativeDeviceDescriptor] = [:]
+        var candidatesByUDID: [String: [NativeDeviceDescriptor]] = [:]
         for candidate in observed {
             let identity = try IOSSimDeviceIdentity(
                 udid: candidate.identity.udid,
@@ -350,18 +351,17 @@ public actor IOSSimDeviceBridge {
                 connectionGeneration: generation
             )
             let normalized = NativeDeviceDescriptor(identity: identity, connection: candidate.connection)
-            if let current = byUDID[identity.udid] {
+            if let current = candidatesByUDID[identity.udid]?.first {
                 if current.identity.signingRegistrationIdentifier != identity.signingRegistrationIdentifier {
                     throw NativeDeviceBridgeError.invalidIdentity
                 }
-                if Self.preference(normalized) < Self.preference(current) {
-                    byUDID[identity.udid] = normalized
-                }
-            } else {
-                byUDID[identity.udid] = normalized
             }
+            candidatesByUDID[identity.udid, default: []].append(normalized)
         }
-        return byUDID.values.sorted { $0.identity.udid < $1.identity.udid }
+        alternativesByUDID = candidatesByUDID.mapValues { candidates in
+            candidates.sorted { Self.preference($0) < Self.preference($1) }
+        }
+        return alternativesByUDID.values.compactMap(\.first).sorted { $0.identity.udid < $1.identity.udid }
     }
 
     private static func preference(_ descriptor: NativeDeviceDescriptor) -> (Int, UInt32) {
@@ -375,7 +375,31 @@ public actor IOSSimDeviceBridge {
     }
 
     public func inspect(_ identity: IOSSimDeviceIdentity, timeout: Duration = .seconds(8)) async throws -> NativeDeviceInspection {
-        try await transport.inspect(identity, timeout: timeout)
+        do {
+            return try await transport.inspect(identity, timeout: timeout)
+        } catch let original as NativeDeviceBridgeError {
+            guard Self.isConnectionLoss(original), identity.connectionGeneration == generation,
+                  let alternatives = alternativesByUDID[identity.udid] else {
+                throw original
+            }
+            for candidate in alternatives where
+                candidate.identity.usbmuxIdentifier != identity.usbmuxIdentifier
+                    || candidate.identity.connection != identity.connection {
+                do {
+                    return try await transport.inspect(candidate.identity, timeout: timeout)
+                } catch let fallback as NativeDeviceBridgeError {
+                    guard Self.isConnectionLoss(fallback) else { throw fallback }
+                }
+            }
+            throw original
+        }
+    }
+
+    private static func isConnectionLoss(_ error: NativeDeviceBridgeError) -> Bool {
+        switch error {
+        case .deviceNotFound, .deviceDisconnected: true
+        default: false
+        }
     }
 }
 

@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "iossim-device-bridge",
+    "veya-signing-core",
+]
+resolver = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "unwind"
+strip = "symbols"

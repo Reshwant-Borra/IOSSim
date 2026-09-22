@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-18",
+  "branch": "work/final-no-xcode-setup-v1",
+  "head": "fd4fbfe364383f83b053ae13e6c96ec3af4fbfd6",
+  "product": {"name": "Veya", "version": "0.1.0", "build": "11"},
+  "architectures": ["arm64", "x86_64"],
+  "toolchains": {
+    "xcode": "27.0 (27A266a)",
+    "swift": "6.4",
+    "rustup": "1.29.0",
+    "rustc": "1.98.0",
+    "cargoPath": "/Users/rishiborra/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+    "targets": ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios"]
+  },
+  "tests": {
+    "swift": {"executed": 384, "skipped": 14, "failures": 0},
+    "rust": {"executed": 11, "ignored": 0, "failures": 0},
+    "iosPOCUnitChecks": "pass"
+  },
+  "build12Exists": false
+}
+
