@@ -95,7 +95,7 @@ final class ConsumerProvisioningTests: XCTestCase {
         )
         let updated = try await store.markRuntimeSetupReady(
             receipt: RichRuntimeProofReceipt(
-                schemaVersion: 1,
+                schemaVersion: RichRuntimeProofReceipt.currentSchemaVersion,
                 requestID: request.requestID,
                 deviceUDIDHash: RichRuntimeProofReceipt.hash(request.deviceUDID),
                 teamIdentifier: request.teamIdentifier,
@@ -111,6 +111,8 @@ final class ConsumerProvisioningTests: XCTestCase {
                 xctestHandshakeReady: true,
                 testPlanStarted: true,
                 richLocationProbeCompleted: true,
+                dvtLocationVerified: true,
+                richLocationVerified: true,
                 locationCleared: true,
                 sessionCleanedUp: true,
                 completedAt: Date()

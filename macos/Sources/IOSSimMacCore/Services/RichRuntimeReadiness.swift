@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct RichRuntimeProofRequest: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
     public let schemaVersion: Int
     public let requestID: String
     public let deviceUDID: String
@@ -46,7 +46,7 @@ public struct RichRuntimeProofRequest: Codable, Equatable, Sendable {
 }
 
 public struct RichRuntimeProofReceipt: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
     public let schemaVersion: Int
     public let requestID: String
     public let deviceUDIDHash: String
@@ -63,6 +63,10 @@ public struct RichRuntimeProofReceipt: Codable, Equatable, Sendable {
     public let xctestHandshakeReady: Bool
     public let testPlanStarted: Bool
     public let richLocationProbeCompleted: Bool
+    /// Core Location on the iPhone observed the DVT (Set Location) coordinate.
+    public let dvtLocationVerified: Bool
+    /// Core Location on the iPhone observed the Rich Drive runner coordinate.
+    public let richLocationVerified: Bool
     public let locationCleared: Bool
     public let sessionCleanedUp: Bool
     public let completedAt: Date
@@ -72,7 +76,9 @@ public struct RichRuntimeProofReceipt: Codable, Equatable, Sendable {
             && deviceUDIDHash.count == 64
             && pairingGeneration > 0
             && testManagerControlReady && runnerLaunched && xctestHandshakeReady
-            && testPlanStarted && richLocationProbeCompleted && locationCleared && sessionCleanedUp
+            && testPlanStarted && richLocationProbeCompleted
+            && dvtLocationVerified && richLocationVerified
+            && locationCleared && sessionCleanedUp
     }
 
     public func validates(_ request: RichRuntimeProofRequest, now: Date = Date()) -> Bool {

@@ -1301,6 +1301,11 @@ def assert_iphone_payload_capability_sources() -> None:
             and "rich-runtime-proof.request" in rich_runtime_source
             and "rich-runtime-proof.receipt" in rich_runtime_source
         ),
+        "runtime proof verifies location via Core Location": (
+            "dvtLocationVerified" in rich_runtime_source
+            and "richLocationVerified" in rich_runtime_source
+            and "waitForCoordinate" in rich_runtime_source
+        ),
         "automatic pairing receipt": "AutomaticPairingReceipt" in inbox_source and "remote-pairing.receipt" in inbox_source,
         "pairing Keychain candidate import": (
             "KeychainRPPairingStore()" in inbox_source
@@ -1338,6 +1343,8 @@ def assert_iphone_main_binary_capabilities(app: Path) -> None:
         b"RichRuntimeProofInboxController",
         b"rich-runtime-proof.request",
         b"rich-runtime-proof.receipt",
+        b"dvtLocationVerified",
+        b"richLocationVerified",
     ]
     missing = [marker.decode("utf-8") for marker in markers if marker not in binary]
     if missing:

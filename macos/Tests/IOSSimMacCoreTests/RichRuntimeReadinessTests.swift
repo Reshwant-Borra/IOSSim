@@ -8,6 +8,10 @@ final class RichRuntimeReadinessTests: XCTestCase {
         XCTAssertTrue(fixtureReceipt(request: request).validates(request))
         XCTAssertFalse(fixtureReceipt(request: request, locationCleared: false).validates(request))
         XCTAssertFalse(fixtureReceipt(request: request, testPlanStarted: false).validates(request))
+        // The runner reaching its test plan is not enough: Core Location must observe both product paths.
+        XCTAssertFalse(fixtureReceipt(request: request, dvtLocationVerified: false).validates(request))
+        XCTAssertFalse(fixtureReceipt(request: request, richLocationVerified: false).validates(request))
+        XCTAssertFalse(fixtureReceipt(request: request, schemaVersion: 1).validates(request))
         let anotherGeneration = RichRuntimeProofRequest(
             deviceUDID: request.deviceUDID,
             teamIdentifier: request.teamIdentifier,
@@ -52,6 +56,15 @@ final class RichRuntimeReadinessTests: XCTestCase {
         }
         do {
             _ = try await RichRuntimeReadinessCoordinator(
+                service: RuntimeProofApplicationService(mode: .locationUnverified),
+                pollCount: 2, pollNanoseconds: 1
+            ).prove(request: request, device: device, appBundleIdentifier: "com.example.main")
+            XCTFail("Expected unverified location rejection")
+        } catch let failure as RichRuntimeProofFailure {
+            XCTAssertEqual(failure, .proofFailed)
+        }
+        do {
+            _ = try await RichRuntimeReadinessCoordinator(
                 service: RuntimeProofApplicationService(mode: .missing),
                 pollCount: 2, pollNanoseconds: 1
             ).prove(request: request, device: device, appBundleIdentifier: "com.example.main")
@@ -78,10 +91,13 @@ final class RichRuntimeReadinessTests: XCTestCase {
     private func fixtureReceipt(
         request: RichRuntimeProofRequest,
         testPlanStarted: Bool = true,
-        locationCleared: Bool = true
+        dvtLocationVerified: Bool = true,
+        richLocationVerified: Bool = true,
+        locationCleared: Bool = true,
+        schemaVersion: Int = RichRuntimeProofReceipt.currentSchemaVersion
     ) -> RichRuntimeProofReceipt {
         RichRuntimeProofReceipt(
-            schemaVersion: 1,
+            schemaVersion: schemaVersion,
             requestID: request.requestID,
             deviceUDIDHash: RichRuntimeProofReceipt.hash(request.deviceUDID),
             teamIdentifier: request.teamIdentifier,
@@ -97,6 +113,8 @@ final class RichRuntimeReadinessTests: XCTestCase {
             xctestHandshakeReady: true,
             testPlanStarted: testPlanStarted,
             richLocationProbeCompleted: true,
+            dvtLocationVerified: dvtLocationVerified,
+            richLocationVerified: richLocationVerified,
             locationCleared: locationCleared,
             sessionCleanedUp: locationCleared,
             completedAt: Date()
@@ -105,7 +123,7 @@ final class RichRuntimeReadinessTests: XCTestCase {
 }
 
 private actor RuntimeProofApplicationService: NativeApplicationServicing {
-    enum Mode { case success, cleanupFailed, missing }
+    enum Mode { case success, locationUnverified, cleanupFailed, missing }
     struct Snapshot { let launched: [String]; let writtenPath: String? }
     let mode: Mode
     private var request: RichRuntimeProofRequest?
@@ -127,9 +145,10 @@ private actor RuntimeProofApplicationService: NativeApplicationServicing {
         guard mode != .missing, let request else {
             throw NativeDeviceBridgeError.containerUnavailable("fixture receipt missing")
         }
-        let cleared = mode == .success
+        let cleared = mode != .cleanupFailed
+        let verified = mode == .success
         let receipt = RichRuntimeProofReceipt(
-            schemaVersion: 1,
+            schemaVersion: RichRuntimeProofReceipt.currentSchemaVersion,
             requestID: request.requestID,
             deviceUDIDHash: RichRuntimeProofReceipt.hash(request.deviceUDID),
             teamIdentifier: request.teamIdentifier,
@@ -145,6 +164,8 @@ private actor RuntimeProofApplicationService: NativeApplicationServicing {
             xctestHandshakeReady: true,
             testPlanStarted: true,
             richLocationProbeCompleted: true,
+            dvtLocationVerified: verified,
+            richLocationVerified: verified,
             locationCleared: cleared,
             sessionCleanedUp: cleared,
             completedAt: Date()

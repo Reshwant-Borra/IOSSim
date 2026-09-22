@@ -27,6 +27,7 @@ struct POCUnitChecks {
     try await diagnosticStateRecordsStatusAndTiming()
     try await sessionRecorderRedactsAndClassifies()
     try await bridgeReportsUnavailableWhenIdeviceIsNotLinked()
+    try await runtimeProofNeverVerifiesLocationWithoutCoreLocationObservation()
     try routeInterpolation()
     try constantSpeedDistanceCalculations()
     try driveCadenceConfiguration()
@@ -114,7 +115,7 @@ struct POCUnitChecks {
   static func richRuntimeProofReceiptSchemaBindsCleanupAndContext() throws {
     let json = """
       {
-        "schemaVersion":1,
+        "schemaVersion":2,
         "requestID":"00000000-0000-0000-0000-000000000001",
         "deviceUDIDHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "teamIdentifier":"TEAM1",
@@ -130,6 +131,8 @@ struct POCUnitChecks {
         "xctestHandshakeReady":true,
         "testPlanStarted":true,
         "richLocationProbeCompleted":true,
+        "dvtLocationVerified":true,
+        "richLocationVerified":false,
         "locationCleared":true,
         "sessionCleanedUp":true,
         "completedAt":"2026-09-16T00:00:00Z"
@@ -139,7 +142,8 @@ struct POCUnitChecks {
     decoder.dateDecodingStrategy = .iso8601
     let receipt = try decoder.decode(
       RichRuntimeProofInboxReceipt.self, from: Data(json.utf8))
-    try require(receipt.schemaVersion == 1, "Rich proof schema version")
+    try require(receipt.schemaVersion == 2, "Rich proof schema version")
+    try require(receipt.dvtLocationVerified && !receipt.richLocationVerified, "Rich proof location verification flags")
     try require(receipt.pairingGeneration == 4, "Rich proof pairing generation")
     try require(receipt.testManagerControlReady, "Rich proof TestManager control")
     try require(receipt.richLocationProbeCompleted, "Rich proof location completion")
@@ -681,6 +685,47 @@ struct POCUnitChecks {
     try require(
       !text.contains("private_key should not be persisted"), "raw sensitive message absent")
     try require(!text.contains("psk material hidden"), "raw sensitive metadata absent")
+  }
+
+  /// R1 regression: a location command that was sent (mock DVT) and a runner that could not start must
+  /// never produce verified flags; only a Core Location observation does. Cleanup still completes.
+  static func runtimeProofNeverVerifiesLocationWithoutCoreLocationObservation() async throws {
+    guard !IdeviceOnDeviceTunnelClient.ideviceLinked else { return }
+    let appSupport = FileManager.default.temporaryDirectory
+      .appendingPathComponent("runtime-proof-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: appSupport) }
+    let requestURL = appSupport.appendingPathComponent("SetupInbox/rich-runtime-proof.request")
+    try FileManager.default.createDirectory(
+      at: requestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let runner = Gate3XCTestRunnerBundleIdentifierResolver().resolvedInstalledRunnerBundleID()
+    let request: [String: Any] = [
+      "schemaVersion": RichRuntimeProofInboxController.schemaVersion,
+      "requestID": UUID().uuidString, "deviceUDID": "PHONE-0001", "teamIdentifier": "TEAM1",
+      "releaseIdentity": "0.1.0:4", "artifactSetIdentity": "a", "profileSetIdentity": "b",
+      "pairingGeneration": 4, "developerServicesSession": UUID().uuidString,
+      "developerSupportIdentity": "23A1:fixture", "runnerBundleIdentifier": runner,
+      "createdAt": ISO8601DateFormatter().string(from: Date()),
+    ]
+    try JSONSerialization.data(withJSONObject: request).write(to: requestURL)
+
+    let coordinator = LocationCoordinator(
+      pairingStore: InMemoryRPPairingStore(data: try makePairingPlist()),
+      tunnelClient: MockTunnelClient(),
+      recorder: testRecorder()
+    )
+    let receipt = try await RichRuntimeProofInboxController(
+      appSupportURL: appSupport,
+      locationCoordinator: coordinator,
+      tunnelClient: IdeviceOnDeviceTunnelClient(recorder: nil),
+      verifier: CoreLocationVerifier(),
+      verificationTimeout: 0.2
+    ).reconcileIfRequested()
+    guard let receipt else { throw CheckError("expected a runtime proof receipt") }
+    try require(receipt.schemaVersion == 2, "runtime proof schema 2")
+    try require(!receipt.dvtLocationVerified, "DVT send without Core Location observation is not verified")
+    try require(!receipt.richLocationVerified && !receipt.richLocationProbeCompleted,
+      "Rich runner failure is not verified")
+    try require(receipt.locationCleared && receipt.sessionCleanedUp, "cleanup still completes")
   }
 
   static func bridgeReportsUnavailableWhenIdeviceIsNotLinked() async throws {

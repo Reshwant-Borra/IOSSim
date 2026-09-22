@@ -1,3 +1,4 @@
+import CoreLocation
 import CryptoKit
 import Foundation
 
@@ -33,26 +34,41 @@ public struct RichRuntimeProofInboxReceipt: Codable, Equatable, Sendable {
   public let xctestHandshakeReady: Bool
   public let testPlanStarted: Bool
   public let richLocationProbeCompleted: Bool
+  /// Core Location in Veya observed the DVT LocationSimulation coordinate (Set Location path).
+  public let dvtLocationVerified: Bool
+  /// Core Location in Veya observed the Rich Drive runner's XCUILocation coordinate (default Drive path).
+  public let richLocationVerified: Bool
   public let locationCleared: Bool
   public let sessionCleanedUp: Bool
   public let completedAt: Date
 }
 
-/// Setup-only bounded Rich proof. It reuses the product's one location
-/// coordinator and retained native XCTest path; it never starts a Drive route.
+/// Setup-only bounded proof of the product location paths: one DVT coordinate
+/// and one Rich Drive runner coordinate, each confirmed by Core Location in this
+/// app, then cleared. It reuses the product's coordinator and Rich transport and
+/// never starts a Drive route.
 public actor RichRuntimeProofInboxController {
+  public static let schemaVersion = 2
+  static let dvtProbeCoordinate = (latitude: 40.758_000, longitude: -73.985_500)
+  static let richProbeCoordinate = (latitude: 37.334_900, longitude: -122.009_020)
+
   public static let requestPath = "Library/Application Support/IOSSim/SetupInbox/rich-runtime-proof.request"
   public static let receiptPath = "Library/Application Support/IOSSim/SetupInbox/rich-runtime-proof.receipt"
 
   private let appSupportURL: URL
   private let locationCoordinator: LocationCoordinator
   private let tunnelClient: IdeviceOnDeviceTunnelClient
+  private let verifier: CoreLocationVerifier
+  private let verificationTimeout: TimeInterval
   private let now: @Sendable () -> Date
 
+  /// `verifier` must be created on the main thread so Core Location can deliver callbacks.
   public init(
     appSupportURL: URL? = nil,
     locationCoordinator: LocationCoordinator,
     tunnelClient: IdeviceOnDeviceTunnelClient,
+    verifier: CoreLocationVerifier,
+    verificationTimeout: TimeInterval = 20,
     now: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.appSupportURL = appSupportURL ?? FileManager.default.urls(
@@ -60,6 +76,8 @@ public actor RichRuntimeProofInboxController {
     ).first!.appendingPathComponent("IOSSim", isDirectory: true)
     self.locationCoordinator = locationCoordinator
     self.tunnelClient = tunnelClient
+    self.verifier = verifier
+    self.verificationTimeout = verificationTimeout
     self.now = now
   }
 
@@ -70,7 +88,7 @@ public actor RichRuntimeProofInboxController {
     decoder.dateDecodingStrategy = .iso8601
     let request = try decoder.decode(
       RichRuntimeProofInboxRequest.self, from: Data(contentsOf: requestURL))
-    guard request.schemaVersion == 1,
+    guard request.schemaVersion == Self.schemaVersion,
       UUID(uuidString: request.requestID) != nil,
       request.pairingGeneration > 0,
       !request.deviceUDID.isEmpty,
@@ -89,45 +107,56 @@ public actor RichRuntimeProofInboxController {
     }
 
     let writerID = "setup-proof:\(request.requestID)"
-    var stages = Set<Gate3XCTestRunnerStage>()
-    var richProbeComplete = false
+    var dvtVerified = false
+    var richVerified = false
     var locationCleared = false
     var sessionCleanedUp = false
+    let rich = XCTestRichDriveLocationTransport(
+      locationCoordinator: locationCoordinator, runnerClient: tunnelClient,
+      runnerTimeoutSeconds: 120)
 
+    verifier.start(backgroundCapable: false)
     do {
+      let dvt = Self.dvtProbeCoordinate
       try await locationCoordinator.startSimulation(
         writerID: writerID, mode: .staticLocation(nil))
-      try await tunnelClient.startGate3OnDeviceXCTest(
-        iosMajorVersion: UInt8(ProcessInfo.processInfo.operatingSystemVersion.majorVersion),
-        timeoutSeconds: 90)
-      for _ in 0..<480 {
-        if Task.isCancelled { throw CancellationError() }
-        let status = tunnelClient.gate3XCTestStatus()
-        stages.formUnion(status.events.map(\.stage))
-        if status.currentStage == .finished && !status.isRunning {
-          richProbeComplete = status.firstErrorStage == nil
-          break
-        }
-        if status.currentStage == .failed || status.firstErrorStage != nil { break }
-        try await Task.sleep(nanoseconds: 250_000_000)
-      }
-    } catch {
-      stages.formUnion(tunnelClient.gate3XCTestStatus().events.map(\.stage))
-    }
+      try await locationCoordinator.updateLocation(
+        latitude: dvt.latitude, longitude: dvt.longitude, writerID: writerID,
+        mode: .staticLocation(SimulatedCoordinate(latitude: dvt.latitude, longitude: dvt.longitude)))
+      dvtVerified = await verifier.waitForCoordinate(
+        latitude: dvt.latitude, longitude: dvt.longitude, timeout: verificationTimeout) != nil
 
-    await tunnelClient.stopGate3OnDeviceXCTest()
+      let target = Self.richProbeCoordinate
+      let coordinate = CLLocationCoordinate2D(latitude: target.latitude, longitude: target.longitude)
+      try await rich.start(
+        DriveLocationTransportStartContext(
+          sessionID: UUID(), writerID: writerID, initialCoordinate: coordinate))
+      _ = try await rich.set(
+        sample: RichDriveSample(
+          latitude: target.latitude, longitude: target.longitude,
+          speedMetersPerSecond: 0, courseDegrees: 0),
+        writerID: writerID,
+        mode: .staticLocation(SimulatedCoordinate(coordinate)),
+        traceContext: nil, diagnostics: nil)
+      richVerified = await verifier.waitForCoordinate(
+        latitude: target.latitude, longitude: target.longitude, timeout: verificationTimeout) != nil
+    } catch {
+      // Any transport/runner failure leaves the verified flags false; the receipt reports it.
+    }
+    let stages = Set(tunnelClient.gate3XCTestStatus().events.map(\.stage))
+
     do {
-      try await locationCoordinator.stopSimulation(writerID: writerID, clearLocation: true)
+      // Stops the runner and the DVT session and clears the simulated location.
+      try await rich.stop(writerID: writerID, clearLocation: true)
       locationCleared = true
       sessionCleanedUp = true
     } catch {
       // A cleanup failure is represented in the receipt and can never become READY.
-      locationCleared = false
-      sessionCleanedUp = false
     }
+    verifier.stop()
 
     let receipt = RichRuntimeProofInboxReceipt(
-      schemaVersion: 1,
+      schemaVersion: Self.schemaVersion,
       requestID: request.requestID,
       deviceUDIDHash: Self.hash(request.deviceUDID),
       teamIdentifier: request.teamIdentifier,
@@ -142,7 +171,9 @@ public actor RichRuntimeProofInboxController {
       runnerLaunched: stages.contains(.runnerLaunched),
       xctestHandshakeReady: stages.contains(.xctestHandshakeReady),
       testPlanStarted: stages.contains(.testPlanStarted),
-      richLocationProbeCompleted: richProbeComplete,
+      richLocationProbeCompleted: richVerified,
+      dvtLocationVerified: dvtVerified,
+      richLocationVerified: richVerified,
       locationCleared: locationCleared,
       sessionCleanedUp: sessionCleanedUp,
       completedAt: now()

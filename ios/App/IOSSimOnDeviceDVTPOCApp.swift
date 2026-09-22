@@ -39,11 +39,13 @@ struct IOSSimOnDeviceDVTPOCApp: App {
                 }
                 .task(id: scenePhase) {
                     guard scenePhase == .active else { return }
-                    // Final setup proof only: one bounded Gate-1 Rich XCTest,
-                    // followed by an explicit location clear and session cleanup.
+                    // Final setup proof only: one DVT and one Rich Drive coordinate,
+                    // each confirmed by Core Location here, then cleared. The
+                    // verifier is created on the main thread for its callbacks.
                     try? await RichRuntimeProofInboxController(
                         locationCoordinator: POCAppDependencies.locationCoordinator,
-                        tunnelClient: POCAppDependencies.tunnelClient
+                        tunnelClient: POCAppDependencies.tunnelClient,
+                        verifier: CoreLocationVerifier()
                     ).reconcileIfRequested()
                 }
         }

@@ -84,8 +84,8 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
         namespace: .runtime, number: 10, operation: "prove",
         safeMessage: "The iPhone runtime check did not complete.",
         retryable: true,
-        userAction: "If the iPhone asked to allow automation, allow it. Keep the iPhone unlocked with LocalDevVPN "
-            + "connected, then choose Install / Resume.",
+        userAction: "If the iPhone asked to allow automation or location access for Veya, allow it. Keep the iPhone "
+            + "unlocked with Veya open and LocalDevVPN connected, then choose Install / Resume.",
         underlyingSubsystem: "runtime")
 
     public func execute(_ context: TransitionContext) async throws -> TransitionReceipt {
