@@ -27,8 +27,8 @@ public enum AppleDomainFailure {
         try! VeyaFailure(namespace: namespace, number: number, operation: operation, safeMessage: message,
                          retryable: retryable, underlyingSubsystem: "appleDeveloperServices")
     }
-    public static let signInAction = "Sign in to your Apple Account in Veya, then continue."
-    public static let selectDeviceAction = "Connect your iPhone, unlock it, and select it in Veya."
+    public static let signInAction = "Sign in to your Apple Account in Veya, then continue in Veya."
+    public static let selectDeviceAction = "Connect your iPhone, unlock it, and select it, then continue in Veya."
     public static let sessionExpired = try! VeyaFailure(
         namespace: .authorization, number: 30, operation: "request", safeMessage: "Your Apple sign-in has expired.",
         userAction: signInAction, underlyingSubsystem: "appleDeveloperServices")

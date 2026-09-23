@@ -10,9 +10,7 @@ final class DevelopmentInstallationModel: ObservableObject {
     @Published var busy = false
     @Published var needsVerification = false
     @Published var result: QualificationResult?
-    /// Veya is holding a request the iPhone has not answered yet: the Mac's work is done
-    /// and the next step is the user's Run Setup tap, verified by Continue.
-    @Published var awaitingRunSetup = false
+    @Published var primaryAction: DevelopmentInstallationPrimaryAction = .installOrPrepare
     private var issuedRunSetupRequest = false
     private let session = DevelopmentInstallationSession()
     private let bridge = IOSSimDeviceBridge()
@@ -21,6 +19,7 @@ final class DevelopmentInstallationModel: ObservableObject {
     func refresh() async {
         await perform {
             self.result = nil
+            self.primaryAction = .installOrPrepare
             self.devices = []
             for descriptor in try await self.bridge.listDevices() {
                 self.devices.append(try await self.bridge.inspect(descriptor.identity))
@@ -88,7 +87,12 @@ final class DevelopmentInstallationModel: ObservableObject {
                                                         device: target), composition: composition)
                 : response
             let waiting = response.firstFailure?.code == RuntimeReadinessDomain.runSetupRequired.code
-            if command != .inspect { self.awaitingRunSetup = waiting }
+            if command != .inspect {
+                self.primaryAction = .resolve(
+                    firstFailureCode: response.firstFailure?.code,
+                    userAction: response.userAction
+                )
+            }
             // Everything the Mac can do finished and the request is newly placed: that is the
             // hand-off to the iPhone, not a complaint that the user has not acted yet.
             self.message = waiting && self.issuedRunSetupRequest
@@ -110,6 +114,11 @@ final class DevelopmentInstallationModel: ObservableObject {
         case .failedOnPhone(let code, let message):
             return "Run Setup on the iPhone failed (\(code)): \(message) — fix it and tap Run Setup again."
         }
+    }
+
+    func resetPresentation() {
+        result = nil
+        primaryAction = .installOrPrepare
     }
 
     private func perform(_ body: () async throws -> Void) async {
@@ -167,8 +176,8 @@ struct DevelopmentInstallationView: View {
                 // planner stops at the first unsatisfied domain, so the same `.reconcile` both
                 // prepares and verifies; a second button would only be a second name for it, and a
                 // disabled one contradicts every "then continue in Veya" instruction.
-                Button(model.awaitingRunSetup ? "Continue / Verify Setup" : "Install / Prepare") {
-                    Task { await model.run(.reconcile) }
+                Button(model.primaryAction.rawValue) {
+                    Task { await model.run(model.primaryAction.command) }
                 }
                 if model.busy { ProgressView().controlSize(.small) }
             }.disabled(model.selected.isEmpty)
@@ -196,7 +205,7 @@ struct DevelopmentInstallationView: View {
         }
         .padding(24)
         .disabled(model.busy)
-        .onChange(of: model.selected) { _ in model.result = nil }
+        .onChange(of: model.selected) { _ in model.resetPresentation() }
         .task { await model.refresh() }
     }
 }

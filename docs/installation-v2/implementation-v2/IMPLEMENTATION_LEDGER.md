@@ -205,3 +205,29 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - `./iossim installation-baseline --defer-m4`: Overall PASS.
 - `graphify update .`: no topology change; 37,066 nodes · 90,886 edges · 1,224 communities.
 - M11-B unchanged: still blocked on M4 + physical proof of the route switch.
+
+## Physical E2E confirmation 2026-09-22 23:23–23:25 EDT
+
+- **PHYSICAL_PASS** on commit `073d4a9`, clean source tree: Install / Prepare → LocalDevVPN recovery →
+  automatic pairing → READY FOR SETUP → user Run Setup → Continue / Verify Setup → READY.
+- The local journal ended at revision 813 / generation 66 with no candidates: application gen 63,
+  `vpnFreshObservation` gen 64, `pairingFreshObservation` gen 65, and `runtimeFullChainProof` gen 66.
+- The setup receipt used the non-mutating `sessionProbed` proof; no setup-time location spoofing was performed.
+- Approximately three visible Veya open/close cycles remain a UX-polish investigation. Correctness is proven;
+  no reconciliation, pairing-protocol, DDI, receipt-binding, runtime, M4, distribution, or M11 change is implied.
+- Evidence: `PHYSICAL_E2E_CHECKPOINT_2026-09-22.md` § Clean post-change physical confirmation.
+
+## Safe UX polish prepared for physical retest — 2026-09-23
+
+- The development primary action now has three presentation states — `Install / Prepare`, `Continue`,
+  and `Continue / Verify Setup` — with Run Setup continuation taking precedence over any other
+  recoverable user action. Every state still dispatches exactly `EngineCommand.reconcile`.
+- Canonical unlock, trust, Developer Mode/restart, developer-profile trust, LocalDevVPN install/
+  permission/connect, and Apple sign-in/device-selection actions use `Continue` and end with
+  “then continue in Veya.” Failures without a `userAction` remain `Install / Prepare`.
+- Automatic pairing now polls the bootstrap response before activation. A live inbox watcher adds no
+  launch; a missing response invokes the existing destructive activation exactly once as a reliability
+  fallback. Pairing cryptography, proof, promotion, receipts, and later escalation are unchanged.
+- `./iossim installation-baseline --defer-m4`: **Overall PASS**. Focused presentation and pairing
+  activation tests also pass. One final physical iPhone retest remains required; this entry does not
+  upgrade the polish changes to `PHYSICAL_PASS`.

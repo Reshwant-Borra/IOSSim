@@ -7,7 +7,8 @@ public enum ArtifactFailure {
     static func make(_ number: Int, _ message: String) -> VeyaFailure {
         // Constant, validated inputs; construction cannot fail.
         try! VeyaFailure(namespace: .artifact, number: number, operation: "verify", safeMessage: message,
-                         userAction: "Reinstall Veya from its original download.", underlyingSubsystem: "shippedPayload")
+                         userAction: "Reinstall Veya from its original download, then continue in Veya.",
+                         underlyingSubsystem: "shippedPayload")
     }
     public static let damaged = make(30, "Veya's iPhone components are missing or damaged.")
     public static let unexpectedShape = make(31, "Veya's iPhone components do not have the expected structure.")

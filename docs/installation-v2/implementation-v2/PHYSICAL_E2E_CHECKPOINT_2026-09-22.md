@@ -214,6 +214,21 @@ location-based, still reachable only from the provisioner's diagnostic command).
 | **Install / Prepare total** | **≈7 Veya** | **≈4 Veya** |
 | Continue / Verify Setup | 2 Veya | unchanged |
 
+## Clean post-change physical confirmation — 2026-09-22 23:23–23:25 EDT
+
+**PASS** on commit `073d4a9` with a clean source tree. The complete physical flow
+again reached READY after the pairing-activation reduction and read-only
+`sessionProbed` setup proof. Direct observation still showed approximately three
+visible Veya open/close cycles, which is now tracked as a final UX investigation,
+not as a correctness failure.
+
+The local development journal ended at revision 813 / generation 66 with no
+candidates. It records application generation 63, `vpnFreshObservation`
+generation 64 at 23:24:53, `pairingFreshObservation` generation 65 at 23:25:05,
+and `runtimeFullChainProof` generation 66 at 23:25:14. This confirms the proven
+implementation remained intact. It does not authorize removal of any remaining
+AppService launch; each caller must be classified before a launch-count change.
+
 ## Artifacts
 
 - iPhone payload: `.build/iossim/self-contained/IOSSim.app/Contents/Resources/DeviceArtifacts`

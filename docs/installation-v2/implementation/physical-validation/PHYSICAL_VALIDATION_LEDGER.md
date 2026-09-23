@@ -11,6 +11,35 @@ plan exists. No production source has been changed and nothing has been retested
 A defect reaches `PHYSICALLY_VERIFIED` only after the corrected artifact has
 been run on real hardware and observed to pass. Software gates never confer it.
 
+## Successful clean physical E2E checkpoint — 2026-09-22
+
+Qualification result: **PASS** (operator-reported physical run, corroborated by
+the local development journal at revision 813 / generation 66).
+
+The latest clean-source Mac + physical iPhone end-to-end run completed the current
+consumer setup flow successfully. The observed passing path covered Install /
+Prepare, LocalDevVPN off detection and recovery after the user enabled it,
+developer support/DDI, automatic pairing, Run Setup, non-mutating
+`sessionProbed` verification, receipt-bound Continue / Verify Setup, and the
+final READY state. Setup performed no location-spoofing write. Existing signing,
+certificate/profile, installation, journal-recovery, and runtime behavior were
+preserved through the successful run.
+
+The run used commit `073d4a9` and completed at approximately 23:25 EDT. The
+journal records `vpnFreshObservation` generation 64, `pairingFreshObservation`
+generation 65, `runtimeFullChainProof` generation 66 with `sessionProbed`, no
+remaining candidate, and final revision 813. The detailed checkpoint is
+[`../../implementation-v2/PHYSICAL_E2E_CHECKPOINT_2026-09-22.md`](../../implementation-v2/PHYSICAL_E2E_CHECKPOINT_2026-09-22.md).
+
+This checkpoint qualifies the clean happy path only. It does not by itself
+claim every destructive/recovery scenario in the broader physical matrix, M4,
+production DDI sourcing, Developer ID distribution/notarization, or unrelated
+M11 cleanup. The development artifact's archived hash and support bundle were not
+supplied with this checkpoint and remain evidence metadata to attach when
+available. The UX follow-up is limited to primary-button wording and an audit of
+visible iPhone app activation/relaunches; no reconciliation or protocol change is
+authorized by this record.
+
 | # | Defect | Found on | Status | Fixed in | Retest artifact |
 |---|---|---|---|---|---|
 | 001 | `SIGNING_KEY_ACCESS_DENIED` on a clean Mac — the Personal Team signing key was created in the login Keychain, where `securityd` stamps it with a `cdhash:<creator>` partition that `/usr/bin/codesign` can never match | Intel x86_64, macOS 14.8.9 (23J631), no Xcode, `Veya-0.1.0-build1-1259da5-local-test.dmg` | **RETEST_REQUIRED** | `dd259bd` | `Veya-0.1.0-build2-dd259bd-local-test.dmg` (`a5cfa59e…`) |
@@ -87,5 +116,9 @@ Observed on hardware during the build1 run:
 | Reboot survival / renewal | NOT REACHED |
 | Gatekeeper / notarization (public distribution) | OUT OF SCOPE — separate task |
 
-Nothing below the signing row has been validated on hardware, and this fix
-makes no claim about any of it.
+This table is the historical build1 stopping point. Its “NOT REACHED” rows are
+superseded for the clean happy path by the 2026-09-22 checkpoint above; they are
+retained to preserve the original defect record. Defect-specific retest statuses
+remain unchanged until their exact artifact/recovery criteria and evidence are
+attached, and the newer development qualification does not resolve M4 or public
+release gates.

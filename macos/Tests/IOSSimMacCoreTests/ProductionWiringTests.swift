@@ -163,10 +163,9 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertFalse(delivery.calls.contains { $0.contains("runSetup") })
     }
 
-    /// Every AppService launch kills and restarts the app, which is visible to the user and
-    /// restarts the phone's 60 s inbox watcher. After the first activation that watcher picks up
-    /// each later write on its own, so activation is an escalation: the happy path activates once.
-    func testAutomaticPairingActivatesTheAppOnceWhenTheWatcherAnswers() async throws {
+    /// VPN recovery can leave Veya running with its inbox watcher active. The bootstrap request is
+    /// therefore polled first and does not visibly relaunch an already-responsive app.
+    func testAutomaticPairingBootstrapUsesLiveWatcherWithoutAdditionalLaunch() async throws {
         let delivery = ScriptedPairingDelivery(answerReceiptImmediately: true)
         do {
             _ = try await preparePairing(delivery: delivery)
@@ -175,12 +174,28 @@ final class ProductionWiringTests: XCTestCase {
             XCTAssertEqual(error as? RemotePairingFailure, .receiptInvalid,
                            "the envelope poll returned on its first read")
         }
-        XCTAssertEqual(delivery.activations, 1, "only the bootstrap activation starts the watcher")
+        XCTAssertEqual(delivery.activations, 0, "the live watcher answered the bootstrap without another launch")
     }
 
-    /// The backstop is preserved: if the watcher is gone (backgrounded app, expired window) the
-    /// poll escalates to exactly one relaunch rather than hanging.
-    func testAutomaticPairingRelaunchesTheAppWhenTheWatcherDoesNotAnswer() async throws {
+    /// The reliability backstop is unchanged: a missing bootstrap response triggers exactly one
+    /// destructive activation, after which the existing protocol continues.
+    func testAutomaticPairingBootstrapFallsBackToExactlyOneLaunch() async throws {
+        let delivery = ScriptedPairingDelivery(
+            answerReceiptImmediately: true,
+            bootstrapRequiresActivation: true
+        )
+        do {
+            _ = try await preparePairing(delivery: delivery)
+            XCTFail("the scripted receipt is not a real one")
+        } catch {
+            XCTAssertEqual(error as? RemotePairingFailure, .receiptInvalid)
+        }
+        XCTAssertEqual(delivery.activations, 1, "bootstrap fallback activates exactly once")
+    }
+
+    /// Later protocol polls retain their existing one-shot escalation if the watcher disappears
+    /// after answering bootstrap.
+    func testAutomaticPairingStillEscalatesOnceWhenWatcherStopsAnswering() async throws {
         let delivery = ScriptedPairingDelivery(answerReceiptImmediately: false)
         do {
             _ = try await preparePairing(delivery: delivery)
@@ -188,7 +203,7 @@ final class ProductionWiringTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? RemotePairingFailure, .receiptMissing)
         }
-        XCTAssertEqual(delivery.activations, 2, "bootstrap activation plus one escalation")
+        XCTAssertEqual(delivery.activations, 1, "the later receipt poll escalates exactly once")
     }
 
     /// Reaches the envelope delivery with an existing record, so the pairing protocol and its
@@ -422,10 +437,14 @@ private final class ScriptedPairingNative: RemotePairingNativeOperations, @unche
 /// envelope read straight away (watcher alive) or never (watcher gone), counting activations.
 private final class ScriptedPairingDelivery: RemotePairingContainerDelivery, @unchecked Sendable {
     private let answerReceiptImmediately: Bool
+    private let bootstrapRequiresActivation: Bool
     private var bootstrap: RemotePairingBootstrapSession?
     private(set) var activations = 0
 
-    init(answerReceiptImmediately: Bool) { self.answerReceiptImmediately = answerReceiptImmediately }
+    init(answerReceiptImmediately: Bool, bootstrapRequiresActivation: Bool = false) {
+        self.answerReceiptImmediately = answerReceiptImmediately
+        self.bootstrapRequiresActivation = bootstrapRequiresActivation
+    }
 
     func writeBootstrapRequest(_ request: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
         let decoded = try JSONDecoder().decode(RemotePairingBootstrapRequest.self, from: request)
@@ -435,7 +454,9 @@ private final class ScriptedPairingDelivery: RemotePairingContainerDelivery, @un
     }
 
     func readBootstrap(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
-        guard let bootstrap else { throw RemotePairingFailure.bootstrapMissing }
+        guard let bootstrap, !bootstrapRequiresActivation || activations > 0 else {
+            throw RemotePairingFailure.bootstrapMissing
+        }
         return try JSONEncoder().encode(bootstrap)
     }
 

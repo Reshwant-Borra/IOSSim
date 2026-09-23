@@ -45,7 +45,7 @@ public enum DeviceDomainMapping {
         case .incompatible: return .failed(DeviceDomainFailure.ddiIncompatible)
         case .failed:
             switch status.failure {
-            case .developerModeDisabled?: return .user("Turn on Developer Mode on the iPhone, restart it, then retry.")
+            case .developerModeDisabled?: return .user("Turn on Developer Mode on the iPhone, restart it, then continue in Veya.")
             case .noApprovedSource?, .wrongBuildIdentity?: return .failed(DeviceDomainFailure.ddiIncompatible)
             default: return .failed(DeviceDomainFailure.ddiUnavailable)
             }

@@ -47,7 +47,7 @@ extension DynamicNativeDeviceTransport: DeveloperServicesProbing {
 public enum DeviceFailureMapping {
     static let unlock = "Unlock your iPhone and keep it unlocked, then continue in Veya."
     static let trust = "Tap Trust on your iPhone and enter its passcode, then continue in Veya."
-    static let developerMode = "Turn on Developer Mode on the iPhone, restart it, then retry."
+    static let developerMode = "Turn on Developer Mode on the iPhone, restart it, then continue in Veya."
     public static let developerTrust = "On the iPhone open Settings > General > VPN & Device Management, select the "
         + "Apple Development entry for your Apple Account, tap Trust, then continue in Veya."
     public static let secureStorageUnavailable = DeviceDomainFailure.make(

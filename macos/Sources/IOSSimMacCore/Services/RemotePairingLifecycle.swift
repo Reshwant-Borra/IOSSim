@@ -768,8 +768,10 @@ public actor RemotePairingCoordinator {
             to: device,
             appBundleIdentifier: appBundleIdentifier
         )
-        try await delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier)
-        let bootstrapData = try await poll(maxAttempts: 20, delayNanoseconds: 250_000_000) {
+        let bootstrapData = try await poll(
+            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
+        ) {
             try await self.delivery.readBootstrap(from: device, appBundleIdentifier: appBundleIdentifier)
         }
         guard let bootstrap = try? JSONDecoder().decode(RemotePairingBootstrapSession.self, from: bootstrapData),
