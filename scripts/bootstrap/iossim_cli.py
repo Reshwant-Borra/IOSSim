@@ -2477,18 +2477,35 @@ def staple_and_validate(runner: Runner, path: Path, label: str) -> None:
     runner.run(f"stapler-validate-{label}", ["/usr/bin/xcrun", "stapler", "validate", "-v", str(path)])
 
 
-def create_release_dmg(runner: Runner, app_dir: Path, output: Path) -> None:
+def create_release_dmg(
+    runner: Runner,
+    app_dir: Path,
+    output: Path,
+    *,
+    volume_name: str | None = None,
+    app_bundle_name: str | None = None,
+) -> None:
+    volume_name = volume_name or RELEASE_CONFIG.product_name
+    app_bundle_name = app_bundle_name or f"{RELEASE_CONFIG.product_name}.app"
+    if not volume_name.strip() or "/" in volume_name or "\0" in volume_name:
+        raise ValueError("DMG volume name must be a non-empty path component")
+    if (
+        not app_bundle_name.endswith(".app")
+        or Path(app_bundle_name).name != app_bundle_name
+        or "\0" in app_bundle_name
+    ):
+        raise ValueError("DMG app bundle name must be a single .app path component")
     with tempfile.TemporaryDirectory(prefix="iossim-dmg-") as temporary:
-        staging = Path(temporary) / RELEASE_CONFIG.product_name
+        staging = Path(temporary) / volume_name
         staging.mkdir()
-        shutil.copytree(app_dir, staging / f"{RELEASE_CONFIG.product_name}.app", symlinks=True)
+        shutil.copytree(app_dir, staging / app_bundle_name, symlinks=True)
         os.symlink("/Applications", staging / "Applications")
         if output.exists():
             output.unlink()
         runner.run(
             "create-release-dmg",
             [
-                "/usr/bin/hdiutil", "create", "-volname", RELEASE_CONFIG.product_name,
+                "/usr/bin/hdiutil", "create", "-volname", volume_name,
                 "-srcfolder", str(staging), "-ov", "-format", "UDZO", str(output),
             ],
         )

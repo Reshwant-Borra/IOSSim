@@ -231,3 +231,19 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - `./iossim installation-baseline --defer-m4`: **Overall PASS**. Focused presentation and pairing
   activation tests also pass. One final physical iPhone retest remains required; this entry does not
   upgrade the polish changes to `PHYSICAL_PASS`.
+
+## Target-A private test DMG — 2026-09-23
+
+- Packaged the exact physically proven universal `Veya Development.app` from clean source HEAD
+  `6a0c7e8` without rebuilding, resigning, launching, or changing runtime behavior.
+- Reused the existing `create_release_dmg()` path with optional volume/app naming; existing release
+  defaults are unchanged. Focused DMG tests 3/3 PASS; full baseline `--defer-m4` PASS.
+- `Veya-Test-6a0c7e8.dmg`: 33,129,986 bytes; SHA-256
+  `e8bc2c0148394f105ed753f47cb7620bd6c205697670f0693d1543742848a92a`; volume `Veya Test`;
+  exactly `Veya Development.app` plus `Applications -> /Applications`.
+- Source, mounted, and copied-back apps all pass strict code-sign verification, universal architecture
+  checks, payload integrity, and per-file byte comparison. No credentials, private keys, pairing/auth
+  state, DDI cache, logs, or Application Support state are included.
+- Target A remains ad-hoc/private: Gatekeeper user approval, network development-DDI acquisition,
+  external LocalDevVPN installation, and M4-deferred relaunch behavior are expected.
+- Evidence and clean-Mac handoff: `TARGET_A_PRIVATE_TEST_DMG_2026-09-23.md`.
