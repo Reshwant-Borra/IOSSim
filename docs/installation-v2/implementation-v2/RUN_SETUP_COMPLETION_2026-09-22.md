@@ -63,7 +63,7 @@ touching the device. When (and only when) it answers a Veya request, the run now
 | `macos/.../Installation/DeviceProductionAdapters.swift` | `JournalRuntimeProver` asks, proves developer services, waits |
 | `macos/.../Installation/RuntimeReadiness.swift` | `runSetupRequired` (VEYA-RUNTIME-011), `runSetupFailed` (VEYA-RUNTIME-012) |
 | `macos/.../Installation/ProductionComposition.swift`, `DevelopmentInstallationSession.swift`, `IOSSimMac/Views/DevelopmentInstallationView.swift` | progress callback so the instruction shows while Veya waits |
-| `scripts/bootstrap/iossim_cli.py` | payload capability guards for the new receipt path |
+| `scripts/bootstrap/iossim_cli.py` | payload capability guards for the new receipt path; newly packaged payloads declare `runSetupInbox: 1` |
 
 Kept deliberately: `RichRuntimeReadinessCoordinator`, `RichRuntimeProofInbox`, the provisioner's
 diagnostic command, and manual pairing import.
@@ -98,7 +98,13 @@ request. Every stage must be true: pairing, LocalDevVPN, endpoint, session, **lo
    ephemeral runtime health needs both changed together.
 2. **First Rich Drive after setup** now carries the iOS automation approval. On refusal the existing
    per-session fallback reports "Rich Drive unavailable. Using DVT Compatibility."
-3. **Production helper path** has no progress callback, so the instruction appears there only after
+3. **Require `runSetupInbox` in the payload manifest.** New payloads declare it, but
+   `ArtifactManifest.currentPayloadCapabilities` does not require it yet: raising the bar now rejects
+   every payload built before this change (observed physically — the installed `/Applications/Veya.app`
+   made `ProductionWiringTests` fail until the requirement was withdrawn). Raise it with the first
+   rebuilt-and-installed payload, so an old payload that can never answer the request fails fast
+   instead of leaving the user tapping.
+4. **Production helper path** has no progress callback, so the instruction appears there only after
    the wait ends. The development app (used for physical runs) shows it live.
 
 ## Physical test

@@ -9,6 +9,9 @@ public struct ArtifactManifest: Codable, Equatable, Sendable {
         "pairingReceiptSchema": 2,
         "richRuntimeProofInbox": 1,
         "runtimeMappingSchema": 1
+        // `runSetupInbox` is declared by newly packaged payloads but not required yet: raising the
+        // requirement rejects every payload built before the Run Setup receipt, so it waits for the
+        // rebuilt payload (see RUN_SETUP_COMPLETION_2026-09-22.md).
     ]
 
     public let schemaVersion: Int

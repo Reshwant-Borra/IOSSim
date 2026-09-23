@@ -75,6 +75,7 @@ PAYLOAD_CAPABILITIES = {
     "localDevVPNSetupGate": 2,
     "pairingReceiptSchema": 2,
     "richRuntimeProofInbox": 1,
+    "runSetupInbox": 1,
     "runtimeMappingSchema": 1,
 }
 
