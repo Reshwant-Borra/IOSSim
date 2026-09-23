@@ -107,7 +107,25 @@ request. Every stage must be true: pairing, LocalDevVPN, endpoint, session, **lo
 4. **Production helper path** has no progress callback, so the instruction appears there only after
    the wait ends. The development app (used for physical runs) shows it live.
 
+## Artifacts built for the physical run (2026-09-22, commit `272201b`, clean tree)
+
+- iPhone payload: `.build/iossim/self-contained/IOSSim.app/Contents/Resources/DeviceArtifacts`
+  (`payloadSourceHead 272201bcfbe9`, `payloadSourceDirty false`; `payloadCapabilities.runSetupInbox = 1`;
+  main binary carries `RunSetupInbox`, `run-setup.request`, `run-setup.receipt`, `locationVerified`,
+  and still `AutomaticPairingInboxController`). Components: `IOSSim DVT POC.app` (`dd8609d732f6`),
+  `IOSSimLocationControlUITests-Runner.app` (`233341ded42b`).
+- Development Mac app: `.build/iossim/development-session/Veya Development.app`
+  (`com.veya.development-session`, debug, ad-hoc signed, universal bridge arm64 + x86_64; carries the
+  `run-setup.request`/`receipt` paths and the waiting instruction string).
+
+`./iossim package-app` reports one unrelated FAIL on this Mac: `ARTIFACT_IDENTITY_MISMATCH:
+architectures macApp/provisioner expected [arm64, x86_64], actual [arm64]`. It is structural, not
+caused by this change — `build_self_contained_macos_products` builds host-arch products while
+`audit_app` expects the universal ones that only `release`/`release-local` produce. The iPhone
+payload passed every capability, bundle-identity and hygiene check in that same run.
+
 ## Physical test
 
-See "Physical test plan" in the session handoff: install → automatic pairing → Veya shows the
-action → user taps Run Setup once → Veya reports ready without further automation.
+Install → automatic pairing → Veya shows the action → the user taps Run Setup once → Veya reports
+ready without further automation. Launch instructions are in the session handoff; the physical run
+was not performed in this session.
