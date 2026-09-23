@@ -112,9 +112,40 @@ public actor InstallationJournalRepository {
             guard candidate.lifecycle == .candidate, candidate.generation == next else {
                 throw InstallationStateFailure.staleGeneration(expected: next, actual: candidate.generation)
             }
+            try Self.executeBlockingCandidateRecovery(&journal, advancingTo: next, for: candidate.identity.domain)
             journal.generation = next
             journal.candidates[candidate.identity.domain.rawValue] = candidate
         }
+    }
+
+    /// Advancing the generation leaves any candidate from the previous one in violation of the journal
+    /// invariant (`validate`), so the write would fail and no domain could ever be repaired again
+    /// (physically observed: an unproved `runtime` candidate deadlocked every later run with
+    /// `VEYA-SEC-003`). The planner already records what may be undone for such a candidate, so this
+    /// performs exactly that rollback and nothing wider: only a domain whose create/replace recovery is
+    /// `.rollback(.discardCandidate)` is Veya-local, and discarding one leaves its active record and any
+    /// external resource untouched. A candidate whose creation had an irreversible effect (certificate,
+    /// profile, application, developer support, pairing, VPN) is never discarded here; it is reported so
+    /// it can be reconciled. The discard is recorded in `recovery`, never silent.
+    private static func executeBlockingCandidateRecovery(
+        _ journal: inout InstallationJournal,
+        advancingTo next: Generation,
+        for domain: InstallationDomain
+    ) throws {
+        let blocking = journal.candidates.filter { $0.key != domain.rawValue && $0.value.generation != next }
+        guard !blocking.isEmpty else { return }
+        for (_, record) in blocking {
+            guard TransitionRecovery.required(domain: record.identity.domain, kind: .createCandidate)
+                == .rollback(.discardCandidate) else {
+                throw InstallationStateFailure.candidateUnproved(record.identity.domain)
+            }
+        }
+        for key in blocking.keys { journal.candidates.removeValue(forKey: key) }
+        journal.recovery = JournalRecovery(
+            required: false,
+            reason: String(("blockingCandidateDiscarded:" + blocking.keys.sorted().joined(separator: ",")).prefix(128)),
+            recoveredFromRevision: journal.revision
+        )
     }
 
     public func attachEvidence(_ item: Evidence, runID: RunID) throws -> InstallationJournal {

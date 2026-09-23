@@ -35,11 +35,24 @@ final class RuntimeReadinessTests: XCTestCase {
         InstallationJournalRepository(rootURL: root.appendingPathComponent("installation", isDirectory: true))
     }
 
-    private func reconcile(connection: UInt64 = 1) async throws -> ReconciliationOutcome {
+    /// One upstream domain reports stale until it is repaired, so a run has to create a candidate
+    /// in a domain other than `.runtime`.
+    private final class StaleOnce: @unchecked Sendable {
+        var domain: InstallationDomain?
+        func state(_ candidate: InstallationDomain) -> NativeDomainMapping {
+            guard domain == candidate else { return .satisfied() }
+            domain = nil
+            return NativeDomainMapping(state: .stale, userAction: nil, failure: nil)
+        }
+    }
+
+    private func reconcile(connection: UInt64 = 1, stale: InstallationDomain? = nil) async throws -> ReconciliationOutcome {
         let clock = clock!
+        let staleOnce = StaleOnce()
+        staleOnce.domain = stale
         let upstream = RuntimeReadinessDomain.upstream.map { domain in
-            CoordinatedDeviceDomain(domain: domain, observe: { _ in .satisfied() }, prepare: { _ in .satisfied() },
-                                    now: { clock.now })
+            CoordinatedDeviceDomain(domain: domain, observe: { _ in staleOnce.state(domain) },
+                                    prepare: { _ in .satisfied() }, now: { clock.now })
         }
         let runtime = RuntimeReadinessDomain(repository: repository, prover: prover, now: { clock.now })
         let domains = RuntimeReadinessDomain.upstream + [.runtime]
@@ -100,7 +113,7 @@ final class RuntimeReadinessTests: XCTestCase {
             XCTAssertEqual(failure, RuntimeReadinessDomain.runSetupRequired)
             XCTAssertTrue(failure.retryable)
             XCTAssertEqual(failure.userAction,
-                           "Open Veya on your iPhone, tap Run Setup, then choose Install / Resume.")
+                           "Tap Run Setup on your iPhone, then press Continue / Verify Setup.")
         }
         // A failed run keeps the phone's own error instead of claiming success.
         prover.failure = RunSetupFailure.reportedOnPhone(code: "ENDPOINT_UNREACHABLE", message: "LocalDevVPN is not connected.")
@@ -143,6 +156,35 @@ final class RuntimeReadinessTests: XCTestCase {
         let observation = try await runtime.observe(scope: scope, journal: InstallationJournal())
         XCTAssertEqual(observation.state, .missing)
         XCTAssertEqual(prover.proofs, 0)
+    }
+
+    /// A runtime proof that stops on a user action leaves its candidate behind on purpose, so the
+    /// next run re-proves the same binding instead of rebuilding it. Physically observed: that
+    /// candidate then blocked every other domain from ever creating one (`VEYA-SEC-003`), so the
+    /// whole installation deadlocked and could not even replace a signing key.
+    func testUnprovedRuntimeCandidateNeverWedgesAnotherDomain() async throws {
+        prover.failure = RunSetupFailure.notTapped
+        do {
+            _ = try await reconcile()
+            XCTFail("waiting on the user is never READY")
+        } catch {}
+        let wedged = try await repository.load()
+        XCTAssertNotNil(wedged.candidateResource(for: .runtime), "the candidate is kept for the next proof")
+
+        // The phone's LocalDevVPN receipt goes stale while the tap is still outstanding.
+        do {
+            _ = try await reconcile(stale: .vpn)
+            XCTFail("the tap is still outstanding")
+        } catch let failure as VeyaFailure {
+            XCTAssertEqual(failure, RuntimeReadinessDomain.runSetupRequired)
+        }
+        let repaired = try await repository.load()
+        XCTAssertNotNil(repaired.activeResource(for: .vpn), "VPN was repaired, not blocked")
+
+        // And the tap still reaches READY afterwards.
+        prover.failure = nil
+        let ready = try await reconcile()
+        XCTAssertEqual(ready.status, .ready)
     }
 
     func testRepeatedReproofsKeepTheJournalBounded() async throws {

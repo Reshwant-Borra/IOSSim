@@ -49,7 +49,7 @@ public enum DeviceFailureMapping {
     static let trust = "Tap Trust on your iPhone and enter its passcode, then continue."
     static let developerMode = "Turn on Developer Mode on the iPhone, restart it, then retry."
     public static let developerTrust = "On the iPhone open Settings > General > VPN & Device Management, select the "
-        + "Apple Development entry for your Apple Account, tap Trust, then return to Veya and choose Install / Resume."
+        + "Apple Development entry for your Apple Account, tap Trust, then return to Veya and press Install / Prepare."
     public static let secureStorageUnavailable = DeviceDomainFailure.make(
         .pairing, 31, "store", "Veya's secure storage is unavailable, so the device pairing cannot be kept.")
 
@@ -311,14 +311,27 @@ public struct JournalRuntimeProver: RuntimeProving {
               let pairingGeneration = pairing.metadata.pairingGeneration, pairingGeneration > 0 else {
             throw RunSetupFailure.requestInvalid
         }
-        // Place the request before the app is next opened, so the prompt is already
-        // waiting when the user gets there.
-        let request = try await coordinator.requestSetup(
+        // A request Veya already issued and the phone can still answer is reused, so a tap
+        // that lands between two runs counts and pressing Continue never invalidates it.
+        // Only an absent, expired or differently bound request is reissued, and it is placed
+        // before the app is next opened so the prompt is already waiting for the user.
+        let pending = await coordinator.pendingRequest(
             device: target,
             appBundleIdentifier: payload.mainBundleIdentifier,
             teamIdentifier: payload.teamIdentifier,
             releaseIdentity: payload.releaseIdentity
         )
+        let request: RunSetupRequest
+        if let pending {
+            request = pending
+        } else {
+            request = try await coordinator.requestSetup(
+                device: target,
+                appBundleIdentifier: payload.mainBundleIdentifier,
+                teamIdentifier: payload.teamIdentifier,
+                releaseIdentity: payload.releaseIdentity
+            )
+        }
         // Run Setup itself needs the DDI-backed developer services (dtservicehub over
         // RSD), so they are proven fresh here before the user is asked to tap.
         let session = try await developerServices.prepare(

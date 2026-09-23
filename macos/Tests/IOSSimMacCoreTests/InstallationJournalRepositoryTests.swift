@@ -334,6 +334,57 @@ final class InstallationJournalRepositoryTests: XCTestCase {
         ))
     }
 
+    /// Physically observed deadlock: a `runtime` candidate left unproved when the user had not tapped
+    /// Run Setup made every later run fail with `VEYA-SEC-003`, because advancing the generation broke
+    /// the journal's candidate invariant. The rollback the planner records for that candidate now runs.
+    func testUnprovedCandidateInAnotherDomainNeverWedgesTheJournal() async throws {
+        let root = makeRoot()
+        let repository = makeRepository(root: root)
+        let runID = RunID()
+        let initial = try await repository.initialize()
+        _ = try await repository.acquireLease(runID: runID)
+        let stranded = try makeCandidate(domain: .runtime, generation: try initial.generation.advanced(),
+                                         resourceID: "runtime-proof")
+        let wedged = try await repository.putCandidate(stranded, runID: runID, expectedGeneration: initial.generation)
+        XCTAssertNotNil(wedged.candidateResource(for: .runtime))
+
+        // Another domain must still be repairable; the stranded candidate was never proved.
+        let key = try makeCandidate(generation: try wedged.generation.advanced())
+        let advanced = try await repository.putCandidate(key, runID: runID, expectedGeneration: wedged.generation)
+        XCTAssertEqual(advanced.candidateResource(for: .signingKey)?.id, key.id)
+        XCTAssertNil(advanced.candidateResource(for: .runtime), "the rollback the planner recorded is executed")
+        XCTAssertEqual(advanced.recovery.reason, "blockingCandidateDiscarded:runtime", "and it is recorded, not silent")
+        XCTAssertNil(advanced.activeResource(for: .runtime), "discarding a candidate never touches an active record")
+    }
+
+    /// The rollback is domain-scoped: a candidate whose creation had an irreversible effect is reported,
+    /// never dropped, so an issued certificate or profile can be reconciled instead of forgotten.
+    func testCandidateWithAnIrreversibleEffectIsNeverDiscarded() async throws {
+        let root = makeRoot()
+        let repository = makeRepository(root: root)
+        let runID = RunID()
+        let initial = try await repository.initialize()
+        _ = try await repository.acquireLease(runID: runID)
+        let certificate = try makeCandidate(domain: .certificate, generation: try initial.generation.advanced(),
+                                            resourceID: "issued-certificate")
+        let held = try await repository.putCandidate(certificate, runID: runID, expectedGeneration: initial.generation)
+
+        do {
+            _ = try await repository.putCandidate(
+                try makeCandidate(generation: try held.generation.advanced()),
+                runID: runID,
+                expectedGeneration: held.generation
+            )
+            XCTFail("an unproved certificate candidate must be reported, not silently discarded")
+        } catch {
+            XCTAssertEqual(error as? InstallationStateFailure, .candidateUnproved(.certificate))
+        }
+        let unchanged = try await repository.load()
+        XCTAssertEqual(unchanged.candidateResource(for: .certificate)?.id, certificate.id)
+        XCTAssertNil(unchanged.candidateResource(for: .signingKey))
+        XCTAssertEqual(unchanged.generation, held.generation)
+    }
+
     private func makeRoot() -> URL {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
             .appendingPathComponent(".build/installation-v2-tests", isDirectory: true)
@@ -347,12 +398,13 @@ final class InstallationJournalRepositoryTests: XCTestCase {
     }
 
     private func makeCandidate(
+        domain: InstallationDomain = .signingKey,
         generation: Generation,
         resourceID: String = "key-candidate"
     ) throws -> ResourceRecord {
         try ResourceRecord(
             identity: ResourceIdentity(
-                domain: .signingKey,
+                domain: domain,
                 resourceID: resourceID,
                 digest: digest(resourceID)
             ),

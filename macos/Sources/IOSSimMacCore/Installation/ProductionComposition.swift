@@ -106,7 +106,8 @@ public enum ProductionComposition {
                                             repository: repository, device: selected),
             RuntimeReadinessDomain(repository: repository, prover: JournalRuntimeProver(
                 repository: repository, developerServices: developerServices, pairingStore: pairingStore,
-                coordinator: RunSetupReadinessCoordinator(service: applications, progress: runSetupProgress),
+                coordinator: RunSetupReadinessCoordinator(service: applications, stateRoot: root,
+                                                          progress: runSetupProgress),
                 device: selected)),
         ]
         return EngineComposition(

@@ -83,9 +83,9 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
     /// The user has not tapped Run Setup yet. Veya waits for that tap and never runs setup itself.
     public static let runSetupRequired = try! VeyaFailure(
         namespace: .runtime, number: 11, operation: "prove",
-        safeMessage: "The iPhone has not completed Run Setup yet.",
+        safeMessage: "Run Setup has not been completed yet.",
         retryable: true,
-        userAction: "Open Veya on your iPhone, tap Run Setup, then choose Install / Resume.",
+        userAction: "Tap Run Setup on your iPhone, then press Continue / Verify Setup.",
         underlyingSubsystem: "runtime")
 
     /// The phone ran setup and it failed: its own product error is reported, never a generic one.
@@ -98,7 +98,7 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
             namespace: .runtime, number: 12, operation: "prove",
             safeMessage: safeMessage,
             retryable: true,
-            userAction: "Fix what the iPhone reports, tap Run Setup again, then choose Install / Resume.",
+            userAction: "Fix what the iPhone reports, tap Run Setup again, then press Continue / Verify Setup.",
             underlyingSubsystem: "runtime")) ?? runSetupRequired
     }
 
@@ -107,7 +107,7 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
         safeMessage: "The iPhone runtime check did not complete.",
         retryable: true,
         userAction: "If the iPhone asked to allow automation or location access for Veya, allow it. Keep the iPhone "
-            + "unlocked with Veya open and LocalDevVPN connected, then choose Install / Resume.",
+            + "unlocked with Veya open and LocalDevVPN connected, then press Continue / Verify Setup.",
         underlyingSubsystem: "runtime")
 
     public func execute(_ context: TransitionContext) async throws -> TransitionReceipt {
@@ -153,7 +153,11 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
             // Cleanup failures stay terminal and never become READY.
             throw Self.runtimeActionRequired
         }
-        guard result.completedAt >= started.addingTimeInterval(-5), result.completedAt <= now().addingTimeInterval(5) else {
+        // The user taps Run Setup before pressing Continue, so the proof legitimately predates this
+        // call. It may not predate it by more than the readiness TTL: an older receipt describes a
+        // system that is no longer current, and the evidence it would produce is already expired.
+        guard result.completedAt >= started.addingTimeInterval(-timeToLive),
+              result.completedAt <= now().addingTimeInterval(5) else {
             throw RichRuntimeProofFailure.receiptInvalid
         }
         return try Evidence(

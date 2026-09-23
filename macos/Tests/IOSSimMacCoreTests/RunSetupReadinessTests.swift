@@ -10,8 +10,23 @@ final class RunSetupReadinessTests: XCTestCase {
     private let pairingIdentifier = "pairing-id-1"
     private let fingerprint = String(repeating: "c", count: 64)
 
+    private var stateRoots: [URL] = []
+
+    override func tearDown() {
+        for root in stateRoots { try? FileManager.default.removeItem(at: root) }
+        stateRoots.removeAll()
+        super.tearDown()
+    }
+
     private func device(udid: String = "PHONE-0001") throws -> IOSSimDeviceIdentity {
         try IOSSimDeviceIdentity(udid: udid, usbmuxIdentifier: 7, connection: .usb, connectionGeneration: 9)
+    }
+
+    private func makeStateRoot() -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("veya-run-setup-\(UUID().uuidString)", isDirectory: true)
+        stateRoots.append(root)
+        return root
     }
 
     func testVeyaAsksAndWaitsWithoutEverStartingTheRunItself() async throws {
@@ -97,6 +112,89 @@ final class RunSetupReadinessTests: XCTestCase {
         XCTAssertNotNil(mapped.userAction)
     }
 
+    /// Prepare places the request and ends; Continue reuses it. Reissuing on every run would throw
+    /// away a tap that landed between the two, so the user would have to tap again for nothing.
+    func testPendingRequestIsReusedSoALateTapStillCounts() async throws {
+        let root = makeStateRoot()
+        let service = RunSetupApplicationService(mode: .success(
+            pairingIdentifier: pairingIdentifier, fingerprint: fingerprint, appBundleIdentifier: appBundleIdentifier
+        ))
+        // Prepare: one read, no receipt, no waiting on the user.
+        let prepare = RunSetupReadinessCoordinator(service: service, stateRoot: root)
+        let issued = try await prepare.requestSetup(
+            device: try device(), appBundleIdentifier: appBundleIdentifier,
+            teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc"
+        )
+        do {
+            _ = try await prepare.awaitRunSetup(
+                request: issued, device: try device(), appBundleIdentifier: appBundleIdentifier,
+                pairingIdentifier: pairingIdentifier, pairingPublicKeyFingerprint: fingerprint)
+            XCTFail("preparation is never setup complete")
+        } catch let failure as RunSetupFailure {
+            XCTAssertEqual(failure, .notTapped)
+        }
+
+        await service.tapRunSetup()
+
+        // Continue, in a later run of a relaunched Veya: same request, verified, never reissued.
+        let verify = RunSetupReadinessCoordinator(service: service, stateRoot: root)
+        let pending = await verify.pendingRequest(
+            device: try device(), appBundleIdentifier: appBundleIdentifier,
+            teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc")
+        XCTAssertEqual(pending?.requestID, issued.requestID)
+        let receipt = try await verify.awaitRunSetup(
+            request: try XCTUnwrap(pending), device: try device(), appBundleIdentifier: appBundleIdentifier,
+            pairingIdentifier: pairingIdentifier, pairingPublicKeyFingerprint: fingerprint)
+        XCTAssertTrue(receipt.succeeded)
+        XCTAssertEqual(receipt.requestID, issued.requestID)
+        let launched = await service.snapshot().launched
+        XCTAssertTrue(launched.isEmpty, "Veya never starts the run, on either press")
+
+        // The phone retires an answered request, so Veya drops its copy: the next run asks afresh.
+        let retired = await verify.pendingRequest(
+            device: try device(), appBundleIdentifier: appBundleIdentifier,
+            teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc")
+        XCTAssertNil(retired)
+    }
+
+    /// Reuse is bounded by the same binding the receipt is: anything else is reissued rather than
+    /// verified against a request that no longer describes this iPhone, install or run.
+    func testExpiredOrMisboundPendingRequestIsReplaced() async throws {
+        let root = makeStateRoot()
+        let service = RunSetupApplicationService(mode: .noReceipt)
+        let clock = MutableClock()
+        let coordinator = RunSetupReadinessCoordinator(service: service, stateRoot: root, now: { clock.now })
+        _ = try await coordinator.requestSetup(
+            device: try device(), appBundleIdentifier: appBundleIdentifier,
+            teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc"
+        )
+        func pending(udid: String = "PHONE-0001", app: String? = nil, team: String = "TEAM1",
+                     release: String = "veya-v2:abc") async throws -> RunSetupRequest? {
+            await coordinator.pendingRequest(
+                device: try device(udid: udid), appBundleIdentifier: app ?? appBundleIdentifier,
+                teamIdentifier: team, releaseIdentity: release)
+        }
+        var reused = try await pending()
+        XCTAssertNotNil(reused, "a fresh, matching request is reused")
+        for (value, reason) in [
+            (try await pending(udid: "PHONE-0002"), "another iPhone"),
+            (try await pending(app: "com.example.other"), "another installed app"),
+            (try await pending(team: "TEAM2"), "another team"),
+            (try await pending(release: "veya-v2:def"), "another signed payload"),
+        ] {
+            XCTAssertNil(value, reason)
+        }
+
+        clock.now += RunSetupRequest.lifetime + 1
+        reused = try await pending()
+        XCTAssertNil(reused, "a request the phone no longer accepts is reissued")
+
+        clock.now -= RunSetupRequest.lifetime + 1
+        await service.forgetContainer()
+        reused = try await pending()
+        XCTAssertNil(reused, "a container that carries neither the request nor its receipt")
+    }
+
     func testOnlyAReceiptBoundToThisRequestDeviceAppAndPairingSatisfiesSetup() throws {
         let request = RunSetupRequest(
             deviceUDID: "PHONE-0001", teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc",
@@ -167,6 +265,10 @@ final class RunSetupReadinessTests: XCTestCase {
     }
 }
 
+private final class MutableClock: @unchecked Sendable {
+    var now = Date(timeIntervalSince1970: 1_900_000_000)
+}
+
 private final class ProgressRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [RunSetupProgress] = []
@@ -187,12 +289,18 @@ private actor RunSetupApplicationService: NativeApplicationServicing {
     private let mode: Mode
     private var request: RunSetupRequest?
     private var tapped = false
+    private var retired = false
     private var launched: [String] = []
     private var writtenPath: String?
 
     init(mode: Mode) { self.mode = mode }
     func snapshot() -> Snapshot { Snapshot(launched: launched, writtenPath: writtenPath) }
-    func tapRunSetup() { tapped = true }
+    /// The user's tap. A successful run retires the request, exactly as `RunSetupInbox` does.
+    func tapRunSetup() {
+        tapped = true
+        if case .success = mode { retired = true }
+    }
+    func forgetContainer() { request = nil; tapped = false; retired = false }
 
     func inventory(on device: IOSSimDeviceIdentity) async throws -> [NativeInstalledApplication] { [] }
     func install(appURL: URL, mode: NativeApplicationInstallMode, on device: IOSSimDeviceIdentity) async throws {}
@@ -206,12 +314,21 @@ private actor RunSetupApplicationService: NativeApplicationServicing {
     ) async throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         request = try decoder.decode(RunSetupRequest.self, from: data)
+        retired = false
         writtenPath = relativePath
     }
 
     func readContainer(
         bundleIdentifier: String, relativePath: String, on device: IOSSimDeviceIdentity
     ) async throws -> Data {
+        // The phone keeps the request until a run succeeds, then replaces it with the receipt.
+        if relativePath == RunSetupReadinessCoordinator.requestPath {
+            guard let request, !retired else {
+                throw NativeDeviceBridgeError.containerUnavailable("no run setup request")
+            }
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            return try encoder.encode(request)
+        }
         guard tapped, let request else {
             throw NativeDeviceBridgeError.containerUnavailable("no run setup receipt yet")
         }

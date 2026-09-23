@@ -130,6 +130,39 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertEqual(observation.state, .stale, "a reinstalled app has an empty container: pairing is re-delivered")
     }
 
+    /// Setup completion moved to the user's Run Setup tap; pairing delivery did not. The pairing
+    /// transition still bootstraps the record into the app container itself, bound to the installed
+    /// payload, and never asks the user to import a file.
+    func testPairingTransitionStillDeliversAutomaticallyAndAsksTheUserForNothing() async throws {
+        try await install(digestSeed: "a")
+        let store = InMemoryRemotePairingStore()
+        let native = ScriptedPairingNative()
+        let delivery = RecordingDelivery()
+        let domain = ProductionDeviceDomains.pairing(
+            store: store, native: native,
+            coordinator: RemotePairingCoordinator(store: store, native: native, delivery: delivery),
+            repository: repository, device: { self.device })
+        let journal = try await repository.load()
+        let payload = try XCTUnwrap(InstalledPayloadIdentity(journal: journal))
+        let digest = "sha256:" + String(repeating: "7", count: 64)
+
+        do {
+            _ = try await domain.execute(TransitionContext(
+                runID: RunID(), installationID: UUID(), scope: scope,
+                desired: try DesiredInstallationState(requirements: [.init(domain: .pairing)]),
+                planned: try PlannedTransition(domain: .pairing, kind: .createCandidate, permission: .safeRepair,
+                                               generation: Generation(rawValue: 1), target: nil,
+                                               desiredDigest: digest),
+                attempt: 1, candidate: nil, maximumPermission: .safeRepair))
+            XCTFail("the scripted phone never answers the bootstrap")
+        } catch {}
+
+        XCTAssertEqual(delivery.calls.first, "writeBootstrapRequest", "delivery is automatic, not a user import")
+        XCTAssertEqual(delivery.appBundleIdentifiers, [payload.mainBundleIdentifier],
+                       "delivered into the installed payload's own container")
+        XCTAssertFalse(delivery.calls.contains { $0.contains("runSetup") })
+    }
+
     func testVPNObservationIsReadOnlyAndAcceptsOnlyAFreshBoundReachableReceipt() async throws {
         try await install(digestSeed: "a")
         let journal = try await repository.load()
@@ -336,6 +369,44 @@ private final class ScriptedPairingNative: RemotePairingNativeOperations, @unche
         RemotePairingRecord(metadata: RemotePairingRecordMetadata(deviceUDID: udid, teamIdentifier: team, identifier: "pair",
                                                                   publicKeyFingerprint: String(repeating: "a", count: 64)),
                             pairingData: Data("synthetic".utf8))
+    }
+}
+
+/// Records what the pairing transition actually does to the phone, then stops the run at the
+/// first point the scripted phone would have to answer.
+private final class RecordingDelivery: RemotePairingContainerDelivery, @unchecked Sendable {
+    private(set) var calls: [String] = []
+    private(set) var appBundleIdentifiers: Set<String> = []
+    private func record(_ name: String, _ appBundleIdentifier: String) {
+        calls.append(name)
+        appBundleIdentifiers.insert(appBundleIdentifier)
+    }
+    func writeEnvelope(_ envelope: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        record("writeEnvelope", appBundleIdentifier)
+    }
+    func readReceipt(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
+        record("readReceipt", appBundleIdentifier)
+        throw RemotePairingFailure.receiptMissing
+    }
+    func writeBootstrapRequest(_ request: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        record("writeBootstrapRequest", appBundleIdentifier)
+    }
+    func readBootstrap(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
+        record("readBootstrap", appBundleIdentifier)
+        throw RemotePairingFailure.bootstrapInvalid
+    }
+    func activateApp(on device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        record("activateApp", appBundleIdentifier)
+    }
+    func writePossessionChallenge(_ challenge: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        record("writePossessionChallenge", appBundleIdentifier)
+    }
+    func readPossessionResponse(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
+        record("readPossessionResponse", appBundleIdentifier)
+        throw RemotePairingFailure.receiptMissing
+    }
+    func writePromotionRequest(_ request: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        record("writePromotionRequest", appBundleIdentifier)
     }
 }
 

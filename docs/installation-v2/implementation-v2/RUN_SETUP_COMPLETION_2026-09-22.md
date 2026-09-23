@@ -1,7 +1,7 @@
 # Setup completion by the user's Run Setup tap — 2026-09-22
 
 Development qualification only. M4 stays **DEFERRED**, distribution/notarization stays deferred.
-Software-only change; the physical run is pending (see "Physical test").
+Physically proven end to end on 2026-09-22 (see "Physical test").
 
 ## What changed
 
@@ -124,8 +124,15 @@ caused by this change — `build_self_contained_macos_products` builds host-arch
 `audit_app` expects the universal ones that only `release`/`release-local` produce. The iPhone
 payload passed every capability, bundle-identity and hygiene check in that same run.
 
-## Physical test
+## Physical test — PASSED
 
-Install → automatic pairing → Veya shows the action → the user taps Run Setup once → Veya reports
-ready without further automation. Launch instructions are in the session handoff; the physical run
-was not performed in this session.
+Performed 2026-09-22 22:17–22:20 on the physical iPhone. Install / Prepare → VPN prerequisite →
+install → automatic pairing → READY FOR SETUP → the user's own Run Setup tap → Continue / Verify
+Setup → READY, with no further automation and no manual pairing import.
+
+Two changes were needed first and are recorded in
+[`PHYSICAL_E2E_CHECKPOINT_2026-09-22.md`](PHYSICAL_E2E_CHECKPOINT_2026-09-22.md): the journal
+candidate deadlock that made the first attempt fail with `VEYA-SEC-003`, and the shift from the
+five-minute in-run wait to Prepare → tap → Continue (pending-request reuse, single-read verification,
+and a freshness guard that accepts a tap which legitimately precedes Continue). Follow-up 1 below is
+unchanged; follow-ups 3 and 4 still stand.

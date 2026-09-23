@@ -10,6 +10,10 @@ final class DevelopmentInstallationModel: ObservableObject {
     @Published var busy = false
     @Published var needsVerification = false
     @Published var result: QualificationResult?
+    /// Veya is holding a request the iPhone has not answered yet: the Mac's work is done
+    /// and the next step is the user's Run Setup tap, verified by Continue.
+    @Published var awaitingRunSetup = false
+    private var issuedRunSetupRequest = false
     private let session = DevelopmentInstallationSession()
     private let bridge = IOSSimDeviceBridge()
     private let transport = DynamicNativeDeviceTransport()
@@ -58,16 +62,20 @@ final class DevelopmentInstallationModel: ObservableObject {
         guard let device = devices.first(where: { $0.identity.udid == selected }) else { return }
         await perform {
             self.result = nil
+            self.issuedRunSetupRequest = false
             let target = EngineDeviceSelection(udid: device.identity.udid, name: device.name ?? "iPhone",
                                                transportIdentity: device.identity)
             let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/IOSSimProvisioner")
-            // Setup completion waits on the user's Run Setup tap, so the instruction
-            // has to appear while the run is still in flight.
+            // No run waits on the user: the request is placed and the run ends. The callback
+            // records which of the two setup states this run reached.
             let composition = self.session.composition(
                 helperURL: helper, device: target,
                 connectionGeneration: device.identity.connectionGeneration,
                 runSetupProgress: { [weak self] progress in
-                    Task { @MainActor in self?.message = Self.describe(progress) }
+                    Task { @MainActor in
+                        if progress == .readyForSetup { self?.issuedRunSetupRequest = true }
+                        self?.message = Self.describe(progress)
+                    }
                 })
             let request = EngineRequest(command: command,
                 capabilities: CapabilityManifest(allowedDomains: InstallationDomain.reconciliationOrder,
@@ -79,15 +87,26 @@ final class DevelopmentInstallationModel: ObservableObject {
                 ? await EngineHost.handle(EngineRequest(command: .inspect, connectionGeneration: device.identity.connectionGeneration,
                                                         device: target), composition: composition)
                 : response
-            self.message = response.userAction.map { "ACTION REQUIRED: \($0)" }
-                ?? response.firstFailure?.safeMessage ?? response.status
+            let waiting = response.firstFailure?.code == RuntimeReadinessDomain.runSetupRequired.code
+            if command != .inspect { self.awaitingRunSetup = waiting }
+            // Everything the Mac can do finished and the request is newly placed: that is the
+            // hand-off to the iPhone, not a complaint that the user has not acted yet.
+            self.message = waiting && self.issuedRunSetupRequest
+                ? Self.readyForSetup
+                : response.userAction.map { "ACTION REQUIRED: \($0)" }
+                    ?? response.firstFailure?.safeMessage ?? response.status
         }
     }
 
+    static let readyForSetup = "READY FOR SETUP\nOpen Veya on your iPhone and tap Run Setup, "
+        + "then press Continue / Verify Setup."
+
     static func describe(_ progress: RunSetupProgress) -> String {
         switch progress {
+        case .readyForSetup:
+            return readyForSetup
         case .waitingForRunSetupTap:
-            return "ACTION REQUIRED: Open Veya on your iPhone and tap Run Setup."
+            return "Reading the Run Setup result from your iPhone."
         case .failedOnPhone(let code, let message):
             return "Run Setup on the iPhone failed (\(code)): \(message) — fix it and tap Run Setup again."
         }
@@ -144,14 +163,18 @@ struct DevelopmentInstallationView: View {
             }
             HStack {
                 Button("Inspect") { Task { await model.run(.inspect) } }
-                Button("Install / Resume") { Task { await model.run(.reconcile) } }
+                // Both press the same engine command. Preparation stops at the iPhone hand-off;
+                // Continue verifies the tap and re-prepares only what is genuinely no longer current.
+                Button("Install / Prepare") { Task { await model.run(.reconcile) } }
+                Button("Continue / Verify Setup") { Task { await model.run(.reconcile) } }
+                    .disabled(!model.awaitingRunSetup)
                 if model.busy { ProgressView().controlSize(.small) }
             }.disabled(model.selected.isEmpty)
             // `.id`: a selectable Text can keep its old (blank) layout when the string changes (observed physically).
             Text(model.message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).id(model.message)
             if let result = model.result {
                 Text("Last observation (not continuous readiness). Development session: relaunching Veya discards the "
-                     + "Apple session and signing key (M4 deferred), so those show waitingForUser/invalid until the next Install / Resume.")
+                     + "Apple session and signing key (M4 deferred), so those show waitingForUser/invalid until the next Install / Prepare.")
                     .font(.caption).foregroundStyle(.secondary)
                 List(result.observations, id: \.domain) { observation in
                     VStack(alignment: .leading, spacing: 2) {
