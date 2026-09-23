@@ -72,8 +72,9 @@ diagnostic command, and manual pairing import.
 
 Request ID, device UDID hash, team, release identity, installed main bundle ID, and the pairing
 identifier + `SHA256(public_key)` of the record Veya delivered; `completedAt` must not precede the
-request. Every stage must be true: pairing, LocalDevVPN, endpoint, session, **location verified**,
-**location cleared**, and no error code.
+request. Every stage must be true: pairing, LocalDevVPN, endpoint, session, **session probed**, and
+no error code. (Receipt schema 2 — until then the last two stages were **location verified** and
+**location cleared**; see the follow-up pass in the physical checkpoint.)
 
 ## Tests
 
@@ -111,7 +112,7 @@ request. Every stage must be true: pairing, LocalDevVPN, endpoint, session, **lo
 
 - iPhone payload: `.build/iossim/self-contained/IOSSim.app/Contents/Resources/DeviceArtifacts`
   (`payloadSourceHead 272201bcfbe9`, `payloadSourceDirty false`; `payloadCapabilities.runSetupInbox = 1`;
-  main binary carries `RunSetupInbox`, `run-setup.request`, `run-setup.receipt`, `locationVerified`,
+  main binary carries `RunSetupInbox`, `run-setup.request`, `run-setup.receipt`, `sessionProbed`,
   and still `AutomaticPairingInboxController`). Components: `IOSSim DVT POC.app` (`dd8609d732f6`),
   `IOSSimLocationControlUITests-Runner.app` (`233341ded42b`).
 - Development Mac app: `.build/iossim/development-session/Veya Development.app`

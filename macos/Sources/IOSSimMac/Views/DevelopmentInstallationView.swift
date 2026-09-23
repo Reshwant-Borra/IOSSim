@@ -99,7 +99,7 @@ final class DevelopmentInstallationModel: ObservableObject {
     }
 
     static let readyForSetup = "READY FOR SETUP\nOpen Veya on your iPhone and tap Run Setup, "
-        + "then press Continue / Verify Setup."
+        + "then continue in Veya."
 
     static func describe(_ progress: RunSetupProgress) -> String {
         switch progress {
@@ -163,11 +163,13 @@ struct DevelopmentInstallationView: View {
             }
             HStack {
                 Button("Inspect") { Task { await model.run(.inspect) } }
-                // Both press the same engine command. Preparation stops at the iPhone hand-off;
-                // Continue verifies the tap and re-prepares only what is genuinely no longer current.
-                Button("Install / Prepare") { Task { await model.run(.reconcile) } }
-                Button("Continue / Verify Setup") { Task { await model.run(.reconcile) } }
-                    .disabled(!model.awaitingRunSetup)
+                // One primary action, named for the phase it is in. Every run re-observes and the
+                // planner stops at the first unsatisfied domain, so the same `.reconcile` both
+                // prepares and verifies; a second button would only be a second name for it, and a
+                // disabled one contradicts every "then continue in Veya" instruction.
+                Button(model.awaitingRunSetup ? "Continue / Verify Setup" : "Install / Prepare") {
+                    Task { await model.run(.reconcile) }
+                }
                 if model.busy { ProgressView().controlSize(.small) }
             }.disabled(model.selected.isEmpty)
             // `.id`: a selectable Text can keep its old (blank) layout when the string changes (observed physically).

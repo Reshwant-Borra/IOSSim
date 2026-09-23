@@ -233,6 +233,21 @@ public actor LocationCoordinator {
         try await stopSimulation(writerID: writerID, clearLocation: false)
     }
 
+    /// Setup qualification only. Proves the established session is genuinely alive with one
+    /// real dtservicehub round-trip. It claims no writer, changes no mode, and never sends a
+    /// coordinate, so the device's location is untouched. Not part of any product path.
+    public func probeSession() async throws {
+        try await tunnelClient.probeSession()
+        await recorder.record(
+            category: "DVT_SESSION_PROBE",
+            component: "LocationCoordinator",
+            previousState: connectionState.rawValue,
+            newState: "probed",
+            message: "setup session probe round-trip succeeded",
+            metadata: ["connection_generation": "\(connectionGeneration)"]
+        )
+    }
+
     public func setReconnectRestoreProvider(
         writerID: String,
         provider: (@Sendable () async -> SimulatedCoordinate?)?

@@ -145,6 +145,6 @@ final class DeviceDomainsTests: XCTestCase {
                                               identity: EngineIdentity(packaged: false, qualificationBuild: true))
         XCTAssertEqual(result.exitCode, .userAction)
         XCTAssertEqual(result.status, "userActionRequired")
-        XCTAssertEqual(result.userAction, "Install LocalDevVPN from the App Store on the iPhone.")
+        XCTAssertEqual(result.userAction, "Install LocalDevVPN from the App Store on the iPhone, then continue in Veya.")
     }
 }

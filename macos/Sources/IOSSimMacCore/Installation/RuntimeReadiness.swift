@@ -85,7 +85,7 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
         namespace: .runtime, number: 11, operation: "prove",
         safeMessage: "Run Setup has not been completed yet.",
         retryable: true,
-        userAction: "Tap Run Setup on your iPhone, then press Continue / Verify Setup.",
+        userAction: "Tap Run Setup on your iPhone, then continue in Veya.",
         underlyingSubsystem: "runtime")
 
     /// The phone ran setup and it failed: its own product error is reported, never a generic one.
@@ -98,7 +98,7 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
             namespace: .runtime, number: 12, operation: "prove",
             safeMessage: safeMessage,
             retryable: true,
-            userAction: "Fix what the iPhone reports, tap Run Setup again, then press Continue / Verify Setup.",
+            userAction: "Fix what the iPhone reports, tap Run Setup again, then continue in Veya.",
             underlyingSubsystem: "runtime")) ?? runSetupRequired
     }
 
@@ -107,7 +107,7 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
         safeMessage: "The iPhone runtime check did not complete.",
         retryable: true,
         userAction: "If the iPhone asked to allow automation or location access for Veya, allow it. Keep the iPhone "
-            + "unlocked with Veya open and LocalDevVPN connected, then press Continue / Verify Setup.",
+            + "unlocked with Veya open and LocalDevVPN connected, then continue in Veya.",
         underlyingSubsystem: "runtime")
 
     public func execute(_ context: TransitionContext) async throws -> TransitionReceipt {

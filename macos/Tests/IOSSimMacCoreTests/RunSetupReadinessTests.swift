@@ -226,11 +226,9 @@ final class RunSetupReadinessTests: XCTestCase {
         XCTAssertFalse(receipt(for: request).satisfies(
             request, appBundleIdentifier: appBundleIdentifier,
             pairingIdentifier: pairingIdentifier, pairingPublicKeyFingerprint: String(repeating: "d", count: 64)))
-        // Every stage of the real run is required, including the verified, cleared location.
-        XCTAssertFalse(receipt(for: request, locationVerified: false).satisfies(
-            request, appBundleIdentifier: appBundleIdentifier,
-            pairingIdentifier: pairingIdentifier, pairingPublicKeyFingerprint: fingerprint))
-        XCTAssertFalse(receipt(for: request, locationCleared: false).satisfies(
+        // Every stage of the real run is required, including the live read-only round-trip that
+        // stops a cached session from reading as a completed setup.
+        XCTAssertFalse(receipt(for: request, sessionProbed: false).satisfies(
             request, appBundleIdentifier: appBundleIdentifier,
             pairingIdentifier: pairingIdentifier, pairingPublicKeyFingerprint: fingerprint))
         XCTAssertFalse(receipt(for: request, localDevVPNReady: false).satisfies(
@@ -242,8 +240,7 @@ final class RunSetupReadinessTests: XCTestCase {
         for request: RunSetupRequest,
         deviceUDID: String? = nil,
         localDevVPNReady: Bool = true,
-        locationVerified: Bool = true,
-        locationCleared: Bool = true,
+        sessionProbed: Bool = true,
         completedAt: Date? = nil
     ) -> RunSetupReceipt {
         RunSetupReceipt(
@@ -258,8 +255,7 @@ final class RunSetupReadinessTests: XCTestCase {
             localDevVPNReady: localDevVPNReady,
             endpointReachable: true,
             sessionEstablished: true,
-            locationVerified: locationVerified,
-            locationCleared: locationCleared,
+            sessionProbed: sessionProbed,
             completedAt: completedAt ?? request.createdAt.addingTimeInterval(1)
         )
     }
@@ -346,7 +342,7 @@ private actor RunSetupApplicationService: NativeApplicationServicing {
                 pairingIdentifier: pairingIdentifier,
                 pairingPublicKeyFingerprint: fingerprint,
                 pairingReady: true, localDevVPNReady: true, endpointReachable: true,
-                sessionEstablished: true, locationVerified: true, locationCleared: true,
+                sessionEstablished: true, sessionProbed: true,
                 completedAt: Date()
             )
         case .failed(let code, let message, let appBundleIdentifier):
@@ -358,7 +354,7 @@ private actor RunSetupApplicationService: NativeApplicationServicing {
                 appBundleIdentifier: appBundleIdentifier,
                 pairingIdentifier: "", pairingPublicKeyFingerprint: "",
                 pairingReady: true, localDevVPNReady: false, endpointReachable: false,
-                sessionEstablished: false, locationVerified: false, locationCleared: false,
+                sessionEstablished: false, sessionProbed: false,
                 errorCode: code, errorMessage: message, completedAt: Date()
             )
         }

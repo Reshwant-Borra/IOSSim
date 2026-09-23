@@ -163,6 +163,52 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertFalse(delivery.calls.contains { $0.contains("runSetup") })
     }
 
+    /// Every AppService launch kills and restarts the app, which is visible to the user and
+    /// restarts the phone's 60 s inbox watcher. After the first activation that watcher picks up
+    /// each later write on its own, so activation is an escalation: the happy path activates once.
+    func testAutomaticPairingActivatesTheAppOnceWhenTheWatcherAnswers() async throws {
+        let delivery = ScriptedPairingDelivery(answerReceiptImmediately: true)
+        do {
+            _ = try await preparePairing(delivery: delivery)
+            XCTFail("the scripted receipt is not a real one")
+        } catch {
+            XCTAssertEqual(error as? RemotePairingFailure, .receiptInvalid,
+                           "the envelope poll returned on its first read")
+        }
+        XCTAssertEqual(delivery.activations, 1, "only the bootstrap activation starts the watcher")
+    }
+
+    /// The backstop is preserved: if the watcher is gone (backgrounded app, expired window) the
+    /// poll escalates to exactly one relaunch rather than hanging.
+    func testAutomaticPairingRelaunchesTheAppWhenTheWatcherDoesNotAnswer() async throws {
+        let delivery = ScriptedPairingDelivery(answerReceiptImmediately: false)
+        do {
+            _ = try await preparePairing(delivery: delivery)
+            XCTFail("a phone that never answers cannot pair")
+        } catch {
+            XCTAssertEqual(error as? RemotePairingFailure, .receiptMissing)
+        }
+        XCTAssertEqual(delivery.activations, 2, "bootstrap activation plus one escalation")
+    }
+
+    /// Reaches the envelope delivery with an existing record, so the pairing protocol and its
+    /// cryptography are exercised unchanged and only the activation policy is under test.
+    private func preparePairing(delivery: ScriptedPairingDelivery) async throws -> RemotePairingRecord {
+        let store = InMemoryRemotePairingStore()
+        let native = ScriptedPairingNative()
+        try store.save(RemotePairingRecord(
+            metadata: RemotePairingRecordMetadata(
+                schemaVersion: 2, deviceUDID: device.udid, teamIdentifier: "T8SL4SG87F",
+                identifier: "pair", publicKeyFingerprint: String(repeating: "a", count: 64),
+                pairingGeneration: 1, releaseIdentity: "veya-v2:abc"),
+            pairingData: Data("synthetic".utf8)))
+        return try await RemotePairingCoordinator(store: store, native: native, delivery: delivery)
+            .reconcileAutomatically(
+                device: device, teamIdentifier: "T8SL4SG87F",
+                appBundleIdentifier: "com.personalteam.iossim.main", hostname: "IOSSim-Mac",
+                releaseIdentity: "veya-v2:abc")
+    }
+
     func testVPNObservationIsReadOnlyAndAcceptsOnlyAFreshBoundReachableReceipt() async throws {
         try await install(digestSeed: "a")
         let journal = try await repository.load()
@@ -186,7 +232,7 @@ final class ProductionWiringTests: XCTestCase {
         try receipt(state: .vpnPermissionRequired, reachable: false)
         observation = try await domain.observe(scope: scope, journal: journal)
         XCTAssertEqual(observation.state, .invalid, "a reported action is re-probed, never waited on")
-        XCTAssertEqual(observation.userAction, "Open LocalDevVPN on the iPhone and allow the VPN configuration.")
+        XCTAssertEqual(observation.userAction, "Open LocalDevVPN on the iPhone and allow the VPN configuration, then continue in Veya.")
         try receipt(state: .running, reachable: false)
         observation = try await domain.observe(scope: scope, journal: journal)
         XCTAssertEqual(observation.state, .invalid, "running is never ready")
@@ -370,6 +416,50 @@ private final class ScriptedPairingNative: RemotePairingNativeOperations, @unche
                                                                   publicKeyFingerprint: String(repeating: "a", count: 64)),
                             pairingData: Data("synthetic".utf8))
     }
+}
+
+/// Answers the bootstrap exactly as the phone's inbox controller does, then either answers the
+/// envelope read straight away (watcher alive) or never (watcher gone), counting activations.
+private final class ScriptedPairingDelivery: RemotePairingContainerDelivery, @unchecked Sendable {
+    private let answerReceiptImmediately: Bool
+    private var bootstrap: RemotePairingBootstrapSession?
+    private(set) var activations = 0
+
+    init(answerReceiptImmediately: Bool) { self.answerReceiptImmediately = answerReceiptImmediately }
+
+    func writeBootstrapRequest(_ request: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        let decoded = try JSONDecoder().decode(RemotePairingBootstrapRequest.self, from: request)
+        bootstrap = RemotePairingBootstrapSession(
+            importKey: Data(repeating: 7, count: 32), requestID: decoded.requestID,
+            pairingGeneration: decoded.pairingGeneration, releaseIdentity: decoded.releaseIdentity)
+    }
+
+    func readBootstrap(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
+        guard let bootstrap else { throw RemotePairingFailure.bootstrapMissing }
+        return try JSONEncoder().encode(bootstrap)
+    }
+
+    func activateApp(on device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
+        activations += 1
+    }
+
+    func writeEnvelope(_ envelope: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {}
+
+    func readReceipt(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
+        guard answerReceiptImmediately else { throw RemotePairingFailure.receiptMissing }
+        // Shaped like the phone's receipt but deliberately not bound, so the run stops here and
+        // the pairing protocol's own validation is left exactly as it is.
+        return try JSONEncoder().encode(RemotePairingReceipt(
+            deviceUDID: "OTHER-DEVICE", teamIdentifier: "T8SL4SG87F",
+            nonce: bootstrap?.nonce ?? "", status: "candidate-stored", identifier: "pair",
+            publicKeyFingerprint: String(repeating: "a", count: 64), timestamp: Date()))
+    }
+
+    func writePossessionChallenge(_ challenge: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {}
+    func readPossessionResponse(from device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws -> Data {
+        throw RemotePairingFailure.receiptMissing
+    }
+    func writePromotionRequest(_ request: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {}
 }
 
 /// Records what the pairing transition actually does to the phone, then stops the run at the

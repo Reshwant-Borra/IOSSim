@@ -151,14 +151,15 @@ final class ConnectionStatusModel: ObservableObject {
         await completeSetupForVeya(request: request, outcome: outcome)
     }
 
-    /// The established session delivers one coordinate, Core Location here confirms
-    /// it, and the simulation is cleared again. Without this, a reported success
-    /// would only mean the channel opened.
+    /// `connect()` can return from a cached session without touching the device, so a
+    /// reported success would otherwise only mean the channel was once open. One real,
+    /// read-only dtservicehub round-trip proves the session is alive now. It sends no
+    /// coordinate and clears nothing: setup never moves the iPhone's location.
     private func completeSetupForVeya(request: RunSetupRequest, outcome baseline: RunSetupOutcome) async {
         var outcome = baseline
         do {
-            _ = try await runner.setTestLocationAndVerify()
-            outcome.locationVerified = true
+            try await runner.probeSession()
+            outcome.sessionProbed = true
         } catch let error as POCError {
             outcome.fail(code: error.code.rawValue, message: error.message)
             sessionStep = .fail(code: error.code.rawValue, detail: error.message)
@@ -169,33 +170,10 @@ final class ConnectionStatusModel: ObservableObject {
             isReady = false
         }
 
-        // The proof coordinate must never outlive the run, including after a failure.
-        do {
-            try await runner.clear()
-            outcome.locationCleared = true
-        } catch let error as POCError {
-            if outcome.errorCode == nil {
-                outcome.fail(code: error.code.rawValue, message: error.message)
-                sessionStep = .fail(code: error.code.rawValue, detail: error.message)
-                isReady = false
-            }
-        } catch {
-            if outcome.errorCode == nil {
-                outcome.fail(code: "UNKNOWN", message: String(describing: error))
-                isReady = false
-            }
-        }
-
         record(outcome, for: request)
-        guard outcome.locationVerified, outcome.locationCleared else { return }
-        // Clearing ends the DVT session; restore the connected state a normal
-        // Run Setup leaves behind so the app stays usable right after setup.
-        do {
-            try await runner.connect()
-            isReady = true
-        } catch {
-            isReady = false
-        }
+        // The probe leaves the session exactly as it found it, so there is nothing to
+        // restore: the app stays usable right after setup.
+        isReady = outcome.sessionProbed && outcome.errorCode == nil
     }
 
     private func record(_ outcome: RunSetupOutcome, for request: RunSetupRequest) {

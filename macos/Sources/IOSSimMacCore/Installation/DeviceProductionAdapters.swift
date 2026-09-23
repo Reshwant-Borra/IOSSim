@@ -45,11 +45,11 @@ extension DynamicNativeDeviceTransport: DeveloperServicesProbing {
 }
 
 public enum DeviceFailureMapping {
-    static let unlock = "Unlock your iPhone and keep it unlocked, then continue."
-    static let trust = "Tap Trust on your iPhone and enter its passcode, then continue."
+    static let unlock = "Unlock your iPhone and keep it unlocked, then continue in Veya."
+    static let trust = "Tap Trust on your iPhone and enter its passcode, then continue in Veya."
     static let developerMode = "Turn on Developer Mode on the iPhone, restart it, then retry."
     public static let developerTrust = "On the iPhone open Settings > General > VPN & Device Management, select the "
-        + "Apple Development entry for your Apple Account, tap Trust, then return to Veya and press Install / Prepare."
+        + "Apple Development entry for your Apple Account, tap Trust, then continue in Veya."
     public static let secureStorageUnavailable = DeviceDomainFailure.make(
         .pairing, 31, "store", "Veya's secure storage is unavailable, so the device pairing cannot be kept.")
 
@@ -84,7 +84,7 @@ public enum DeviceFailureMapping {
             case .appMissing: return DeviceDomainMapping.localDevVPN(.missing)
             case .unsupportedVersion: return DeviceDomainMapping.localDevVPN(.installedUnsupported)
             case .vpnPermissionRequired, .userActionRequired: return DeviceDomainMapping.localDevVPN(.vpnPermissionRequired)
-            case .vpnNotRunning: return .user("Open LocalDevVPN on the iPhone and tap Connect, then continue.")
+            case .vpnNotRunning: return .user("Open LocalDevVPN on the iPhone and tap Connect, then continue in Veya.")
             case .endpointUnavailable, .receiptMissing, .receiptInvalid: return DeviceDomainMapping.localDevVPN(.running)
             case .developerTrustRequired: return .user(developerTrust)
             case .transportUnavailable: return .failed(DeviceDomainFailure.observationFailed)

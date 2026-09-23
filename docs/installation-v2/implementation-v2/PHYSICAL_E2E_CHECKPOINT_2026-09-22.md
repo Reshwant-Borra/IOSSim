@@ -126,3 +126,102 @@ Recorded here so the next pass has the physical context; investigated separately
    the run. The Run Setup receipt requires `locationVerified` + `locationCleared`, so the coordinate is
    delivered and then cleared by the phone's own run. Whether any location mutation is still required
    now that the user's real Run Setup is the proof is the subject of the next pass.
+
+---
+
+# Follow-up pass — UX and zero-location setup (2026-09-22, after the passing run)
+
+The chain above stays exactly as proven. Three targeted changes address what the physical run
+exposed; nothing in the installation flow, the Run Setup architecture or the pairing protocol moved.
+
+## 1. One phase-aware primary action (P0)
+
+**Was:** with the VPN off the run ended as `userActionRequired` carrying `VEYA-DEVICE-031` and the
+text "…then continue." `DevelopmentInstallationModel.awaitingRunSetup` is gated on
+`RuntimeReadinessDomain.runSetupRequired.code`, so **Continue / Verify Setup was disabled** and only
+Install / Prepare could act — while the instruction said "continue". Both buttons invoked the same
+`.reconcile`, so this was wording plus enablement, never state routing.
+
+**Now:** a single primary button, `Install / Prepare` until a Run Setup request is outstanding and
+`Continue / Verify Setup` after. Every device user action reads "…then continue in Veya."
+(`DeviceFailureMapping.unlock/.trust/.developerTrust`, the LocalDevVPN mappings,
+`runSetupRequired`, `runSetupFailed`, `runtimeActionRequired`). No second continuation mechanism, no
+polling: the engine re-observes on every run and the planner still stops at the first unsatisfied
+domain, which is why the same command both prepares and verifies.
+
+## 2. Pairing activation is an escalation, not a step (P1)
+
+Every Veya-side launch goes through `iossim_bridge_launch_app` →
+`AppServiceClient::launch_application(bundle, &[], kill_existing: true, …)`
+(`native/iossim-device-bridge/src/lib.rs:1608`), so **each launch kills and restarts the app** — the
+open/close cycles the user saw. `AutomaticPairingInboxController` already polls the container for
+60 s at 4 Hz on `scenePhase == .active` (`IOSSimOnDeviceDVTPOCApp.swift:10-29`), so after the first
+activation it picks up each later write itself; relaunching also restarts that watcher from zero.
+
+`RemotePairingCoordinator.poll` gained an `escalate` closure that fires once, after
+`activationEscalationAttempt` (8 attempts ≈ 2 s), and the three `activateApp` calls that followed the
+envelope, the possession challenge and the promotion request moved into it. The bootstrap activation
+that starts the watcher is unchanged, as is every byte of the pairing protocol and its cryptography.
+
+## 3. Setup qualification no longer touches location (P1)
+
+**Was:** `ConnectionStatusModel.completeSetupForVeya` called `setTestLocationAndVerify()`
+(Times Square `40.7580,-73.9855`), waited for Core Location, then `clear()`. It existed for a real
+reason: `connect()` → `startSimulation(.staticLocation(nil))` → `ensureConnected` returns early on an
+established session (`LocationCoordinator.swift:525-530`), so `sessionEstablished` alone can be
+satisfied from cache.
+
+**Now:** `IdeviceOnDeviceTunnelClient.probeSession()` opens a fresh RSD remote server over the
+retained tunnel (the same `adapter`/`handshake` reuse the Gate-3 XCTest path already relies on) and
+performs a DeviceInfo root-directory listing — one real request to dtservicehub and one real answer,
+read-only. `warmDeviceInfo()` and the probe now share `deviceInfoRoundTrip(on:)` so they cannot
+drift. It is exposed as `LocationCoordinator.probeSession()` → `ExperimentRunner.probeSession()` and
+runs only in the `answeringVeyaRequest` branch.
+
+Receipt schema **1 → 2**: `locationVerified` + `locationCleared` → `sessionProbed`, on both sides
+(`RunSetupInbox.swift`, `RunSetupReadiness.swift`), in `succeeded`, in `RunSetupOutcome`, and in the
+packaging guards. Newly packaged payloads declare `payloadCapabilities.runSetupInbox = 2`, and the
+guard now asserts the payload source carries `sessionProbed` and carries **neither**
+`locationVerified` nor `locationCleared`, with `setTestLocationAndVerify` absent from the Run Setup
+path. Fail-closed is preserved: `sessionProbed` is set only after the round-trip returns, the probe
+throws when no session is established, and the rest of the binding is untouched.
+
+Untouched product location functionality: `POCViewModel.setTestLocation`, `ExperimentRunner.setAndVerify`,
+`LocationViewModel`/`ensureReady`, `DvtLocationClient.set`/`clear`, Drive mode,
+`XCTestRichDriveLocationTransport`, and the legacy `RichRuntimeProofInbox` (still inert, still
+location-based, still reachable only from the provisioner's diagnostic command).
+
+## Tests
+
+- `swift test`: 523 executed, 18 skipped, 4 failures — the same four M4 `SigningKeyStoreTests` cases
+  that fail on a clean tree.
+- `./iossim installation-baseline --defer-m4` → **Overall: PASS**.
+- New: `ProductionWiringTests.testAutomaticPairingActivatesTheAppOnceWhenTheWatcherAnswers` (happy
+  path activates once) and `…RelaunchesTheAppWhenTheWatcherDoesNotAnswer` (the backstop still fires,
+  exactly once). `POCUnitChecks.setupSessionProbeTouchesTheDeviceAndNeverTheLocation` (the probe
+  fails closed without a session, makes one round-trip, sends zero coordinates and zero clears, and
+  user-requested spoofing still works). `RunSetupReadinessTests` binding case now covers
+  `sessionProbed: false`.
+
+## Expected visible iPhone launches
+
+| Phase | Before | After |
+|---|---|---|
+| Install / Prepare — VPN watcher | 1 Veya + 1 LocalDevVPN | unchanged |
+| Install / Prepare — automatic pairing | 4 Veya (bootstrap, envelope, challenge, promotion) | **1 Veya** (bootstrap; the other three only if the watcher stops answering) |
+| Install / Prepare — pairing developer-services proof | 1 Veya | unchanged |
+| Install / Prepare — runtime developer-services proof | 1 Veya | unchanged |
+| **Install / Prepare total** | **≈7 Veya** | **≈4 Veya** |
+| Continue / Verify Setup | 2 Veya | unchanged |
+
+## Artifacts
+
+- iPhone payload: `.build/iossim/self-contained/IOSSim.app/Contents/Resources/DeviceArtifacts`
+  (`runSetupInbox: 2`; main binary `a249ca5b02ab` carries `sessionProbed` and carries neither
+  `locationVerified` nor `setTestLocationAndVerify`).
+- Development Mac app: `.build/iossim/development-session/Veya Development.app`
+  (carries `Install / Prepare`, `Continue / Verify Setup`, `then continue in Veya`, `sessionProbed`).
+- Both are rebuilt from this commit with a clean tree (`payloadSourceDirty: false`).
+- `./iossim package-app` reports the same unrelated `ARTIFACT_IDENTITY_MISMATCH` (host-arch Mac
+  products vs the universal ones only release builds produce). The iPhone payload passed every
+  capability, bundle-identity and hygiene check in that run.

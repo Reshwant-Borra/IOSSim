@@ -41,7 +41,9 @@ public struct RunSetupRequest: Codable, Equatable, Sendable {
 }
 
 public struct RunSetupReceipt: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    /// 2: the session proof is a read-only dtservicehub round-trip. Version 1 proved it by
+    /// simulating a coordinate and clearing it, which moved the user's location during setup.
+    public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
     public let requestID: String
@@ -55,8 +57,9 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
     public let localDevVPNReady: Bool
     public let endpointReachable: Bool
     public let sessionEstablished: Bool
-    public let locationVerified: Bool
-    public let locationCleared: Bool
+    /// A real request reached dtservicehub on this session and the answer came back. Read-only:
+    /// setup never changes the device's location.
+    public let sessionProbed: Bool
     public let errorCode: String?
     public let errorMessage: String?
     public let completedAt: Date
@@ -74,8 +77,7 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
         localDevVPNReady: Bool,
         endpointReachable: Bool,
         sessionEstablished: Bool,
-        locationVerified: Bool,
-        locationCleared: Bool,
+        sessionProbed: Bool,
         errorCode: String? = nil,
         errorMessage: String? = nil,
         completedAt: Date = Date()
@@ -92,8 +94,7 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
         self.localDevVPNReady = localDevVPNReady
         self.endpointReachable = endpointReachable
         self.sessionEstablished = sessionEstablished
-        self.locationVerified = locationVerified
-        self.locationCleared = locationCleared
+        self.sessionProbed = sessionProbed
         self.errorCode = errorCode
         self.errorMessage = errorMessage
         self.completedAt = completedAt
@@ -106,7 +107,7 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
             && !pairingIdentifier.isEmpty
             && pairingPublicKeyFingerprint.count == 64
             && pairingReady && localDevVPNReady && endpointReachable
-            && sessionEstablished && locationVerified && locationCleared
+            && sessionEstablished && sessionProbed
             && errorCode == nil
     }
 

@@ -113,7 +113,7 @@ final class RuntimeReadinessTests: XCTestCase {
             XCTAssertEqual(failure, RuntimeReadinessDomain.runSetupRequired)
             XCTAssertTrue(failure.retryable)
             XCTAssertEqual(failure.userAction,
-                           "Tap Run Setup on your iPhone, then press Continue / Verify Setup.")
+                           "Tap Run Setup on your iPhone, then continue in Veya.")
         }
         // A failed run keeps the phone's own error instead of claiming success.
         prover.failure = RunSetupFailure.reportedOnPhone(code: "ENDPOINT_UNREACHABLE", message: "LocalDevVPN is not connected.")

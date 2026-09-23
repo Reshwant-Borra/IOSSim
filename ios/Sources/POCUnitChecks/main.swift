@@ -25,6 +25,7 @@ struct POCUnitChecks {
     try runSetupInboxSuccessReceiptRecordsEveryStageAndRetiresTheRequest()
     try runSetupInboxFailureKeepsTheRequestAndPreservesTheRealError()
     try richRuntimeProofReceiptSchemaBindsCleanupAndContext()
+    try await setupSessionProbeTouchesTheDeviceAndNeverTheLocation()
     try await diagnosticSetupPrerequisitesRequirePairingAndFunctionalRoute()
     try await runDiagnosticsKeepsInterfaceVisibilityDiagnosticOnly()
     try await diagnosticStateRecordsStatusAndTiming()
@@ -560,8 +561,7 @@ struct POCUnitChecks {
     outcome.localDevVPNReady = true
     outcome.endpointReachable = true
     outcome.sessionEstablished = true
-    outcome.locationVerified = true
-    outcome.locationCleared = true
+    outcome.sessionProbed = true
 
     let receipt = try RunSetupInbox(applicationSupportDirectory: support, store: store)
       .record(outcome, for: request, appBundleIdentifier: appID)
@@ -620,16 +620,19 @@ struct POCUnitChecks {
       stillPending != nil,
       "a failure keeps the request so the user can fix it and tap again")
 
-    // A session that came up but delivered no verified location is still not setup.
-    var unverified = RunSetupOutcome()
-    unverified.pairingReady = true
-    unverified.localDevVPNReady = true
-    unverified.endpointReachable = true
-    unverified.sessionEstablished = true
-    unverified.locationCleared = true
-    let unverifiedReceipt = try inboxReader.record(
-      unverified, for: request, appBundleIdentifier: appID)
-    try require(!unverifiedReceipt.succeeded, "an unverified location is never success")
+    // A session that came up from cached state but answered no live round-trip is not setup,
+    // and the proof never touches location.
+    var unprobed = RunSetupOutcome()
+    unprobed.pairingReady = true
+    unprobed.localDevVPNReady = true
+    unprobed.endpointReachable = true
+    unprobed.sessionEstablished = true
+    let unprobedReceipt = try inboxReader.record(
+      unprobed, for: request, appBundleIdentifier: appID)
+    try require(!unprobedReceipt.succeeded, "an unprobed session is never success")
+    try require(
+      RunSetupReceipt.currentSchemaVersion == 2,
+      "the receipt schema moved off the location proof")
   }
 
   static func makeRunSetupInboxDirectory() throws -> (support: URL, inbox: URL) {
@@ -722,6 +725,47 @@ struct POCUnitChecks {
     let endpointDownSnapshot = await endpointDown.snapshot()
     try require(
       !endpointDownSnapshot.setupPrerequisitesReady, "unreachable endpoint blocks connect")
+  }
+
+  /// Setup qualification proves the session with a read-only round-trip. It must reach the
+  /// device (a cached connection alone can never satisfy it) and it must never send or clear a
+  /// coordinate, so Install / Prepare and Run Setup leave the iPhone's location alone.
+  static func setupSessionProbeTouchesTheDeviceAndNeverTheLocation() async throws {
+    let endpoint = DeveloperEndpoint()
+    let tunnel = MockTunnelClient()
+    let runner = OnDeviceDVTExperimentRunner(
+      pairingStore: InMemoryRPPairingStore(data: try makePairingPlist()),
+      routeProbe: DeveloperRouteProbe(
+        interfaceProvider: FakeInterfaces(values: []),
+        tcpProber: FakeTCPProber(
+          result: TCPProbeResult(endpoint: endpoint, connected: true, latencyMs: 12.5, error: nil))
+      ),
+      tunnelClient: tunnel,
+      diagnostics: DiagnosticState(),
+      recorder: testRecorder(),
+      endpoint: endpoint
+    )
+
+    // Without a session the probe fails closed rather than reporting a cached success.
+    var refused = false
+    do { try await runner.probeSession() } catch { refused = true }
+    try require(refused, "the probe fails closed when the session is not established")
+    var probes = await tunnel.probeCount
+    try require(probes == 0, "nothing reached the device")
+
+    try await runner.connect()
+    try await runner.probeSession()
+    probes = await tunnel.probeCount
+    var sets = await tunnel.setCount()
+    var clears = await tunnel.clearCount
+    try require(probes == 1, "the probe makes a real device round-trip")
+    try require(sets == 0, "setup never sends a coordinate")
+    try require(clears == 0, "setup never clears a simulation")
+
+    // The product path is untouched: an explicit coordinate still simulates.
+    try await tunnel.set(latitude: 51.5, longitude: -0.12)
+    sets = await tunnel.setCount()
+    try require(sets == 1, "user-requested spoofing still works")
   }
 
   static func runDiagnosticsKeepsInterfaceVisibilityDiagnosticOnly() async throws {
@@ -3132,6 +3176,7 @@ private actor MockTunnelClient: OnDeviceTunnelClient {
   private var state: TunnelState = .disconnected
   private(set) var sets: [(latitude: Double, longitude: Double)] = []
   private(set) var clearCount = 0
+  private(set) var probeCount = 0
   private var connectCount = 0
   private var disconnectCount = 0
 
@@ -3151,6 +3196,13 @@ private actor MockTunnelClient: OnDeviceTunnelClient {
   func clear() async throws {
     clearCount += 1
     state = .disconnected
+  }
+
+  func probeSession() async throws {
+    guard state == .locationSimulationConnected || state == .simulating else {
+      throw POCError(.disconnected, "mock disconnected")
+    }
+    probeCount += 1
   }
 
   func disconnect() async {

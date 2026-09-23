@@ -44,7 +44,9 @@ public struct RunSetupRequest: Codable, Equatable, Sendable {
 /// stage plus the pairing identity it delivered; `errorCode` keeps the phone's
 /// own POCError so the Mac shows the real failure instead of a generic one.
 public struct RunSetupReceipt: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    /// 2: the session proof is a read-only dtservicehub round-trip. Version 1 proved it by
+    /// simulating a coordinate and clearing it, which moved the user's location during setup.
+    public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
     public let requestID: String
@@ -60,9 +62,9 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
     public let endpointReachable: Bool
     /// The tunnel, RSD, dtservicehub and LocationSimulation channel all came up.
     public let sessionEstablished: Bool
-    /// Core Location in this app observed the simulated coordinate the session delivered.
-    public let locationVerified: Bool
-    public let locationCleared: Bool
+    /// A real request reached dtservicehub on this session and the answer came back. Read-only:
+    /// setup never changes the device's location.
+    public let sessionProbed: Bool
     public let errorCode: String?
     public let errorMessage: String?
     public let completedAt: Date
@@ -80,8 +82,7 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
         localDevVPNReady: Bool,
         endpointReachable: Bool,
         sessionEstablished: Bool,
-        locationVerified: Bool,
-        locationCleared: Bool,
+        sessionProbed: Bool,
         errorCode: String? = nil,
         errorMessage: String? = nil,
         completedAt: Date = Date()
@@ -98,8 +99,7 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
         self.localDevVPNReady = localDevVPNReady
         self.endpointReachable = endpointReachable
         self.sessionEstablished = sessionEstablished
-        self.locationVerified = locationVerified
-        self.locationCleared = locationCleared
+        self.sessionProbed = sessionProbed
         self.errorCode = errorCode
         self.errorMessage = errorMessage
         self.completedAt = completedAt
@@ -113,7 +113,7 @@ public struct RunSetupReceipt: Codable, Equatable, Sendable {
             && !pairingIdentifier.isEmpty
             && pairingPublicKeyFingerprint.count == 64
             && pairingReady && localDevVPNReady && endpointReachable
-            && sessionEstablished && locationVerified && locationCleared
+            && sessionEstablished && sessionProbed
             && errorCode == nil
     }
 
@@ -201,8 +201,7 @@ public struct RunSetupInbox: @unchecked Sendable {
             localDevVPNReady: outcome.localDevVPNReady,
             endpointReachable: outcome.endpointReachable,
             sessionEstablished: outcome.sessionEstablished,
-            locationVerified: outcome.locationVerified,
-            locationCleared: outcome.locationCleared,
+            sessionProbed: outcome.sessionProbed,
             errorCode: outcome.errorCode,
             errorMessage: outcome.errorMessage.map(Self.sanitize),
             completedAt: now()
@@ -266,8 +265,7 @@ public struct RunSetupOutcome: Equatable, Sendable {
     public var localDevVPNReady = false
     public var endpointReachable = false
     public var sessionEstablished = false
-    public var locationVerified = false
-    public var locationCleared = false
+    public var sessionProbed = false
     public var errorCode: String?
     public var errorMessage: String?
 

@@ -266,6 +266,21 @@ public final class OnDeviceDVTExperimentRunner: @unchecked Sendable {
         }
     }
 
+    /// Setup qualification only. One real, read-only dtservicehub round-trip on the established
+    /// session. It proves a command reached the device and the answer came back, without sending
+    /// a coordinate, so Run Setup never moves the iPhone's location.
+    public func probeSession() async throws {
+        await diagnostics.start(.deviceInfoWarmup)
+        do {
+            try await locationCoordinator.probeSession()
+            await diagnostics.succeed(.deviceInfoWarmup)
+        } catch let error as POCError {
+            await diagnostics.fail(.deviceInfoWarmup, error: error)
+            await record(error: error, component: "DeviceInfo", newState: "failed")
+            throw error
+        }
+    }
+
     public func setTestLocationAndVerify(timeout: TimeInterval = 8) async throws -> LocationObservation {
         try await setAndVerify(
             latitude: Self.testCoordinate.latitude,

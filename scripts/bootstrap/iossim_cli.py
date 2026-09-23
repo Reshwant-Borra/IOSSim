@@ -75,7 +75,7 @@ PAYLOAD_CAPABILITIES = {
     "localDevVPNSetupGate": 2,
     "pairingReceiptSchema": 2,
     "richRuntimeProofInbox": 1,
-    "runSetupInbox": 1,
+    "runSetupInbox": 2,
     "runtimeMappingSchema": 1,
 }
 
@@ -1316,15 +1316,18 @@ def assert_iphone_payload_capability_sources() -> None:
             and "run-setup.request" in run_setup_source
             and "run-setup.receipt" in run_setup_source
         ),
-        # Setup completion is the user's own tap, and it reports a real delivered location.
-        "Run Setup receipt requires a verified, cleared location": (
-            "locationVerified" in run_setup_source
-            and "locationCleared" in run_setup_source
-            and "locationVerified && locationCleared" in run_setup_source
+        # Setup completion is the user's own tap, proved by a read-only device round-trip:
+        # neither Install / Prepare nor Run Setup may change the iPhone's location.
+        "Run Setup receipt requires a live, read-only session probe": (
+            "sessionProbed" in run_setup_source
+            and "sessionEstablished && sessionProbed" in run_setup_source
+            and "locationVerified" not in run_setup_source
+            and "locationCleared" not in run_setup_source
         ),
         "Run Setup button answers Veya's request": (
             "answeringVeyaRequest: true" in setup_view_source
-            and "setTestLocationAndVerify" in connection_source
+            and "probeSession" in connection_source
+            and "setTestLocationAndVerify" not in connection_source
             and "answeringVeyaRequest" in connection_source
         ),
         "automatic pairing receipt": "AutomaticPairingReceipt" in inbox_source and "remote-pairing.receipt" in inbox_source,
@@ -1369,7 +1372,7 @@ def assert_iphone_main_binary_capabilities(app: Path) -> None:
         b"RunSetupInbox",
         b"run-setup.request",
         b"run-setup.receipt",
-        b"locationVerified",
+        b"sessionProbed",
     ]
     missing = [marker.decode("utf-8") for marker in markers if marker not in binary]
     if missing:

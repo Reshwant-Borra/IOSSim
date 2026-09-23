@@ -56,9 +56,9 @@ public enum DeviceDomainMapping {
     public static func localDevVPN(_ state: LocalDevVPNLifecycleState) -> NativeDomainMapping {
         switch state {
         case .runtimeEndpointReachable: return .satisfied()
-        case .missing: return .user("Install LocalDevVPN from the App Store on the iPhone.")
+        case .missing: return .user("Install LocalDevVPN from the App Store on the iPhone, then continue in Veya.")
         case .installedUnsupported: return .failed(DeviceDomainFailure.vpnUnsupportedVersion)
-        case .vpnPermissionRequired: return .user("Open LocalDevVPN on the iPhone and allow the VPN configuration.")
+        case .vpnPermissionRequired: return .user("Open LocalDevVPN on the iPhone and allow the VPN configuration, then continue in Veya.")
         case .installed, .configured, .running: return .incomplete()
         }
     }

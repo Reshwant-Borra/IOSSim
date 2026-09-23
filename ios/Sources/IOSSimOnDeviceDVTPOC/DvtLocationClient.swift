@@ -235,6 +235,9 @@ public protocol OnDeviceTunnelClient: Sendable {
   func connect(pairingData: Data, endpoint: DeveloperEndpoint) async throws
   func set(latitude: Double, longitude: Double) async throws
   func clear() async throws
+  /// Non-mutating liveness round-trip on the established session. Changes nothing on the
+  /// device, and in particular never touches location.
+  func probeSession() async throws
   func disconnect() async
   func status() async -> DvtBridgeStatus
 }
@@ -384,6 +387,71 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
       let error = POCError(
         .ideviceBridgeUnavailable, "Set requires a build linked with idevice FFI.",
         stage: .setCommandSent)
+      recordError(error)
+      throw error
+    #endif
+  }
+
+  /// Proves the DDI-backed session is genuinely alive by making a real request of
+  /// dtservicehub and reading the answer: a fresh RSD remote server over the retained
+  /// tunnel, then a DeviceInfo root directory listing. It opens no location channel,
+  /// sends no coordinate and clears nothing, so setup can prove the session without
+  /// ever changing where the iPhone thinks it is. A cached connection state alone can
+  /// never satisfy it: the round-trip runs every time, and any failure throws.
+  public func probeSession() async throws {
+    #if IOS_SIM_IDEVICE_FFI || canImport(idevice)
+      lock.lock()
+      let currentState = state
+      let adapterHandle = adapter
+      let handshakeHandle = handshake
+      lock.unlock()
+      guard currentState == .locationSimulationConnected || currentState == .simulating,
+        let adapterHandle, let handshakeHandle
+      else {
+        let error = POCError(
+          .disconnected, "The developer session is not established.", stage: .deviceInfoWarmup)
+        recordError(error)
+        throw error
+      }
+
+      do {
+        var probeServer: OpaquePointer?
+        try measure("remote_server_connect_rsd_probe") {
+          if let err = remote_server_connect_rsd(adapterHandle, handshakeHandle, &probeServer) {
+            defer { idevice_error_free(err) }
+            throw POCError(
+              .rsdFailed, ffiMessage(err) ?? "remote_server_connect_rsd failed.",
+              stage: .deviceInfoWarmup)
+          }
+        }
+        guard let probeServer else {
+          throw POCError(
+            .rsdFailed, "remote_server_connect_rsd returned no handle.", stage: .deviceInfoWarmup)
+        }
+        defer { remote_server_free(probeServer) }
+        try deviceInfoRoundTrip(on: probeServer)
+        await recorder?.record(
+          category: "DVT",
+          component: "DeviceInfo",
+          previousState: currentState.rawValue,
+          newState: "probed",
+          message: "setup session probe: DeviceInfo root directory listing succeeded"
+        )
+      } catch let error as POCError {
+        recordError(error)
+        await record(error: error, component: "DeviceInfo", newState: "failed")
+        throw error
+      } catch {
+        let pocError = POCError(
+          .deviceInfoWarmupFailed, String(describing: error), stage: .deviceInfoWarmup)
+        recordError(pocError)
+        await record(error: pocError, component: "DeviceInfo", newState: "failed")
+        throw pocError
+      }
+    #else
+      let error = POCError(
+        .ideviceBridgeUnavailable, "Session probe requires a build linked with idevice FFI.",
+        stage: .deviceInfoWarmup)
       recordError(error)
       throw error
     #endif
@@ -850,7 +918,11 @@ public final class IdeviceOnDeviceTunnelClient: OnDeviceTunnelClient, @unchecked
           .rsdFailed, "Remote server is missing before DeviceInfo warmup.", stage: .deviceInfoWarmup
         )
       }
+      try deviceInfoRoundTrip(on: remoteServer)
+    }
 
+    /// One real request/response with dtservicehub. Read-only on the device.
+    private func deviceInfoRoundTrip(on remoteServer: OpaquePointer) throws {
       var deviceInfo: OpaquePointer?
       try measure("device_info_new") {
         if let err = device_info_new(remoteServer, &deviceInfo) {

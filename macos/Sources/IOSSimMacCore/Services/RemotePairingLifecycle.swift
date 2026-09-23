@@ -659,9 +659,11 @@ public actor RemotePairingCoordinator {
         let encoded = try JSONEncoder().encode(envelope)
         state = .delivering
         try await delivery.writeEnvelope(encoded, to: device, appBundleIdentifier: appBundleIdentifier)
-        try await delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier)
         state = .awaitingReceipt
-        let receiptData = try await poll(maxAttempts: 20, delayNanoseconds: 250_000_000) {
+        let receiptData = try await poll(
+            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
+        ) {
             try await self.delivery.readReceipt(from: device, appBundleIdentifier: appBundleIdentifier)
         }
         let receipt = try JSONDecoder().decode(RemotePairingReceipt.self, from: receiptData)
@@ -686,8 +688,10 @@ public actor RemotePairingCoordinator {
             try JSONEncoder().encode(challenge), to: device,
             appBundleIdentifier: appBundleIdentifier
         )
-        try await delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier)
-        let responseData = try await poll(maxAttempts: 20, delayNanoseconds: 250_000_000) {
+        let responseData = try await poll(
+            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
+        ) {
             try await self.delivery.readPossessionResponse(from: device, appBundleIdentifier: appBundleIdentifier)
         }
         let response = try JSONDecoder().decode(RemotePairingPossessionResponse.self, from: responseData)
@@ -716,8 +720,10 @@ public actor RemotePairingCoordinator {
             try JSONEncoder().encode(promotion), to: device,
             appBundleIdentifier: appBundleIdentifier
         )
-        try await delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier)
-        let promotionReceiptData = try await poll(maxAttempts: 20, delayNanoseconds: 250_000_000) {
+        let promotionReceiptData = try await poll(
+            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
+        ) {
             try await self.delivery.readReceipt(from: device, appBundleIdentifier: appBundleIdentifier)
         }
         let promotionReceipt = try JSONDecoder().decode(RemotePairingReceipt.self, from: promotionReceiptData)
@@ -803,15 +809,27 @@ public actor RemotePairingCoordinator {
         )
     }
 
+    /// After the first activation the phone's inbox watcher polls the container for 60 s, so it picks
+    /// up each later write on its own. An AppService launch kills and restarts the app (`kill_existing`),
+    /// which restarts that watcher from zero and is visible to the user, so activation is an escalation
+    /// rather than a step: it runs only once the watcher has demonstrably not answered.
+    static let activationEscalationAttempt = 8
+
     private func poll(
         maxAttempts: Int,
         delayNanoseconds: UInt64,
+        escalate: (() async throws -> Void)? = nil,
         operation: () async throws -> Data
     ) async throws -> Data {
         var lastError: Error = RemotePairingFailure.receiptMissing
+        var escalated = false
         for attempt in 0..<maxAttempts {
             do { return try await operation() }
             catch { lastError = error }
+            if let escalate, !escalated, attempt >= Self.activationEscalationAttempt {
+                escalated = true
+                try await escalate()
+            }
             if attempt + 1 < maxAttempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
         }
         throw lastError
