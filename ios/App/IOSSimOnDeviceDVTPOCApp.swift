@@ -39,6 +39,15 @@ struct IOSSimOnDeviceDVTPOCApp: App {
                 }
                 .task(id: scenePhase) {
                     guard scenePhase == .active else { return }
+                    // Watches only for Veya's setup request so the Run Setup prompt
+                    // can be shown. It never starts a setup run: the user's tap does.
+                    await POCAppDependencies.connectionStatus.watchForVeyaSetupRequest()
+                }
+                .task(id: scenePhase) {
+                    guard scenePhase == .active else { return }
+                    // Legacy Mac-driven proof, retained for the provisioner's
+                    // diagnostic command. The setup flow no longer requests it, so
+                    // this stays inert unless a rich-runtime-proof request exists.
                     // Final setup proof only: one DVT and one Rich Drive coordinate,
                     // each confirmed by Core Location here, then cleared. The
                     // verifier is created on the main thread for its callbacks.

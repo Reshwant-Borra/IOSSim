@@ -35,6 +35,7 @@
 		D20000000000000000000101 /* AutomaticPairingInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000201 /* AutomaticPairingInbox.swift */; };
 		D30000000000000000000101 /* LocalDevVPNSetupInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000201 /* LocalDevVPNSetupInbox.swift */; };
 		D40000000000000000000101 /* RichRuntimeProofInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000201 /* RichRuntimeProofInbox.swift */; };
+		D50000000000000000000101 /* RunSetupInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = D50000000000000000000201 /* RunSetupInbox.swift */; };
 		B10000000000000000000101 /* AppleLocationControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000201 /* AppleLocationControlsView.swift */; };
 		B10000000000000000000102 /* AppleLocationControlModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* AppleLocationControlModels.swift */; };
 		B10000000000000000000103 /* AppleXCUILocationControlUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000202 /* AppleXCUILocationControlUITests.swift */; };
@@ -122,6 +123,7 @@
 		D20000000000000000000201 /* AutomaticPairingInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticPairingInbox.swift; sourceTree = "<group>"; };
 		D30000000000000000000201 /* LocalDevVPNSetupInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDevVPNSetupInbox.swift; sourceTree = "<group>"; };
 		D40000000000000000000201 /* RichRuntimeProofInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichRuntimeProofInbox.swift; sourceTree = "<group>"; };
+		D50000000000000000000201 /* RunSetupInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunSetupInbox.swift; sourceTree = "<group>"; };
 		000000000000000000000226 /* DriveScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveScheduler.swift; sourceTree = "<group>"; };
 		000000000000000000000227 /* MapKitRouteProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapKitRouteProvider.swift; sourceTree = "<group>"; };
 		000000000000000000000228 /* BackgroundManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundManager.swift; sourceTree = "<group>"; };
@@ -279,6 +281,7 @@
 				D20000000000000000000201 /* AutomaticPairingInbox.swift */,
 				D30000000000000000000201 /* LocalDevVPNSetupInbox.swift */,
 				D40000000000000000000201 /* RichRuntimeProofInbox.swift */,
+				D50000000000000000000201 /* RunSetupInbox.swift */,
 				365421394EB69E9120D4FE53 /* SavedPlace.swift */,
 				A00000000000000000000202 /* AppleLocationControlModels.swift */,
 				000000000000000000000204 /* CoreLocationVerifier.swift */,
@@ -550,6 +553,7 @@
 				D20000000000000000000101 /* AutomaticPairingInbox.swift in Sources */,
 				D30000000000000000000101 /* LocalDevVPNSetupInbox.swift in Sources */,
 				D40000000000000000000101 /* RichRuntimeProofInbox.swift in Sources */,
+				D50000000000000000000101 /* RunSetupInbox.swift in Sources */,
 				7DEAFEF5B08C5CB699343E19 /* SavedPlacesSheet.swift in Sources */,
 				FE1E484C8CAE3A63496825B2 /* LocationSelectionSheet.swift in Sources */,
 				26F81AE7250CAE7FE047317A /* LocationMapView.swift in Sources */,

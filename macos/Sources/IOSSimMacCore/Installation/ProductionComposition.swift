@@ -16,11 +16,12 @@ public enum ProductionComposition {
         device: EngineDeviceSelection? = nil,
         connectionGeneration: UInt64? = nil,
         resourcesURL: URL? = nil,
-        appleServices: (any AppleDeveloperServices)? = nil
+        appleServices: (any AppleDeveloperServices)? = nil,
+        runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil
     ) -> EngineComposition {
         compose(helperURL: helperURL, stateRoot: stateRoot, device: device,
                 connectionGeneration: connectionGeneration, resourcesURL: resourcesURL,
-                appleServices: appleServices)
+                appleServices: appleServices, runSetupProgress: runSetupProgress)
     }
 
     static func compose(
@@ -29,7 +30,8 @@ public enum ProductionComposition {
         appleServices: (any AppleDeveloperServices)? = nil,
         wrapping: any WrappingSecretStore = KeychainWrappingSecretStore(),
         pairingOverride: (any RemotePairingStore)? = nil,
-        developerServicesOverride: (any DeveloperServicesPreparing)? = nil
+        developerServicesOverride: (any DeveloperServicesPreparing)? = nil,
+        runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil
     ) -> EngineComposition {
         let root = stateRoot ?? InstallationJournalRepository.defaultRootURL().deletingLastPathComponent()
         let repository = InstallationJournalRepository(rootURL: root.appendingPathComponent("installation", isDirectory: true))
@@ -104,7 +106,8 @@ public enum ProductionComposition {
                                             repository: repository, device: selected),
             RuntimeReadinessDomain(repository: repository, prover: JournalRuntimeProver(
                 repository: repository, developerServices: developerServices, pairingStore: pairingStore,
-                coordinator: RichRuntimeReadinessCoordinator(service: applications), device: selected)),
+                coordinator: RunSetupReadinessCoordinator(service: applications, progress: runSetupProgress),
+                device: selected)),
         ]
         return EngineComposition(
             repository: repository,

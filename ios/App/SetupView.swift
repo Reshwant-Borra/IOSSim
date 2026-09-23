@@ -13,6 +13,14 @@ struct SetupView: View {
 
     var body: some View {
         List {
+            if connectionStatus.veyaSetupRequestPending {
+                Section {
+                    Label("Veya is waiting on your Mac. Tap Run Setup below to finish setup.",
+                          systemImage: "desktopcomputer.and.arrow.down")
+                        .font(.footnote)
+                }
+            }
+
             Section {
                 Text("IOSSim needs a one-time pairing, an active LocalDevVPN connection, and a developer session before it can simulate a location.")
                     .font(.footnote)
@@ -22,7 +30,7 @@ struct SetupView: View {
             step(
                 title: "Pairing",
                 state: connectionStatus.pairingStep,
-                detail: "Import the RPPairing file you generated on your Mac.",
+                detail: "Veya delivers this automatically from your Mac. Import a file only if Veya asks you to.",
                 actionLabel: "Import RPPairing File",
                 action: { showingImporter = true }
             )
@@ -53,7 +61,8 @@ struct SetupView: View {
 
             Section {
                 Button {
-                    Task { await connectionStatus.runSetup() }
+                    // The user's own tap is the setup-completion signal Veya waits for.
+                    Task { await connectionStatus.runSetup(answeringVeyaRequest: true) }
                 } label: {
                     HStack {
                         if connectionStatus.isWorking {

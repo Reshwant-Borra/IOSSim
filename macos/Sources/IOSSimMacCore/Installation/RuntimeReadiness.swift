@@ -80,6 +80,28 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
 
     static let evidenceKind = "runtimeFullChainProof"
 
+    /// The user has not tapped Run Setup yet. Veya waits for that tap and never runs setup itself.
+    public static let runSetupRequired = try! VeyaFailure(
+        namespace: .runtime, number: 11, operation: "prove",
+        safeMessage: "The iPhone has not completed Run Setup yet.",
+        retryable: true,
+        userAction: "Open Veya on your iPhone, tap Run Setup, then choose Install / Resume.",
+        underlyingSubsystem: "runtime")
+
+    /// The phone ran setup and it failed: its own product error is reported, never a generic one.
+    static func runSetupFailed(code: String, message: String) -> VeyaFailure {
+        let detail = String(message.prefix(320)).filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+        let safeMessage = detail.isEmpty
+            ? "Run Setup on the iPhone failed (\(code))."
+            : "Run Setup on the iPhone failed (\(code)): \(detail)"
+        return (try? VeyaFailure(
+            namespace: .runtime, number: 12, operation: "prove",
+            safeMessage: safeMessage,
+            retryable: true,
+            userAction: "Fix what the iPhone reports, tap Run Setup again, then choose Install / Resume.",
+            underlyingSubsystem: "runtime")) ?? runSetupRequired
+    }
+
     public static let runtimeActionRequired = try! VeyaFailure(
         namespace: .runtime, number: 10, operation: "prove",
         safeMessage: "The iPhone runtime check did not complete.",
@@ -120,6 +142,11 @@ public struct RuntimeReadinessDomain: InstallationObserver, InstallationTransiti
         let result: RuntimeProofResult
         do {
             result = try await prover.proveRuntime(binding: binding, scope: context.scope)
+        } catch RunSetupFailure.notTapped {
+            // Waiting on the user is not a product failure: the next run re-reads the receipt.
+            throw Self.runSetupRequired
+        } catch RunSetupFailure.reportedOnPhone(let code, let message) {
+            throw Self.runSetupFailed(code: code, message: message)
         } catch RichRuntimeProofFailure.proofFailed, RichRuntimeProofFailure.receiptUnavailable {
             // Physically observed: the first on-device XCTest run fails while iOS waits for the user to allow
             // automation, and the phone reports that failure before the approval. A retry after approval passes.

@@ -1288,6 +1288,9 @@ def assert_iphone_payload_capability_sources() -> None:
     pairing_store_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "PairingStore.swift").read_text(encoding="utf-8")
     vpn_setup_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "LocalDevVPNSetupInbox.swift").read_text(encoding="utf-8")
     rich_runtime_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "RichRuntimeProofInbox.swift").read_text(encoding="utf-8")
+    run_setup_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "RunSetupInbox.swift").read_text(encoding="utf-8")
+    setup_view_source = (IOS_DIR / "App" / "SetupView.swift").read_text(encoding="utf-8")
+    connection_source = (IOS_DIR / "App" / "Shared" / "ConnectionStatusModel.swift").read_text(encoding="utf-8")
     mapping_source = (IOS_DIR / "Sources" / "IOSSimOnDeviceDVTPOC" / "DvtLocationClient.swift").read_text(encoding="utf-8")
     required = {
         "AutomaticPairingInbox target membership": project.count("AutomaticPairingInbox.swift in Sources") >= 2,
@@ -1305,6 +1308,23 @@ def assert_iphone_payload_capability_sources() -> None:
             "dvtLocationVerified" in rich_runtime_source
             and "richLocationVerified" in rich_runtime_source
             and "waitForCoordinate" in rich_runtime_source
+        ),
+        "Run Setup inbox target membership": project.count("RunSetupInbox.swift in Sources") >= 2,
+        "Run Setup setup-completion receipt": (
+            "RunSetupInbox" in run_setup_source
+            and "run-setup.request" in run_setup_source
+            and "run-setup.receipt" in run_setup_source
+        ),
+        # Setup completion is the user's own tap, and it reports a real delivered location.
+        "Run Setup receipt requires a verified, cleared location": (
+            "locationVerified" in run_setup_source
+            and "locationCleared" in run_setup_source
+            and "locationVerified && locationCleared" in run_setup_source
+        ),
+        "Run Setup button answers Veya's request": (
+            "answeringVeyaRequest: true" in setup_view_source
+            and "setTestLocationAndVerify" in connection_source
+            and "answeringVeyaRequest" in connection_source
         ),
         "automatic pairing receipt": "AutomaticPairingReceipt" in inbox_source and "remote-pairing.receipt" in inbox_source,
         "pairing Keychain candidate import": (
@@ -1345,6 +1365,10 @@ def assert_iphone_main_binary_capabilities(app: Path) -> None:
         b"rich-runtime-proof.receipt",
         b"dvtLocationVerified",
         b"richLocationVerified",
+        b"RunSetupInbox",
+        b"run-setup.request",
+        b"run-setup.receipt",
+        b"locationVerified",
     ]
     missing = [marker.decode("utf-8") for marker in markers if marker not in binary]
     if missing:

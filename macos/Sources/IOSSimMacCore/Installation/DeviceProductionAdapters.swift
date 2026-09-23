@@ -281,17 +281,18 @@ public enum ProductionDeviceDomains {
     }
 }
 
-/// Production M10 prover: a fresh developer-services session plus the phone's full-chain Rich runtime
-/// receipt, bound to the journal's installed payload and the device's current pairing generation.
+/// Production M10 prover: a fresh developer-services session (the DDI-backed services the real Run Setup
+/// needs) plus the receipt the user's own Run Setup tap leaves in the app container, bound to the
+/// journal's installed payload and to the pairing record Veya delivered. Veya never starts the run.
 public struct JournalRuntimeProver: RuntimeProving {
     private let repository: InstallationJournalRepository
     private let developerServices: any DeveloperServicesPreparing
     private let pairingStore: any RemotePairingStore
-    private let coordinator: RichRuntimeReadinessCoordinator
+    private let coordinator: RunSetupReadinessCoordinator
     private let device: ProductionDeviceDomains.DeviceProvider
 
     public init(repository: InstallationJournalRepository, developerServices: any DeveloperServicesPreparing,
-                pairingStore: any RemotePairingStore, coordinator: RichRuntimeReadinessCoordinator,
+                pairingStore: any RemotePairingStore, coordinator: RunSetupReadinessCoordinator,
                 device: @escaping ProductionDeviceDomains.DeviceProvider) {
         self.repository = repository
         self.developerServices = developerServices
@@ -302,46 +303,48 @@ public struct JournalRuntimeProver: RuntimeProving {
 
     public func proveRuntime(binding: String, scope: InstallationScope) async throws -> RuntimeProofResult {
         let journal = try await repository.load()
-        guard let payload = InstalledPayloadIdentity(journal: journal),
-              let profiles = journal.activeResource(for: .profile)?.identity.digest else {
-            throw RichRuntimeProofFailure.invalidRequest
+        guard let payload = InstalledPayloadIdentity(journal: journal) else {
+            throw RunSetupFailure.requestInvalid
         }
         let target = try device()
-        guard let pairingGeneration = try pairingStore.load(deviceUDID: target.udid, teamIdentifier: payload.teamIdentifier)?
-            .metadata.pairingGeneration, pairingGeneration > 0 else {
-            throw RichRuntimeProofFailure.invalidRequest
+        guard let pairing = try pairingStore.load(deviceUDID: target.udid, teamIdentifier: payload.teamIdentifier),
+              let pairingGeneration = pairing.metadata.pairingGeneration, pairingGeneration > 0 else {
+            throw RunSetupFailure.requestInvalid
         }
+        // Place the request before the app is next opened, so the prompt is already
+        // waiting when the user gets there.
+        let request = try await coordinator.requestSetup(
+            device: target,
+            appBundleIdentifier: payload.mainBundleIdentifier,
+            teamIdentifier: payload.teamIdentifier,
+            releaseIdentity: payload.releaseIdentity
+        )
+        // Run Setup itself needs the DDI-backed developer services (dtservicehub over
+        // RSD), so they are proven fresh here before the user is asked to tap.
         let session = try await developerServices.prepare(
             device: target,
-            context: DeveloperServicesProofContext(releaseIdentity: payload.releaseIdentity, pairingGeneration: pairingGeneration,
+            context: DeveloperServicesProofContext(releaseIdentity: payload.releaseIdentity,
+                                                   pairingGeneration: pairingGeneration,
                                                    targetBundleIdentifier: payload.mainBundleIdentifier),
             progress: { _ in }
         )
-        guard session.isCurrent(for: target, releaseIdentity: payload.releaseIdentity, pairingGeneration: pairingGeneration,
-                                targetBundleIdentifier: payload.mainBundleIdentifier),
-              let sessionID = session.sessionIdentifier, let supportIdentity = session.developerSupportIdentity else {
-            throw RichRuntimeProofFailure.invalidRequest
+        guard session.isCurrent(for: target, releaseIdentity: payload.releaseIdentity,
+                                pairingGeneration: pairingGeneration,
+                                targetBundleIdentifier: payload.mainBundleIdentifier) else {
+            throw RunSetupFailure.requestInvalid
         }
-        let receipt = try await coordinator.prove(
-            request: RichRuntimeProofRequest(
-                deviceUDID: target.udid,
-                teamIdentifier: payload.teamIdentifier,
-                releaseIdentity: payload.releaseIdentity,
-                // The engine binding covers application/DDI/pairing/VPN records, device and connection.
-                artifactSetIdentity: String(binding.dropFirst(7)),
-                profileSetIdentity: String(profiles.dropFirst(7)),
-                pairingGeneration: pairingGeneration,
-                developerServicesSession: sessionID,
-                developerSupportIdentity: supportIdentity,
-                runnerBundleIdentifier: payload.runnerBundleIdentifier
-            ),
+        let receipt = try await coordinator.awaitRunSetup(
+            request: request,
             device: target,
-            appBundleIdentifier: payload.mainBundleIdentifier
+            appBundleIdentifier: payload.mainBundleIdentifier,
+            pairingIdentifier: pairing.metadata.identifier,
+            pairingPublicKeyFingerprint: pairing.metadata.publicKeyFingerprint
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        return RuntimeProofResult(receiptDigest: VeyaSigningKeyStore.sha256(try encoder.encode(receipt)),
-                                  completedAt: receipt.completedAt)
+        // The engine binding covers application/DDI/pairing/VPN records, device and connection.
+        let digest = VeyaSigningKeyStore.sha256(try encoder.encode(receipt) + Data(binding.utf8))
+        return RuntimeProofResult(receiptDigest: digest, completedAt: receipt.completedAt)
     }
 }

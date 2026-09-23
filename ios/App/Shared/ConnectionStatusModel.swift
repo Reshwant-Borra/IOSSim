@@ -27,14 +27,37 @@ final class ConnectionStatusModel: ObservableObject {
     @Published private(set) var sessionStep: SetupStepState = .pending
     @Published private(set) var isReady = false
     @Published private(set) var isWorking = false
+    /// Veya on the Mac has delivered a setup request and is waiting for the user
+    /// to tap Run Setup here. Nothing starts the run except that tap.
+    @Published private(set) var veyaSetupRequestPending = false
 
     private let runner: OnDeviceDVTExperimentRunner
     private let coordinator: LocationCoordinator
+    private let setupInbox: RunSetupInbox
     private var pollTask: Task<Void, Never>?
 
-    init(runner: OnDeviceDVTExperimentRunner, coordinator: LocationCoordinator) {
+    init(
+        runner: OnDeviceDVTExperimentRunner,
+        coordinator: LocationCoordinator,
+        setupInbox: RunSetupInbox = RunSetupInbox()
+    ) {
         self.runner = runner
         self.coordinator = coordinator
+        self.setupInbox = setupInbox
+    }
+
+    /// Polls the container inbox while the app is active. House Arrest may place
+    /// the request after this app was already launched, so a single check on
+    /// appear would miss it.
+    func watchForVeyaSetupRequest(pollNanoseconds: UInt64 = 1_000_000_000) async {
+        while !Task.isCancelled {
+            veyaSetupRequestPending = pendingVeyaRequest() != nil
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+        }
+    }
+
+    private func pendingVeyaRequest() -> RunSetupRequest? {
+        (try? setupInbox.pendingRequest()) ?? nil
     }
 
     var allStepsPass: Bool {
@@ -58,10 +81,19 @@ final class ConnectionStatusModel: ObservableObject {
     /// original developer console used) and republishes the results as
     /// human-readable step state. Safe to call repeatedly; a second call
     /// while one is in flight is a no-op.
-    func runSetup() async {
+    ///
+    /// `answeringVeyaRequest` is set only by the Run Setup button. It records the
+    /// result of this same real run for Veya, and adds the one check the run
+    /// otherwise lacks: a delivered coordinate that Core Location confirms, then
+    /// cleared. Product paths (`ensureReady`) never pass it, so ordinary use is
+    /// unchanged.
+    func runSetup(answeringVeyaRequest: Bool = false) async {
         guard !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
+
+        let request = answeringVeyaRequest ? pendingVeyaRequest() : nil
+        var outcome = RunSetupOutcome()
 
         pairingStep = .checking
         localDevVPNStep = .checking
@@ -73,25 +105,109 @@ final class ConnectionStatusModel: ObservableObject {
         pairingStep = stepState(for: [.pairingImported, .pairingValidated], in: byStage)
         localDevVPNStep = stepState(for: [.localDevVPNRouteVisible], in: byStage)
         endpointStep = stepState(for: [.endpointReachable], in: byStage)
+        outcome.pairingReady = pairingStep.isPass
+        outcome.localDevVPNReady = localDevVPNStep.isPass
+        outcome.endpointReachable = endpointStep.isPass
 
         guard snapshot.setupPrerequisitesReady else {
             sessionStep = .pending
             isReady = false
+            if let request {
+                let failure = firstFailure(in: [pairingStep, localDevVPNStep, endpointStep])
+                outcome.fail(
+                    code: failure?.code ?? "SETUP_PREREQUISITES_INCOMPLETE",
+                    message: failure?.detail ?? "Pairing, LocalDevVPN and the developer endpoint are not all ready."
+                )
+                record(outcome, for: request)
+            }
             return
         }
 
         sessionStep = .checking
         do {
             try await runner.connect()
+            outcome.sessionEstablished = true
             sessionStep = .pass
             isReady = true
         } catch let error as POCError {
             sessionStep = .fail(code: error.code.rawValue, detail: error.message)
             isReady = false
+            if let request {
+                outcome.fail(code: error.code.rawValue, message: error.message)
+                record(outcome, for: request)
+            }
+            return
         } catch {
             sessionStep = .fail(code: "UNKNOWN", detail: String(describing: error))
             isReady = false
+            if let request {
+                outcome.fail(code: "UNKNOWN", message: String(describing: error))
+                record(outcome, for: request)
+            }
+            return
         }
+
+        guard let request else { return }
+        await completeSetupForVeya(request: request, outcome: outcome)
+    }
+
+    /// The established session delivers one coordinate, Core Location here confirms
+    /// it, and the simulation is cleared again. Without this, a reported success
+    /// would only mean the channel opened.
+    private func completeSetupForVeya(request: RunSetupRequest, outcome baseline: RunSetupOutcome) async {
+        var outcome = baseline
+        do {
+            _ = try await runner.setTestLocationAndVerify()
+            outcome.locationVerified = true
+        } catch let error as POCError {
+            outcome.fail(code: error.code.rawValue, message: error.message)
+            sessionStep = .fail(code: error.code.rawValue, detail: error.message)
+            isReady = false
+        } catch {
+            outcome.fail(code: "UNKNOWN", message: String(describing: error))
+            sessionStep = .fail(code: "UNKNOWN", detail: String(describing: error))
+            isReady = false
+        }
+
+        // The proof coordinate must never outlive the run, including after a failure.
+        do {
+            try await runner.clear()
+            outcome.locationCleared = true
+        } catch let error as POCError {
+            if outcome.errorCode == nil {
+                outcome.fail(code: error.code.rawValue, message: error.message)
+                sessionStep = .fail(code: error.code.rawValue, detail: error.message)
+                isReady = false
+            }
+        } catch {
+            if outcome.errorCode == nil {
+                outcome.fail(code: "UNKNOWN", message: String(describing: error))
+                isReady = false
+            }
+        }
+
+        record(outcome, for: request)
+        guard outcome.locationVerified, outcome.locationCleared else { return }
+        // Clearing ends the DVT session; restore the connected state a normal
+        // Run Setup leaves behind so the app stays usable right after setup.
+        do {
+            try await runner.connect()
+            isReady = true
+        } catch {
+            isReady = false
+        }
+    }
+
+    private func record(_ outcome: RunSetupOutcome, for request: RunSetupRequest) {
+        let receipt = try? setupInbox.record(outcome, for: request)
+        veyaSetupRequestPending = !(receipt?.succeeded ?? false)
+    }
+
+    private func firstFailure(in steps: [SetupStepState]) -> (code: String, detail: String)? {
+        for step in steps {
+            if case .fail(let code, let detail) = step { return (code, detail) }
+        }
+        return nil
     }
 
     /// Ensures the app is connected, running setup first if needed. Used by

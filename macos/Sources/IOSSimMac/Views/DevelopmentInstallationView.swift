@@ -61,8 +61,14 @@ final class DevelopmentInstallationModel: ObservableObject {
             let target = EngineDeviceSelection(udid: device.identity.udid, name: device.name ?? "iPhone",
                                                transportIdentity: device.identity)
             let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/IOSSimProvisioner")
-            let composition = self.session.composition(helperURL: helper, device: target,
-                                                       connectionGeneration: device.identity.connectionGeneration)
+            // Setup completion waits on the user's Run Setup tap, so the instruction
+            // has to appear while the run is still in flight.
+            let composition = self.session.composition(
+                helperURL: helper, device: target,
+                connectionGeneration: device.identity.connectionGeneration,
+                runSetupProgress: { [weak self] progress in
+                    Task { @MainActor in self?.message = Self.describe(progress) }
+                })
             let request = EngineRequest(command: command,
                 capabilities: CapabilityManifest(allowedDomains: InstallationDomain.reconciliationOrder,
                                                  maximumPermission: .destructiveOwned, maximumTransitions: 64),
@@ -75,6 +81,15 @@ final class DevelopmentInstallationModel: ObservableObject {
                 : response
             self.message = response.userAction.map { "ACTION REQUIRED: \($0)" }
                 ?? response.firstFailure?.safeMessage ?? response.status
+        }
+    }
+
+    static func describe(_ progress: RunSetupProgress) -> String {
+        switch progress {
+        case .waitingForRunSetupTap:
+            return "ACTION REQUIRED: Open Veya on your iPhone and tap Run Setup."
+        case .failedOnPhone(let code, let message):
+            return "Run Setup on the iPhone failed (\(code)): \(message) — fix it and tap Run Setup again."
         }
     }
 

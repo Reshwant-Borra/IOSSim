@@ -89,6 +89,33 @@ final class RuntimeReadinessTests: XCTestCase {
         XCTAssertEqual(retried.status, .ready)
     }
 
+    /// Setup completion waits on the user's own Run Setup tap: until it lands the run
+    /// reports a user action, never success, and the tap alone turns it into READY.
+    func testUntappedRunSetupIsAUserActionAndTheTapReachesReady() async throws {
+        prover.failure = RunSetupFailure.notTapped
+        do {
+            _ = try await reconcile()
+            XCTFail("waiting on the user is never READY")
+        } catch let failure as VeyaFailure {
+            XCTAssertEqual(failure, RuntimeReadinessDomain.runSetupRequired)
+            XCTAssertTrue(failure.retryable)
+            XCTAssertEqual(failure.userAction,
+                           "Open Veya on your iPhone, tap Run Setup, then choose Install / Resume.")
+        }
+        // A failed run keeps the phone's own error instead of claiming success.
+        prover.failure = RunSetupFailure.reportedOnPhone(code: "ENDPOINT_UNREACHABLE", message: "LocalDevVPN is not connected.")
+        do {
+            _ = try await reconcile()
+            XCTFail("a failed Run Setup is never READY")
+        } catch let failure as VeyaFailure {
+            XCTAssertTrue(failure.safeMessage.contains("ENDPOINT_UNREACHABLE"))
+            XCTAssertTrue(failure.safeMessage.contains("LocalDevVPN is not connected."))
+        }
+        prover.failure = nil
+        let tapped = try await reconcile()
+        XCTAssertEqual(tapped.status, .ready)
+    }
+
     func testReconnectInvalidatesReadiness() async throws {
         _ = try await reconcile(connection: 1)
         let outcome = try await reconcile(connection: 2)

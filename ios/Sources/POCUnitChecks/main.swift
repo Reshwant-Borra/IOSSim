@@ -21,6 +21,9 @@ struct POCUnitChecks {
     await localDevVPNReadinessUsesDeveloperEndpointReachability()
     try await localDevVPNSetupInboxWritesFunctionalReadyReceipt()
     try await localDevVPNSetupInboxReturnsExplicitUserAction()
+    try runSetupInboxOnlyAcceptsAFreshRequestForThisApp()
+    try runSetupInboxSuccessReceiptRecordsEveryStageAndRetiresTheRequest()
+    try runSetupInboxFailureKeepsTheRequestAndPreservesTheRealError()
     try richRuntimeProofReceiptSchemaBindsCleanupAndContext()
     try await diagnosticSetupPrerequisitesRequirePairingAndFunctionalRoute()
     try await runDiagnosticsKeepsInterfaceVisibilityDiagnosticOnly()
@@ -516,6 +519,139 @@ struct POCUnitChecks {
       !FileManager.default.fileExists(
         atPath: inbox.appendingPathComponent(LocalDevVPNSetupInboxController.requestFile).path),
       "successful LocalDevVPN request is consumed")
+  }
+
+  /// Veya's setup request is answered only by this app, and only while it is current.
+  static func runSetupInboxOnlyAcceptsAFreshRequestForThisApp() throws {
+    let (support, inbox) = try makeRunSetupInboxDirectory()
+    defer { try? FileManager.default.removeItem(at: support) }
+    let appID = "com.example.iossim"
+    try writeRunSetupRequest(makeRunSetupRequest(appBundleIdentifier: appID), to: inbox)
+
+    let reader = RunSetupInbox(applicationSupportDirectory: support, store: InMemoryRPPairingStore())
+    let pending = try requireValue(
+      reader.pendingRequest(appBundleIdentifier: appID), "pending run setup request")
+    try require(pending.appBundleIdentifier == appID, "request must carry the bound app identifier")
+    try expectThrows { _ = try reader.pendingRequest(appBundleIdentifier: "com.example.other") }
+
+    let expired = RunSetupInbox(
+      applicationSupportDirectory: support, store: InMemoryRPPairingStore(),
+      now: { Date().addingTimeInterval(RunSetupRequest.lifetime + 60) })
+    try expectThrows { _ = try expired.pendingRequest(appBundleIdentifier: appID) }
+
+    try FileManager.default.removeItem(at: inbox.appendingPathComponent(RunSetupInbox.requestFile))
+    let cleared = try reader.pendingRequest(appBundleIdentifier: appID)
+    try require(cleared == nil, "no request means nothing is waiting on the user")
+  }
+
+  /// A completed real run: every stage true, bound to the stored pairing, and the
+  /// request retired so ordinary later taps do not repeat the proof.
+  static func runSetupInboxSuccessReceiptRecordsEveryStageAndRetiresTheRequest() throws {
+    let (support, inbox) = try makeRunSetupInboxDirectory()
+    defer { try? FileManager.default.removeItem(at: support) }
+    let appID = "com.example.iossim"
+    let request = makeRunSetupRequest(appBundleIdentifier: appID)
+    try writeRunSetupRequest(request, to: inbox)
+    let store = InMemoryRPPairingStore()
+    _ = try store.importPairingData(try makePairingPlist(identifier: "run-setup-pairing-id"))
+
+    var outcome = RunSetupOutcome()
+    outcome.pairingReady = true
+    outcome.localDevVPNReady = true
+    outcome.endpointReachable = true
+    outcome.sessionEstablished = true
+    outcome.locationVerified = true
+    outcome.locationCleared = true
+
+    let receipt = try RunSetupInbox(applicationSupportDirectory: support, store: store)
+      .record(outcome, for: request, appBundleIdentifier: appID)
+    try require(receipt.succeeded, "a complete run must read as success")
+    try require(
+      receipt.deviceUDIDHash == RunSetupReceipt.hash(request.deviceUDID),
+      "receipt binds the device by hash")
+    try require(
+      receipt.pairingIdentifier == "run-setup-pairing-id"
+        && receipt.pairingPublicKeyFingerprint.count == 64,
+      "receipt reports the pairing this app actually used")
+    try require(
+      !FileManager.default.fileExists(
+        atPath: inbox.appendingPathComponent(RunSetupInbox.requestFile).path),
+      "a success retires the request")
+    let stored = try JSONDecoder.runSetup.decode(
+      RunSetupReceipt.self,
+      from: Data(contentsOf: inbox.appendingPathComponent(RunSetupInbox.receiptFile)))
+    // ISO-8601 encoding drops sub-second precision, so compare the bound fields.
+    try require(
+      stored.requestID == receipt.requestID && stored.succeeded
+        && stored.deviceUDIDHash == receipt.deviceUDIDHash
+        && stored.pairingPublicKeyFingerprint == receipt.pairingPublicKeyFingerprint,
+      "the receipt Veya reads is the one recorded")
+  }
+
+  /// A partial or failed run is never success, keeps the request pending for another
+  /// tap, and carries the phone's real error instead of a generic one.
+  static func runSetupInboxFailureKeepsTheRequestAndPreservesTheRealError() throws {
+    let (support, inbox) = try makeRunSetupInboxDirectory()
+    defer { try? FileManager.default.removeItem(at: support) }
+    let appID = "com.example.iossim"
+    let request = makeRunSetupRequest(appBundleIdentifier: appID)
+    try writeRunSetupRequest(request, to: inbox)
+    let store = InMemoryRPPairingStore()
+    _ = try store.importPairingData(try makePairingPlist())
+
+    var outcome = RunSetupOutcome()
+    outcome.pairingReady = true
+    outcome.fail(
+      code: POCErrorCode.endpointUnreachable.rawValue,
+      message: "TCP connect to 10.7.0.1:49152 failed.\nConfirm LocalDevVPN is active.")
+
+    let inboxReader = RunSetupInbox(applicationSupportDirectory: support, store: store)
+    let receipt = try inboxReader.record(outcome, for: request, appBundleIdentifier: appID)
+    try require(!receipt.succeeded, "LocalDevVPN down can never satisfy setup")
+    try require(
+      receipt.errorCode == POCErrorCode.endpointUnreachable.rawValue,
+      "the phone's own error code survives")
+    try require(
+      receipt.errorMessage?.contains("10.7.0.1") == true
+        && receipt.errorMessage?.contains("\n") == false,
+      "the message is preserved and sanitized")
+    let stillPending = try inboxReader.pendingRequest(appBundleIdentifier: appID)
+    try require(
+      stillPending != nil,
+      "a failure keeps the request so the user can fix it and tap again")
+
+    // A session that came up but delivered no verified location is still not setup.
+    var unverified = RunSetupOutcome()
+    unverified.pairingReady = true
+    unverified.localDevVPNReady = true
+    unverified.endpointReachable = true
+    unverified.sessionEstablished = true
+    unverified.locationCleared = true
+    let unverifiedReceipt = try inboxReader.record(
+      unverified, for: request, appBundleIdentifier: appID)
+    try require(!unverifiedReceipt.succeeded, "an unverified location is never success")
+  }
+
+  static func makeRunSetupInboxDirectory() throws -> (support: URL, inbox: URL) {
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("iossim-run-setup-\(UUID().uuidString)", isDirectory: true)
+    let inbox = support.appendingPathComponent(
+      AutomaticPairingInboxController.directory, isDirectory: true)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    return (support, inbox)
+  }
+
+  static func makeRunSetupRequest(appBundleIdentifier: String) -> RunSetupRequest {
+    RunSetupRequest(
+      deviceUDID: "PHONE-0001", teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc",
+      appBundleIdentifier: appBundleIdentifier)
+  }
+
+  static func writeRunSetupRequest(_ request: RunSetupRequest, to inbox: URL) throws {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(request).write(
+      to: inbox.appendingPathComponent(RunSetupInbox.requestFile))
   }
 
   static func localDevVPNSetupInboxReturnsExplicitUserAction() async throws {
@@ -3050,5 +3186,14 @@ private actor MockTunnelClient: OnDeviceTunnelClient {
 
   func totalDisconnectCount() -> Int {
     disconnectCount
+  }
+}
+
+extension JSONDecoder {
+  /// Matches the ISO-8601 dates the setup inbox writes.
+  static var runSetup: JSONDecoder {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return decoder
   }
 }
