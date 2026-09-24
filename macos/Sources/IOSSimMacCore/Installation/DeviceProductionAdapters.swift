@@ -174,6 +174,9 @@ public enum DeviceFailureMapping {
             case _ where bridge.isDeveloperTrustRejection(given: trustPrerequisites):
                 return .user(developerTrust)
             case .ddiRequired: return .missing()
+            // Not proven to be trust: the launch refusal keeps its own typed meaning.
+            case .launchRejected, .launchRejectedStructured:
+                return .failed(DeviceDomainFailure.launchRejected(bridge))
             default: return .failed(DeviceDomainFailure.observationFailed)
             }
         case let ddi as DeveloperSupportFailure:
@@ -305,7 +308,8 @@ public enum ProductionDeviceDomains {
         return payload
     }
 
-    /// `.developerSupport`: satisfied when CoreDevice/RSD/AppService are ready (DDI mounted or not needed).
+    /// `.developerSupport`: satisfied when CoreDevice/RSD/AppService are ready (DDI mounted or not needed) and the
+    /// installed app launched through them, which is also where developer trust is proven.
     public static func developerSupport(
         probe: any DeveloperServicesProbing,
         coordinator: any DeveloperServicesPreparing,
@@ -338,7 +342,11 @@ public enum ProductionDeviceDomains {
                         progress: { _ in }
                     )
                 }
-            }
+            },
+            // The launch probe proves this installed app, so a reinstall makes the proof stale
+            // and the next run launches the new app again before VPN, pairing or runtime.
+            dependsOn: [.application],
+            repository: repository
         )
     }
 

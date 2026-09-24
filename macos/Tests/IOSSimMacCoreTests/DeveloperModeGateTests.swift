@@ -279,6 +279,69 @@ final class DeveloperModeGateTests: XCTestCase {
         XCTAssertTrue(progress.allowsEnginePipeline)
     }
 
+    func testRelaunchWithDeveloperModeAlreadyOnAdoptsTheLiveAnswer() async throws {
+        // Veya relaunch: a fresh coordinator, no journal memory, the phone restarted (new
+        // connection generation, no mounted image). Only the live inspection may decide.
+        let restarted = try inspection(developerMode: .enabled, generation: 7, mux: 42)
+        let services = FakeDeveloperModeGateServices(inspection: restarted)
+        let gate = DeveloperModeGateCoordinator(services: services)
+
+        let progress = await gate.adopt(inspection: restarted)
+        XCTAssertEqual(progress.phase, .verified)
+        XCTAssertTrue(progress.allowsEnginePipeline)
+        XCTAssertEqual(progress.device, restarted.identity)
+        let revealCount = await services.revealCount
+        XCTAssertEqual(revealCount, 0, "an enabled phone is never asked to reveal the toggle")
+    }
+
+    func testAnUnansweredStatusIsNeverPresentedAsDeveloperModeOff() async throws {
+        for readiness: DeveloperModeReadiness in [.unknown, .serviceUnavailable] {
+            let device = try inspection(developerMode: readiness)
+            let services = FakeDeveloperModeGateServices(inspection: device)
+            let gate = DeveloperModeGateCoordinator(services: services)
+
+            let adopted = await gate.adopt(inspection: device)
+            XCTAssertEqual(adopted.phase, .undetermined, readiness.rawValue)
+            XCTAssertFalse(adopted.allowsEnginePipeline, "fail closed: no answer is not permission to install")
+            XCTAssertFalse(adopted.detail.localizedCaseInsensitiveContains("unavailable"))
+
+            // Continue re-checks the device; still no answer and no other evidence keeps it closed
+            // without claiming the toggle is off.
+            let checked = await gate.verify(stableUDID: device.identity.udid)
+            XCTAssertEqual(checked.phase, .undetermined, readiness.rawValue)
+            XCTAssertFalse(checked.allowsEnginePipeline)
+            XCTAssertFalse(checked.detail.contains("still reports Developer Mode as unavailable"))
+
+            // The next answer that arrives decides.
+            await services.set(inspection: try inspection(developerMode: .enabled))
+            let verified = await gate.verify(stableUDID: device.identity.udid)
+            XCTAssertEqual(verified.phase, .verified, readiness.rawValue)
+        }
+        XCTAssertEqual(DevelopmentInstallationStage.checkDeveloperMode.title, "Checking Developer Mode")
+        XCTAssertTrue(DevelopmentInstallationStage.checkDeveloperMode.isDeveloperModeGate)
+        XCTAssertFalse(DevelopmentInstallationStage.checkDeveloperMode.instruction.contains("turn it on"))
+    }
+
+    func testAnUndeterminedGateMovesToRevealOnlyWhenThePhoneSaysOff() async throws {
+        let unknown = try inspection(developerMode: .unknown)
+        let services = FakeDeveloperModeGateServices(inspection: unknown)
+        let gate = DeveloperModeGateCoordinator(services: services)
+        _ = await gate.adopt(inspection: unknown)
+
+        let off = await gate.adopt(inspection: try inspection(developerMode: .disabled))
+        XCTAssertEqual(off.phase, .reveal, "an authoritative off returns to the normal enable flow")
+        let revealed = await gate.reveal(on: unknown.identity)
+        XCTAssertEqual(revealed.phase, .enable)
+
+        // Mid-flow (after the user enabled it and the phone restarted), an unanswered read keeps
+        // the user's place rather than sending them back to reveal.
+        let midFlow = await gate.adopt(inspection: unknown)
+        XCTAssertEqual(midFlow.phase, .enable)
+        let checked = await gate.verify(stableUDID: unknown.identity.udid)
+        XCTAssertEqual(checked.phase, .enable)
+        XCTAssertFalse(checked.allowsEnginePipeline)
+    }
+
     func testSelectingADifferentIPhoneResetsTheGate() async throws {
         let device = try inspection(developerMode: .enabled)
         let services = FakeDeveloperModeGateServices(inspection: device)

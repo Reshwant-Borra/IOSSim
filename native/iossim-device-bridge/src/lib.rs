@@ -871,6 +871,58 @@ fn container_read_error_status(error: &idevice::IdeviceError) -> Status {
     }
 }
 
+/// Developer Mode from the device's own answers. A missing, failed or closed
+/// status read is `unknown`, never `disabled`: only an authoritative `false`
+/// from lockdown or AMFI may report the toggle off.
+fn resolve_developer_mode(lockdown: Option<bool>, amfi: Option<bool>) -> &'static str {
+    match lockdown.or(amfi) {
+        Some(true) => "enabled",
+        Some(false) => "disabled",
+        None => "unknown",
+    }
+}
+
+/// Lockdown reads a personalized mount needs. Split out so the session fallback
+/// is testable without a device.
+trait ChipIdSource {
+    async fn unique_chip_id_value(&mut self) -> Result<plist::Value, idevice::IdeviceError>;
+    async fn start_session(&mut self) -> Result<(), idevice::IdeviceError>;
+}
+
+struct SessionLockdown<'a, P: IdeviceProvider> {
+    lockdown: &'a mut LockdownClient,
+    provider: &'a P,
+}
+
+impl<P: IdeviceProvider> ChipIdSource for SessionLockdown<'_, P> {
+    async fn unique_chip_id_value(&mut self) -> Result<plist::Value, idevice::IdeviceError> {
+        self.lockdown.get_value(Some("UniqueChipID"), None).await
+    }
+
+    async fn start_session(&mut self) -> Result<(), idevice::IdeviceError> {
+        let pairing = self.provider.get_pairing_file().await?;
+        self.lockdown.start_session(&pairing).await.map(|_| ())
+    }
+}
+
+/// `UniqueChipID` for TSS personalization. Over a network connection lockdown
+/// refuses it before a paired session (`GetProhibited`, physically observed),
+/// so a session is started and the read retried once — the pinned idevice
+/// mounter's own pattern. Any other failure, a failed session, or a failed
+/// retry is returned unchanged.
+async fn unique_chip_id(source: &mut impl ChipIdSource) -> Result<u64, idevice::IdeviceError> {
+    let value = match source.unique_chip_id_value().await {
+        Err(idevice::IdeviceError::GetProhibited | idevice::IdeviceError::SessionInactive) => {
+            source.start_session().await?;
+            source.unique_chip_id_value().await?
+        }
+        other => other?,
+    };
+    value.as_unsigned_integer().ok_or_else(|| {
+        idevice::IdeviceError::UnexpectedResponse("UniqueChipID is not an unsigned integer".into())
+    })
+}
+
 fn staged_error(status: Status, stage: &str, error: impl std::fmt::Display) -> *mut BridgeResult {
     make_result(status, vec![], format!("{stage}: {error}"))
 }
@@ -1088,17 +1140,27 @@ pub unsafe extern "C" fn iossim_bridge_inspect_device(
                     Ok(_) => {
                         trust = "trusted";
                         lock_state = "unlocked";
-                        match AmfiClient::connect(&provider).await {
-                            Ok(mut amfi) => {
-                                developer_mode =
-                                    if amfi.get_developer_mode_status().await.unwrap_or(false) {
-                                        "enabled"
-                                    } else {
-                                        "disabled"
-                                    }
+                        // Lockdown's AMFI-domain value, read inside this paired session, is
+                        // the primary source. AMFI's status action (3) has been physically
+                        // observed closing the connection without a reply on iOS 26.6.2 while
+                        // Developer Mode was on, so it is only a fallback.
+                        let lockdown_status = lockdown
+                            .get_value(
+                                Some("DeveloperModeStatus"),
+                                Some("com.apple.security.mac.amfi"),
+                            )
+                            .await
+                            .ok()
+                            .and_then(|value| value.as_boolean());
+                        let amfi_status = if lockdown_status.is_some() {
+                            None
+                        } else {
+                            match AmfiClient::connect(&provider).await {
+                                Ok(mut amfi) => amfi.get_developer_mode_status().await.ok(),
+                                Err(_) => None,
                             }
-                            Err(_) => developer_mode = "serviceUnavailable",
-                        }
+                        };
+                        developer_mode = resolve_developer_mode(lockdown_status, amfi_status);
                     }
                     Err(error) => {
                         let lower = error.to_string().to_ascii_lowercase();
@@ -1535,18 +1597,11 @@ pub unsafe extern "C" fn iossim_bridge_mount_developer_support(
             let selected = selected_device(&stable_id, expected_mux).await?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
             let mut lockdown = LockdownClient::connect(&provider).await?;
-            let unique_chip_id = match lockdown
-                .get_value(Some("UniqueChipID"), None)
-                .await?
-                .as_unsigned_integer()
-            {
-                Some(value) => value,
-                None => {
-                    return Err(idevice::IdeviceError::UnexpectedResponse(
-                        "UniqueChipID is not an unsigned integer".into(),
-                    ));
-                }
-            };
+            let unique_chip_id = unique_chip_id(&mut SessionLockdown {
+                lockdown: &mut lockdown,
+                provider: &provider,
+            })
+            .await?;
             let image = tokio::fs::read(image_path).await?;
             let trust_cache = tokio::fs::read(trust_path).await?;
             let build_manifest = tokio::fs::read(manifest_path).await?;
@@ -2623,6 +2678,110 @@ mod tests {
         let status = unsafe { (*result).status };
         assert_eq!(status, Status::InvalidArgument as i32);
         unsafe { iossim_bridge_result_free(result) };
+    }
+
+    #[test]
+    fn developer_mode_resolution_never_reads_a_failed_query_as_disabled() {
+        // Lockdown true while AMFI's status action fails (the iOS 26.6.2 observation).
+        assert_eq!(resolve_developer_mode(Some(true), None), "enabled");
+        assert_eq!(resolve_developer_mode(Some(false), None), "disabled");
+        // Lockdown is authoritative when it answers.
+        assert_eq!(resolve_developer_mode(Some(true), Some(false)), "enabled");
+        assert_eq!(resolve_developer_mode(Some(false), Some(true)), "disabled");
+        // Lockdown unavailable: AMFI's own authoritative answer.
+        assert_eq!(resolve_developer_mode(None, Some(true)), "enabled");
+        assert_eq!(resolve_developer_mode(None, Some(false)), "disabled");
+        // Neither answered: unknown, never disabled.
+        assert_eq!(resolve_developer_mode(None, None), "unknown");
+    }
+
+    struct FakeLockdown {
+        reads: Vec<Result<plist::Value, idevice::IdeviceError>>,
+        session: Result<(), idevice::IdeviceError>,
+        sessions_started: usize,
+    }
+
+    impl ChipIdSource for FakeLockdown {
+        async fn unique_chip_id_value(&mut self) -> Result<plist::Value, idevice::IdeviceError> {
+            self.reads.remove(0)
+        }
+        async fn start_session(&mut self) -> Result<(), idevice::IdeviceError> {
+            self.sessions_started += 1;
+            std::mem::replace(&mut self.session, Ok(()))
+        }
+    }
+
+    fn chip_id(fake: &mut FakeLockdown) -> Result<u64, idevice::IdeviceError> {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(unique_chip_id(fake))
+    }
+
+    #[test]
+    fn unique_chip_id_read_directly_needs_no_session() {
+        let mut fake = FakeLockdown {
+            reads: vec![Ok(plist::Value::Integer(42u64.into()))],
+            session: Ok(()),
+            sessions_started: 0,
+        };
+        assert_eq!(chip_id(&mut fake).unwrap(), 42);
+        assert_eq!(fake.sessions_started, 0);
+    }
+
+    #[test]
+    fn prohibited_unique_chip_id_is_retried_inside_a_paired_session() {
+        let mut fake = FakeLockdown {
+            reads: vec![
+                Err(idevice::IdeviceError::GetProhibited),
+                Ok(plist::Value::Integer(42u64.into())),
+            ],
+            session: Ok(()),
+            sessions_started: 0,
+        };
+        assert_eq!(chip_id(&mut fake).unwrap(), 42);
+        assert_eq!(fake.sessions_started, 1);
+    }
+
+    #[test]
+    fn a_failed_session_is_the_reported_failure() {
+        let mut fake = FakeLockdown {
+            reads: vec![Err(idevice::IdeviceError::GetProhibited)],
+            session: Err(idevice::IdeviceError::PasswordProtected),
+            sessions_started: 0,
+        };
+        assert!(matches!(
+            chip_id(&mut fake),
+            Err(idevice::IdeviceError::PasswordProtected)
+        ));
+    }
+
+    #[test]
+    fn a_failed_retry_and_unrelated_failures_are_preserved() {
+        let mut retry = FakeLockdown {
+            reads: vec![
+                Err(idevice::IdeviceError::GetProhibited),
+                Err(idevice::IdeviceError::GetProhibited),
+            ],
+            session: Ok(()),
+            sessions_started: 0,
+        };
+        assert!(matches!(
+            chip_id(&mut retry),
+            Err(idevice::IdeviceError::GetProhibited)
+        ));
+        assert_eq!(retry.sessions_started, 1);
+
+        let mut unrelated = FakeLockdown {
+            reads: vec![Err(idevice::IdeviceError::NotFound)],
+            session: Ok(()),
+            sessions_started: 0,
+        };
+        assert!(matches!(
+            chip_id(&mut unrelated),
+            Err(idevice::IdeviceError::NotFound)
+        ));
+        assert_eq!(unrelated.sessions_started, 0);
     }
 
     #[test]

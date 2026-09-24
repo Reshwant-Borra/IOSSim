@@ -33,6 +33,7 @@ public enum DevelopmentInstallationStage: String, CaseIterable, Equatable, Senda
     case preparingApp
     case revealDeveloperMode
     case enableDeveloperMode
+    case checkDeveloperMode
     case trustDeveloper
     case connectLocalDevVPN
     case preparingPairing
@@ -45,6 +46,7 @@ public enum DevelopmentInstallationStage: String, CaseIterable, Equatable, Senda
         case .preparingApp: return "Preparing App"
         case .revealDeveloperMode: return "Enable Developer Mode"
         case .enableDeveloperMode: return "Enable Developer Mode"
+        case .checkDeveloperMode: return "Checking Developer Mode"
         case .trustDeveloper: return "Trust Developer"
         case .connectLocalDevVPN: return "Connect LocalDevVPN"
         case .preparingPairing: return "Preparing Pairing"
@@ -63,8 +65,11 @@ public enum DevelopmentInstallationStage: String, CaseIterable, Equatable, Senda
                 + "Nothing is installed and Developer Mode is not turned on for you."
         case .enableDeveloperMode:
             return "On your iPhone, open Settings > Privacy & Security > Developer Mode, turn it on, follow the restart prompt, unlock the iPhone, then return here."
+        case .checkDeveloperMode:
+            return "This iPhone did not report whether Developer Mode is on. Keep it unlocked and connected, then press Continue to check again."
         case .trustDeveloper:
-            return "On your iPhone, open Settings > General > VPN & Device Management, choose the Apple Development profile for this account, tap Trust, then return here."
+            return "Veya is installed on your iPhone, but your iPhone needs you to trust the developer before Veya can open. "
+                + "On your iPhone, open Settings > General > VPN & Device Management, choose the Apple Development profile for this account, tap Trust, then return here and press Continue."
         case .connectLocalDevVPN:
             return "Complete the LocalDevVPN action shown below, then return here."
         case .preparingPairing:
@@ -81,9 +86,9 @@ public enum DevelopmentInstallationStage: String, CaseIterable, Equatable, Senda
     public var primaryAction: DevelopmentInstallationPrimaryAction {
         switch self {
         case .preparingApp: return .installOrPrepare
-        // The two gate stages are driven by `DeveloperModeGateCoordinator`, not by an engine
+        // The gate stages are driven by `DeveloperModeGateCoordinator`, not by an engine
         // command; this value is only read once the gate has already released the button.
-        case .revealDeveloperMode, .enableDeveloperMode, .trustDeveloper, .connectLocalDevVPN,
+        case .revealDeveloperMode, .enableDeveloperMode, .checkDeveloperMode, .trustDeveloper, .connectLocalDevVPN,
              .preparingPairing:
             return .continueUserAction
         case .readyForSetup, .verifyingSetup, .ready:
@@ -93,7 +98,7 @@ public enum DevelopmentInstallationStage: String, CaseIterable, Equatable, Senda
 
     /// Stages owned by the pre-install Developer Mode gate rather than by the engine.
     public var isDeveloperModeGate: Bool {
-        self == .revealDeveloperMode || self == .enableDeveloperMode
+        self == .revealDeveloperMode || self == .enableDeveloperMode || self == .checkDeveloperMode
     }
 
     public static func resolve(

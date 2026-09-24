@@ -121,6 +121,8 @@ final class DevelopmentInstallationModel: ObservableObject {
             stage = .revealDeveloperMode
         case .enable:
             stage = .enableDeveloperMode
+        case .undetermined:
+            stage = .checkDeveloperMode
         case .verified:
             if stage.isDeveloperModeGate {
                 stage = .preparingApp
@@ -300,7 +302,7 @@ struct DevelopmentInstallationView: View {
                     switch model.gate.phase {
                     case .reveal:
                         Button("Enable Developer Mode") { Task { await model.revealDeveloperMode() } }
-                    case .enable, .verified:
+                    case .enable, .undetermined, .verified:
                         Button("Continue") { Task { await model.continueDeveloperModeGate() } }
                     }
                 } else {

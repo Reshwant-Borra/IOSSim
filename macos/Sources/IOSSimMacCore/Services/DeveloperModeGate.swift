@@ -34,6 +34,12 @@ public enum DeveloperModeGate {
     }
 }
 
+extension DeveloperModeReadiness {
+    /// Only an explicit answer from the iPhone. `unknown` and `serviceUnavailable` mean the
+    /// question went unanswered and are never read as "off".
+    var isAuthoritative: Bool { self == .enabled || self == .disabled }
+}
+
 public enum DeveloperModeGatePhase: String, Codable, Equatable, Sendable {
     /// The toggle may still be hidden. The only offer is the AMFI reveal.
     case reveal
@@ -42,6 +48,9 @@ public enum DeveloperModeGatePhase: String, Codable, Equatable, Sendable {
     case enable
     /// Device-side evidence was accepted. The existing engine pipeline may run.
     case verified
+    /// The iPhone did not answer whether Developer Mode is on. Veya neither claims it is off
+    /// nor lets the engine run; the only offer is to check again.
+    case undetermined
 }
 
 public struct DeveloperModeGateProgress: Equatable, Sendable {
@@ -144,21 +153,32 @@ public actor DeveloperModeGateCoordinator {
 
     /// Cheap evaluation from an inspection the caller already holds, used when a device is
     /// selected or the list is refreshed. It can only ever *raise* the gate to `.verified` on
-    /// AMFI's trustworthy positive answer, so an iPhone that is already set up is never
-    /// interrupted. It never lowers the gate: AMFI's advisory `disabled` must not un-verify a
-    /// phone proven through a mounted image or a live developer-services session. Lowering is
-    /// the engine's job, through `invalidate(detail:)`, or `reset()` on a different iPhone.
+    /// the device's positive answer, so an iPhone that is already set up is never
+    /// interrupted, including after Veya relaunches. It never lowers a verified gate: an
+    /// advisory `disabled` must not un-verify a phone proven through a mounted image or a live
+    /// developer-services session. Lowering is the engine's job, through `invalidate(detail:)`,
+    /// or `reset()` on a different iPhone. Before verification it only tells "the iPhone did
+    /// not answer" apart from "Developer Mode is off", so the UI never claims the latter
+    /// without the device saying so.
     @discardableResult
     public func adopt(inspection: NativeDeviceInspection) -> DeveloperModeGateProgress {
-        guard progress.phase != .verified, inspection.developerMode == .enabled else {
-            return progress
+        switch (progress.phase, inspection.developerMode) {
+        case (.verified, _):
+            break
+        case (_, .enabled):
+            progress = DeveloperModeGateProgress(
+                phase: .verified,
+                evidence: .amfiStatusEnabled,
+                detail: "Developer Mode verified on this iPhone.",
+                device: inspection.identity
+            )
+        case (.reveal, let mode) where !mode.isAuthoritative:
+            progress = Self.undetermined(device: inspection.identity)
+        case (.undetermined, .disabled):
+            progress = .initial
+        default:
+            break
         }
-        progress = DeveloperModeGateProgress(
-            phase: .verified,
-            evidence: .amfiStatusEnabled,
-            detail: "Developer Mode verified on this iPhone.",
-            device: inspection.identity
-        )
         return progress
     }
 
@@ -193,7 +213,7 @@ public actor DeveloperModeGateCoordinator {
             inspection = try await services.rebind(stableUDID: stableUDID)
         } catch {
             progress = DeveloperModeGateProgress(
-                phase: progress.phase == .reveal ? .reveal : .enable,
+                phase: progress.phase == .reveal || progress.phase == .undetermined ? progress.phase : .enable,
                 detail: "Veya could not reach the same iPhone: \(Self.describe(error)) "
                     + "Reconnect and unlock it, then press Continue again.",
                 device: nil
@@ -207,8 +227,15 @@ public actor DeveloperModeGateCoordinator {
             developerServicesTransportReady: await services.developerServicesTransportReady(on: device)
         )
         guard let evidence else {
+            guard inspection.developerMode.isAuthoritative else {
+                // No answer is not "off": keep the user's place and ask to check again.
+                progress = progress.phase == .reveal || progress.phase == .undetermined
+                    ? Self.undetermined(device: device)
+                    : DeveloperModeGateProgress(phase: .enable, detail: Self.unreadable, device: device)
+                return progress
+            }
             progress = DeveloperModeGateProgress(
-                phase: progress.phase == .reveal ? .reveal : .enable,
+                phase: progress.phase == .reveal || progress.phase == .undetermined ? .reveal : .enable,
                 detail: "This iPhone still reports Developer Mode as unavailable. "
                     + DeveloperModeGateCoordinator.enableInstruction,
                 device: device
@@ -234,6 +261,14 @@ public actor DeveloperModeGateCoordinator {
             device: progress.device
         )
         return progress
+    }
+
+    static let unreadable =
+        "This iPhone did not report whether Developer Mode is on. Keep it unlocked and connected, "
+        + "then press Continue to check again."
+
+    private static func undetermined(device: IOSSimDeviceIdentity) -> DeveloperModeGateProgress {
+        DeveloperModeGateProgress(phase: .undetermined, detail: unreadable, device: device)
     }
 
     static let enableInstruction =

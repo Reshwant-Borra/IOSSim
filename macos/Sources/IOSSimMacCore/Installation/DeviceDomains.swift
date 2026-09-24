@@ -33,6 +33,23 @@ public enum DeviceDomainFailure {
     }
     public static let ddiIncompatible = make(.developerSupport, 30, "resolve", "No developer support image is approved for this iOS build.")
     public static let ddiUnavailable = make(.developerSupport, 31, "mount", "Developer support could not be prepared.", retryable: true)
+    /// The installed app was refused at launch for a reason Veya cannot attribute to developer
+    /// trust. Only the structured chain's Apple constants (domain, integer code, BS description)
+    /// are carried, so the failure stays secret-free and can refine the classifier later.
+    public static func launchRejected(_ error: NativeDeviceBridgeError) -> VeyaFailure {
+        var message = "The installed Veya app could not be launched on the iPhone."
+        if case .launchRejectedStructured(let detail) = error, !detail.chain.isEmpty {
+            let chain = detail.chain.suffix(4).map { node in
+                "\(node.domain) \(node.code)" + (node.bsDescription.map { " \($0)" } ?? "")
+            }.joined(separator: " > ")
+            message += " iOS reported: \(chain)" + (detail.chainComplete ? "." : " (incomplete).")
+        }
+        return (try? VeyaFailure(namespace: .developerSupport, number: 32, operation: "launch",
+                                 safeMessage: String(message.prefix(512)), retryable: true,
+                                 underlyingSubsystem: "deviceDomains"))
+            ?? make(.developerSupport, 32, "launch", "The installed Veya app could not be launched on the iPhone.",
+                    retryable: true)
+    }
     public static let vpnUnsupportedVersion = make(.vpn, 30, "observe", "The installed LocalDevVPN version is not supported.")
     public static let vpnMissing = make(
         .vpn, 31, "install", "LocalDevVPN is not installed.",
