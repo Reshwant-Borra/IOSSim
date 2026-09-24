@@ -2,6 +2,19 @@
 
 Current authoritative retest artifact: `.build/iossim/final-setup-payload-retest/IOSSim.app` (fresh Xcode 27.0 payload). Historical `.build/iossim/final-setup-retest/IOSSim.app` is stale and must not be used for setup validation.
 
+## Installation V2 checkpoint — `8155901` (2026-09-24)
+
+Frozen, physically validated installation architecture (Veya development session). Read these first
+for anything about installation, signing, device access or failures:
+
+- [Physical validation and checkpoint record](installation-v2/implementation-v2/PHYSICAL_INSTALLATION_VALIDATION_2026-09-24.md): source state, artifact provenance, which build produced which READY, tests, baseline, the private test DMG, and the `VEYA-TEAM-032` known issue.
+- [Installation architecture](architecture/INSTALLATION_ARCHITECTURE.md): UI → EngineHost → engine/planner, all 13 domains, Developer Mode, Developer Trust, LocalDevVPN, runtime/READY, iPhone payload.
+- [Native device bridge](architecture/NATIVE_DEVICE_BRIDGE.md): Rust/C ABI 3, every export, device selection, the USB/Wi-Fi duplicate-entry fix.
+- [Signing and identity](architecture/SIGNING_AND_IDENTITY.md): Apple session, team, key, certificate, profile, in-process signing, trust-classification guarantees.
+- [Failure model](architecture/INSTALLATION_FAILURE_MODEL.md): failure taxonomy and every flattening point.
+- [Persistence and evidence](architecture/PERSISTENCE_AND_EVIDENCE.md): scoping matrix and facts relevant to `VEYA-TEAM-032`.
+- [Friend testing guide](testing/FRIEND_TESTING.md): tester runbook for `Veya-Test-8155901.dmg`.
+
 ## Authoritative current docs
 
 - [IOSSim Current Engineering State](IOSSim_CURRENT_ENGINEERING_STATE.md) — current verdict, architecture, provenance, blockers, physical evidence, and next actions.

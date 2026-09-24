@@ -276,3 +276,25 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
   reveal symbol present; universal; `hdiutil verify` and strict code-sign PASS. The bundled iPhone
   payload is unchanged from `073d4a9`.
 - Not yet `PHYSICAL_PASS`. Retest steps: `DEVELOPER_MODE_PREREQUISITE_GATE_2026-09-24.md`.
+
+## Physical READY checkpoint and friend-test DMG — 2026-09-24
+
+- Frozen at clean HEAD `8155901`. No product code changed in this step; documentation only.
+- **PHYSICAL_PASS for `8155901`**: a fresh `8155901` process (PID 17951, spawned 13:43:56) reached
+  READY at **13:45:48** (journal generations 147–155: new key, certificate with capacity reconcile,
+  profiles, re-sign, reinstall, launch probe, VPN, new pairing, runtime). The earlier 13:43:00 READY
+  came from the `1f2a398` build (PID 9569, spawned 13:04:57, before the selector fix existed).
+- Developer Mode gate and Developer Trust were physically exercised on `1f2a398`/earlier; their Swift
+  code is identical in `8155901`. The USB/Wi-Fi selector fix is unit-tested; the Wi-Fi-first ordering
+  was not deliberately reproduced on hardware.
+- `./iossim installation-baseline --defer-m4`: **PASS**. Swift 588 executed / 15 skipped / 0 failures;
+  Rust 35 + 12 (1 ignored) passed; Python identity 6/6, DMG 3/3, discovery 5/5. The deferred M4 test
+  still fails with `VEYA-KEY-001` (structural: ad-hoc builds have no Team ID/access group).
+- `Veya-Test-8155901.dmg`: 33,645,575 bytes; SHA-256
+  `9dde51d5dbc806a079875e9a54edcaede0c18a0c53bcaa2a177aa4b5728bc54f`; packaged from the exact
+  validated app bytes via `create_release_dmg`; mounted and copied-back bytes identical; strict
+  code-sign PASS; universal; bridge ABI 3; payload unchanged from `073d4a9`.
+- `VEYA-TEAM-032` remains open and unworked.
+- Record: `PHYSICAL_INSTALLATION_VALIDATION_2026-09-24.md`; architecture: `docs/architecture/`;
+  runbook: `docs/testing/FRIEND_TESTING.md`.
+
