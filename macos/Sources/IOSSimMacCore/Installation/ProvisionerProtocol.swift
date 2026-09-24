@@ -305,6 +305,7 @@ public struct EngineComposition: Sendable {
     public let now: @Sendable () -> Date
     public let makeID: @Sendable () -> UUID
     public let identity: EngineIdentity
+    public let transitionProgress: (@Sendable (InstallationDomain) -> Void)?
 
     public init(
         repository: InstallationJournalRepository,
@@ -312,7 +313,8 @@ public struct EngineComposition: Sendable {
         transitions: [any InstallationTransition],
         now: @escaping @Sendable () -> Date = { Date() },
         makeID: @escaping @Sendable () -> UUID = { UUID() },
-        identity: EngineIdentity
+        identity: EngineIdentity,
+        transitionProgress: (@Sendable (InstallationDomain) -> Void)? = nil
     ) {
         self.repository = repository
         self.observers = observers
@@ -320,6 +322,7 @@ public struct EngineComposition: Sendable {
         self.now = now
         self.makeID = makeID
         self.identity = identity
+        self.transitionProgress = transitionProgress
     }
 }
 
@@ -343,6 +346,7 @@ public enum EngineHost {
             observers: composition.observers,
             transitions: composition.transitions,
             eventSink: events,
+            transitionProgress: composition.transitionProgress,
             now: composition.now,
             makeID: composition.makeID
         )
@@ -420,7 +424,10 @@ public enum EngineHost {
                 transitionsCompleted: outcome.transitionsCompleted, events: recorded,
                 evidenceReferences: journal.evidence.map(\.id).sorted(),
                 userAction: outcome.userAction,
-                firstFailure: summary(outcome.failure, domain: nil),
+                firstFailure: summary(
+                    outcome.failure,
+                    domain: outcome.failure?.originatingDomain ?? outcome.failure.flatMap(domain(for:))
+                ),
                 skippedProofs: skipped
             )
         }
@@ -451,6 +458,25 @@ public enum EngineHost {
         failure.map { EngineFailureSummary(code: $0.code, safeMessage: $0.safeMessage, domain: domain) }
     }
 
+    private static func domain(for failure: VeyaFailure) -> InstallationDomain? {
+        switch failure.namespace {
+        case .artifact: return .artifact
+        case .migration: return .migration
+        case .authorization: return .authorization
+        case .team: return .team
+        case .key: return .signingKey
+        case .certificate: return .certificate
+        case .profile: return .profile
+        case .signing: return .payload
+        case .install: return .application
+        case .developerSupport: return .developerSupport
+        case .pairing: return .pairing
+        case .vpn: return .vpn
+        case .runtime: return .runtime
+        case .device, .state, .security: return nil
+        }
+    }
+
     public static func failureResult(_ request: EngineRequest, error: Error, identity: EngineIdentity) -> QualificationResult {
         let failure: EngineFailureSummary
         let code: QualificationExitCode
@@ -459,7 +485,11 @@ public enum EngineHost {
             failure = EngineFailureSummary(code: refusal.code, safeMessage: refusal.safeMessage, domain: nil)
             code = .refused
         case let value as VeyaFailure:
-            failure = EngineFailureSummary(code: value.code, safeMessage: value.safeMessage, domain: nil)
+            failure = EngineFailureSummary(
+                code: value.code,
+                safeMessage: value.safeMessage,
+                domain: value.originatingDomain ?? domain(for: value)
+            )
             // A transition that stopped on a legitimate user action (install/approve/trust) is not a product failure.
             code = value.userAction != nil ? .userAction : value.retryable ? .retryableExternal : .productFailure
         case let value as InstallationStateFailure:

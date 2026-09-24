@@ -49,13 +49,15 @@ public final class DevelopmentInstallationSession: @unchecked Sendable {
 
     public func composition(helperURL: URL, device: EngineDeviceSelection?, connectionGeneration: UInt64,
                             resourcesURL: URL? = nil,
-                            runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil) -> EngineComposition {
+                            runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil,
+                            transitionProgress: (@Sendable (InstallationDomain) -> Void)? = nil) -> EngineComposition {
         ProductionComposition.compose(helperURL: helperURL, stateRoot: root, device: device,
                                       connectionGeneration: connectionGeneration, resourcesURL: resourcesURL,
                                       appleServices: apple, wrapping: wrapping, pairingOverride: pairing,
                                       developerServicesOverride: NativeDeveloperServicesCoordinator(
                                         providers: [ThirdPartyMirrorDevelopmentProvider()], providerPolicy: .localTest),
-                                      runSetupProgress: runSetupProgress)
+                                      runSetupProgress: runSetupProgress,
+                                      transitionProgress: transitionProgress)
     }
 }
 #endif

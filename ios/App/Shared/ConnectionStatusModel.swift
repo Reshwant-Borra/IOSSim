@@ -31,6 +31,19 @@ final class ConnectionStatusModel: ObservableObject {
     /// to tap Run Setup here. Nothing starts the run except that tap.
     @Published private(set) var veyaSetupRequestPending = false
 
+    var runSetupRequestMessage: String {
+        veyaSetupRequestPending
+            ? RunSetupRequestPresentation.pendingMessage
+            : RunSetupRequestPresentation.unavailableMessage
+    }
+
+    var canRunRequestedSetup: Bool {
+        RunSetupRequestPresentation.buttonEnabled(
+            requestPending: veyaSetupRequestPending,
+            isWorking: isWorking
+        )
+    }
+
     private let runner: OnDeviceDVTExperimentRunner
     private let coordinator: LocationCoordinator
     private let setupInbox: RunSetupInbox
@@ -51,13 +64,17 @@ final class ConnectionStatusModel: ObservableObject {
     /// appear would miss it.
     func watchForVeyaSetupRequest(pollNanoseconds: UInt64 = 1_000_000_000) async {
         while !Task.isCancelled {
-            veyaSetupRequestPending = pendingVeyaRequest() != nil
+            refreshVeyaSetupRequestState()
             try? await Task.sleep(nanoseconds: pollNanoseconds)
         }
     }
 
     private func pendingVeyaRequest() -> RunSetupRequest? {
-        (try? setupInbox.pendingRequest()) ?? nil
+        setupInbox.validPendingRequest()
+    }
+
+    private func refreshVeyaSetupRequestState() {
+        veyaSetupRequestPending = pendingVeyaRequest() != nil
     }
 
     var allStepsPass: Bool {
@@ -89,10 +106,28 @@ final class ConnectionStatusModel: ObservableObject {
     /// unchanged.
     func runSetup(answeringVeyaRequest: Bool = false) async {
         guard !isWorking else { return }
+        if answeringVeyaRequest {
+            // This is a security/state-machine boundary, not merely presentation.
+            // A stale SwiftUI view or programmatic invocation cannot run Mac-answering
+            // diagnostics or write a receipt without a fresh app-bound request.
+            let performed = await setupInbox.performIfValidPendingRequest { request in
+                self.veyaSetupRequestPending = true
+                await self.performSetup(request: request)
+                return true
+            }
+            guard performed == true else {
+                veyaSetupRequestPending = false
+                return
+            }
+            return
+        }
+        await performSetup(request: nil)
+    }
+
+    private func performSetup(request: RunSetupRequest?) async {
+        guard !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
-
-        let request = answeringVeyaRequest ? pendingVeyaRequest() : nil
         var outcome = RunSetupOutcome()
 
         pairingStep = .checking

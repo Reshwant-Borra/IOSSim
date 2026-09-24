@@ -22,6 +22,7 @@ struct POCUnitChecks {
     try await localDevVPNSetupInboxWritesFunctionalReadyReceipt()
     try await localDevVPNSetupInboxReturnsExplicitUserAction()
     try runSetupInboxOnlyAcceptsAFreshRequestForThisApp()
+    try await runSetupPresentationAndInvocationEligibilityFailClosed()
     try runSetupInboxSuccessReceiptRecordsEveryStageAndRetiresTheRequest()
     try runSetupInboxFailureKeepsTheRequestAndPreservesTheRealError()
     try richRuntimeProofReceiptSchemaBindsCleanupAndContext()
@@ -543,6 +544,67 @@ struct POCUnitChecks {
     try FileManager.default.removeItem(at: inbox.appendingPathComponent(RunSetupInbox.requestFile))
     let cleared = try reader.pendingRequest(appBundleIdentifier: appID)
     try require(cleared == nil, "no request means nothing is waiting on the user")
+  }
+
+  /// The UI and model consume the same fail-closed eligibility: only a fresh,
+  /// well-formed request for this exact app can authorize Mac-answering setup.
+  static func runSetupPresentationAndInvocationEligibilityFailClosed() async throws {
+    let (support, inbox) = try makeRunSetupInboxDirectory()
+    defer { try? FileManager.default.removeItem(at: support) }
+    let appID = "com.example.iossim"
+    let reader = RunSetupInbox(applicationSupportDirectory: support, store: InMemoryRPPairingStore())
+
+    func enabled() -> Bool {
+      RunSetupRequestPresentation.buttonEnabled(
+        requestPending: reader.validPendingRequest(appBundleIdentifier: appID) != nil,
+        isWorking: false)
+    }
+
+    try require(!enabled(), "no request keeps Run Setup disabled")
+    let counter = InvocationCounter()
+    let absentResult = await reader.performIfValidPendingRequest(appBundleIdentifier: appID) { _ in
+      await counter.increment()
+      return true
+    }
+    try require(absentResult == nil, "no request refuses Mac-answering setup")
+    let absentInvocationCount = await counter.value
+    try require(absentInvocationCount == 0, "no request executes no diagnostics")
+    try require(
+      RunSetupRequestPresentation.unavailableMessage
+        == "Finish preparation in Veya on your Mac first.",
+      "missing-request guidance is explicit")
+
+    try writeRunSetupRequest(makeRunSetupRequest(appBundleIdentifier: appID), to: inbox)
+    try require(enabled(), "a valid app-bound request enables Run Setup")
+    let validResult = await reader.performIfValidPendingRequest(appBundleIdentifier: appID) { _ in
+      await counter.increment()
+      return true
+    }
+    try require(validResult == true, "a valid request authorizes Mac-answering setup")
+    let validInvocationCount = await counter.value
+    try require(validInvocationCount == 1, "the healthy request path executes exactly once")
+    try require(
+      !RunSetupRequestPresentation.buttonEnabled(requestPending: true, isWorking: true),
+      "an in-flight run remains disabled")
+
+    try writeRunSetupRequest(
+      RunSetupRequest(
+        deviceUDID: "PHONE-0001", teamIdentifier: "TEAM1", releaseIdentity: "veya-v2:abc",
+        appBundleIdentifier: appID,
+        createdAt: Date().addingTimeInterval(-(RunSetupRequest.lifetime + 1))),
+      to: inbox)
+    try require(!enabled(), "an expired request keeps Run Setup disabled")
+
+    try writeRunSetupRequest(makeRunSetupRequest(appBundleIdentifier: "com.example.other"), to: inbox)
+    try require(!enabled(), "a wrong-app request keeps Run Setup disabled")
+
+    try Data("{malformed".utf8).write(
+      to: inbox.appendingPathComponent(RunSetupInbox.requestFile), options: .atomic)
+    try require(!enabled(), "a malformed request keeps Run Setup disabled")
+    try require(
+      !FileManager.default.fileExists(
+        atPath: inbox.appendingPathComponent(RunSetupInbox.receiptFile).path),
+      "eligibility checks never write a receipt")
   }
 
   /// A completed real run: every stage true, bound to the stored pairing, and the
@@ -3170,6 +3232,11 @@ private struct FakeTCPProber: TCPProbing {
   func probe(endpoint: DeveloperEndpoint, timeout: TimeInterval) async -> TCPProbeResult {
     result
   }
+}
+
+private actor InvocationCounter {
+  private(set) var value = 0
+  func increment() { value += 1 }
 }
 
 private actor MockTunnelClient: OnDeviceTunnelClient {

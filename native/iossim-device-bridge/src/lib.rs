@@ -64,6 +64,7 @@ enum Status {
     PairingRejected = 24,
     PairingPending = 25,
     PairingDenied = 26,
+    ContainerFileNotFound = 27,
 }
 
 #[repr(u32)]
@@ -582,6 +583,30 @@ fn classify_error(error: &idevice::IdeviceError) -> Status {
     }
 }
 
+/// Preserve authoritative device state even when it is encountered inside a
+/// stage that otherwise has a more specific transport failure category.
+fn staged_device_status(error: &idevice::IdeviceError, fallback: Status) -> Status {
+    match classify_error(error) {
+        Status::DeveloperModeRequired => Status::DeveloperModeRequired,
+        Status::DeviceLocked => Status::DeviceLocked,
+        Status::TrustRequired => Status::TrustRequired,
+        Status::DeviceDisconnected => Status::DeviceDisconnected,
+        Status::DeviceNotFound => Status::DeviceNotFound,
+        _ => fallback,
+    }
+}
+
+fn container_read_error_status(error: &idevice::IdeviceError) -> Status {
+    if matches!(error, idevice::IdeviceError::ServiceNotFound) {
+        Status::ContainerUnavailable
+    } else if matches!(error, idevice::IdeviceError::Afc(value) if value.sub_code() == 8) {
+        // AFC ObjectNotFound refers to this exact requested path.
+        Status::ContainerFileNotFound
+    } else {
+        classify_error(error)
+    }
+}
+
 fn staged_error(status: Status, stage: &str, error: impl std::fmt::Display) -> *mut BridgeResult {
     make_result(status, vec![], format!("{stage}: {error}"))
 }
@@ -618,7 +643,7 @@ async fn selected_device(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn iossim_bridge_abi_version() -> u32 {
-    2
+    3
 }
 
 #[unsafe(no_mangle)]
@@ -1104,6 +1129,56 @@ pub unsafe extern "C" fn iossim_bridge_validate_remote_pairing(
 }
 
 #[unsafe(no_mangle)]
+/// Asks AMFI to reveal the Developer Mode option in the iPhone's Settings app
+/// (`com.apple.amfi.lockdown` action 0). This is the minimum operation that
+/// makes iOS expose the toggle: it creates AMFI's show-override marker and
+/// nothing else. It does not enable Developer Mode, does not reboot the
+/// device, and requires no passcode. AMFI's enable (action 1) and accept
+/// (action 2) actions are deliberately not exposed: enabling belongs to the
+/// user on the device, and action 1 is rejected outright on any device with a
+/// passcode set.
+///
+/// # Safety
+/// `handle` must be a live bridge handle for the duration of this call.
+pub unsafe extern "C" fn iossim_bridge_reveal_developer_mode(
+    handle: *mut DeviceHandle,
+    timeout: u64,
+) -> *mut BridgeResult {
+    protected(|| {
+        if handle.is_null() {
+            return make_result(Status::InvalidArgument, vec![], "device handle is null");
+        }
+        let timeout = match timeout_ms(timeout) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // SAFETY: handle ownership remains with caller for this invocation.
+        let handle = unsafe { &*handle };
+        let stable_id = handle.stable_id.clone();
+        let expected_mux = handle.usbmux_id;
+        let runtime = match runtime() {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let task = move || async move {
+            let selected = selected_device(&stable_id, expected_mux).await?;
+            let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
+            let mut amfi = AmfiClient::connect(&provider).await?;
+            amfi.reveal_developer_mode_option_in_ui().await
+        };
+        match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
+            Ok(Ok(())) => make_result(
+                Status::Ok,
+                vec![],
+                "developer mode option revealed in device settings",
+            ),
+            Ok(Err(error)) => error_result(&error),
+            Err(_) => make_result(Status::TimedOut, vec![], "developer mode reveal timed out"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 /// Reads developer-support mount status for an opened device.
 ///
 /// # Safety
@@ -1424,7 +1499,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
                     let status = if matches!(error, idevice::IdeviceError::ImageNotMounted) {
                         Status::DdiRequired
                     } else {
-                        Status::CoreDeviceProxyFailed
+                        staged_device_status(&error, Status::CoreDeviceProxyFailed)
                     };
                     return Err((status, "coredevice_proxy", error.to_string()));
                 }
@@ -1432,7 +1507,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
             let rsd_port = proxy.tunnel_info().server_rsd_port;
             let adapter = proxy.create_software_tunnel().map_err(|error| {
                 (
-                    Status::SoftwareTunnelFailed,
+                    staged_device_status(&error, Status::SoftwareTunnelFailed),
                     "software_tunnel",
                     error.to_string(),
                 )
@@ -1442,9 +1517,13 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
                 .connect(rsd_port)
                 .await
                 .map_err(|error| (Status::RsdUnavailable, "rsd_connect", error.to_string()))?;
-            let mut handshake = RsdHandshake::new(stream)
-                .await
-                .map_err(|error| (Status::RsdUnavailable, "rsd_handshake", error.to_string()))?;
+            let mut handshake = RsdHandshake::new(stream).await.map_err(|error| {
+                (
+                    staged_device_status(&error, Status::RsdUnavailable),
+                    "rsd_handshake",
+                    error.to_string(),
+                )
+            })?;
             let app_service_name = AppServiceClient::rsd_service_name();
             let Some(service) = handshake.services.get(app_service_name.as_ref()) else {
                 return Err((
@@ -1469,7 +1548,7 @@ pub unsafe extern "C" fn iossim_bridge_developer_services_status(
                 .await
                 .map_err(|error| {
                     (
-                        Status::RemoteXpcFailed,
+                        staged_device_status(&error, Status::RemoteXpcFailed),
                         "remotexpc_handshake",
                         error.to_string(),
                     )
@@ -1555,7 +1634,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                     let status = if matches!(error, idevice::IdeviceError::ImageNotMounted) {
                         Status::DdiRequired
                     } else {
-                        Status::CoreDeviceProxyFailed
+                        staged_device_status(&error, Status::CoreDeviceProxyFailed)
                     };
                     return Err((status, "coredevice_proxy", error.to_string()));
                 }
@@ -1563,7 +1642,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
             let rsd_port = proxy.tunnel_info().server_rsd_port;
             let adapter = proxy.create_software_tunnel().map_err(|error| {
                 (
-                    Status::SoftwareTunnelFailed,
+                    staged_device_status(&error, Status::SoftwareTunnelFailed),
                     "software_tunnel",
                     error.to_string(),
                 )
@@ -1573,9 +1652,13 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                 .connect(rsd_port)
                 .await
                 .map_err(|error| (Status::RsdUnavailable, "rsd_connect", error.to_string()))?;
-            let mut handshake = RsdHandshake::new(stream)
-                .await
-                .map_err(|error| (Status::RsdUnavailable, "rsd_handshake", error.to_string()))?;
+            let mut handshake = RsdHandshake::new(stream).await.map_err(|error| {
+                (
+                    staged_device_status(&error, Status::RsdUnavailable),
+                    "rsd_handshake",
+                    error.to_string(),
+                )
+            })?;
             let app_service_name = AppServiceClient::rsd_service_name();
             let Some(service) = handshake.services.get(app_service_name.as_ref()) else {
                 return Err((
@@ -1600,7 +1683,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                 .await
                 .map_err(|error| {
                     (
-                        Status::RemoteXpcFailed,
+                        staged_device_status(&error, Status::RemoteXpcFailed),
                         "remotexpc_handshake",
                         error.to_string(),
                     )
@@ -1617,6 +1700,12 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                         Status::DeviceLocked
                     } else if matches!(error, idevice::IdeviceError::DeveloperModeNotEnabled) {
                         Status::DeveloperModeRequired
+                    } else if matches!(error, idevice::IdeviceError::CoreDevice(ref value) if value.sub_code() == 1) {
+                        // The launch operation returned a structured CoreDevice
+                        // error envelope. Keep it as a launch rejection; the
+                        // Swift layer performs the narrower developer-trust
+                        // classification from its redacted diagnostic.
+                        Status::LaunchRejected
                     } else if lower.contains("security")
                         || lower.contains("denied")
                         || lower.contains("signature")
@@ -1816,11 +1905,7 @@ pub unsafe extern "C" fn iossim_bridge_container_read(
                 "container response exceeded size limit",
             ),
             Ok(Err(error)) => {
-                let status = if matches!(error, idevice::IdeviceError::ServiceNotFound) {
-                    Status::ContainerUnavailable
-                } else {
-                    classify_error(&error)
-                };
+                let status = container_read_error_status(&error);
                 staged_error(status, "house_arrest_read", error)
             }
             Err(_) => make_result(Status::TimedOut, vec![], "container read timed out"),
@@ -2067,7 +2152,49 @@ mod tests {
         assert_eq!(Status::ContainerUnavailable as i32, 23);
         assert_eq!(Status::PairingPending as i32, 25);
         assert_eq!(Status::PairingDenied as i32, 26);
-        assert_eq!(iossim_bridge_abi_version(), 2);
+        assert_eq!(Status::ContainerFileNotFound as i32, 27);
+        // ABI 3 adds iossim_bridge_reveal_developer_mode. Swift refuses to load
+        // any bridge that does not report exactly this version.
+        assert_eq!(iossim_bridge_abi_version(), 3);
+    }
+
+    #[test]
+    fn reveal_developer_mode_rejects_a_null_handle_without_touching_a_device() {
+        let result = unsafe { iossim_bridge_reveal_developer_mode(ptr::null_mut(), 1_000) };
+        assert!(!result.is_null());
+        // SAFETY: `protected` always returns an owned result for a non-null pointer.
+        let status = unsafe { (*result).status };
+        assert_eq!(status, Status::InvalidArgument as i32);
+        unsafe { iossim_bridge_result_free(result) };
+    }
+
+    #[test]
+    fn authoritative_developer_mode_survives_stage_specific_mapping() {
+        assert_eq!(
+            staged_device_status(
+                &idevice::IdeviceError::DeveloperModeNotEnabled,
+                Status::CoreDeviceProxyFailed,
+            ),
+            Status::DeveloperModeRequired
+        );
+    }
+
+    #[test]
+    fn only_afc_object_not_found_is_a_missing_container_file() {
+        use idevice::services::afc::errors::AfcError;
+
+        assert_eq!(
+            container_read_error_status(&idevice::IdeviceError::Afc(AfcError::ObjectNotFound)),
+            Status::ContainerFileNotFound
+        );
+        assert_eq!(
+            container_read_error_status(&idevice::IdeviceError::Afc(AfcError::PermDenied)),
+            Status::ProtocolError
+        );
+        assert_eq!(
+            container_read_error_status(&idevice::IdeviceError::ServiceNotFound),
+            Status::ContainerUnavailable
+        );
     }
 
     #[test]

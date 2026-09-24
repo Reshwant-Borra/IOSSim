@@ -51,11 +51,53 @@ public enum RemotePairingDisposition: String, Codable, Equatable, Sendable {
 
 public enum RemotePairingFailure: String, Error, Codable, Equatable, Sendable {
     case invalidRecord, wrongDevice, wrongTeam, deviceTrustRequired, deviceLocked
+    case developerModeRequired, developerTrustRequired
     case deliveryFailed, receiptMissing, receiptInvalid, receiptRejected
     case bootstrapMissing, bootstrapInvalid, bootstrapExpired, pairingRejected
     case transientTransport, operationalProofFailed, nativeBridgeUnavailable, unsafePath
     /// The fail-closed secure store cannot be used without interaction (or is unavailable in this build).
     case secureStorageUnavailable
+}
+
+public struct RemotePairingPollingPolicy: Equatable, Sendable {
+    /// Nine reads with eight intervening 250 ms delays preserves the existing
+    /// approximately two-second watcher-first window.
+    public let initialWatcherAttempts: Int
+    /// A fresh bounded window after the one fallback activation. The default
+    /// allows approximately 7.75 seconds for cold launch and watcher startup.
+    public let postActivationAttempts: Int
+    public let protocolAttempts: Int
+    public let activationEscalationAttempt: Int
+    public let delayNanoseconds: UInt64
+
+    public init(
+        initialWatcherAttempts: Int = 9,
+        postActivationAttempts: Int = 32,
+        protocolAttempts: Int = 20,
+        activationEscalationAttempt: Int = 8,
+        delayNanoseconds: UInt64 = 250_000_000
+    ) {
+        self.initialWatcherAttempts = max(1, initialWatcherAttempts)
+        self.postActivationAttempts = max(1, postActivationAttempts)
+        self.protocolAttempts = max(1, protocolAttempts)
+        self.activationEscalationAttempt = max(0, activationEscalationAttempt)
+        self.delayNanoseconds = delayNanoseconds
+    }
+}
+
+private func mapRemotePairingBridgeFailure(
+    _ bridge: NativeDeviceBridgeError,
+    fallback: RemotePairingFailure
+) -> RemotePairingFailure {
+    switch bridge {
+    case .deviceLocked: return .deviceLocked
+    case .trustRequired, .trustPromptPending, .trustDenied: return .deviceTrustRequired
+    case .developerModeRequired: return .developerModeRequired
+    case _ where bridge.isDeveloperTrustRejection: return .developerTrustRequired
+    case .deviceNotFound, .deviceResolutionFailed(_), .deviceDisconnected, .timedOut:
+        return .transientTransport
+    default: return fallback
+    }
 }
 
 public struct RemotePairingMaterial: Sendable {
@@ -402,20 +444,9 @@ public struct NativeRemotePairingOperations: RemotePairingNativeOperations {
     }
 
     private static func map(_ error: NativeDeviceBridgeError) -> RemotePairingFailure {
-        switch error {
-        case .deviceNotFound, .deviceResolutionFailed, .deviceDisconnected, .timedOut:
-            return .transientTransport
-        case .deviceLocked:
-            return .deviceLocked
-        case .trustRequired:
-            return .deviceTrustRequired
-        case .pairingRejected:
-            return .pairingRejected
-        case .invalidIdentity:
-            return .wrongDevice
-        default:
-            return .nativeBridgeUnavailable
-        }
+        if case .pairingRejected(_) = error { return .pairingRejected }
+        if case .invalidIdentity = error { return .wrongDevice }
+        return mapRemotePairingBridgeFailure(error, fallback: .nativeBridgeUnavailable)
     }
 }
 
@@ -505,13 +536,7 @@ public struct NativeRemotePairingContainerDelivery: RemotePairingContainerDelive
 
     private static func map(_ error: Error, fallback: RemotePairingFailure) -> RemotePairingFailure {
         guard let bridge = error as? NativeDeviceBridgeError else { return fallback }
-        switch bridge {
-        case .deviceLocked: return .deviceLocked
-        case .trustRequired: return .deviceTrustRequired
-        case .deviceNotFound, .deviceResolutionFailed, .deviceDisconnected, .timedOut:
-            return .transientTransport
-        default: return fallback
-        }
+        return mapRemotePairingBridgeFailure(bridge, fallback: fallback)
     }
 }
 
@@ -564,6 +589,8 @@ public struct NativeDeveloperServicesRemotePairingProof: RemotePairingOperationa
             ) else { throw RemotePairingFailure.operationalProofFailed }
         } catch let failure as RemotePairingFailure {
             throw failure
+        } catch let bridge as NativeDeviceBridgeError {
+            throw mapRemotePairingBridgeFailure(bridge, fallback: .operationalProofFailed)
         } catch {
             throw RemotePairingFailure.operationalProofFailed
         }
@@ -577,12 +604,15 @@ public actor RemotePairingCoordinator {
     private let native: any RemotePairingNativeOperations
     private let delivery: any RemotePairingContainerDelivery
     private let proof: any RemotePairingOperationalProof
+    private let polling: RemotePairingPollingPolicy
 
     public init(store: any RemotePairingStore = KeychainRemotePairingStore(),
                 native: any RemotePairingNativeOperations = NativeRemotePairingOperations(),
                 delivery: any RemotePairingContainerDelivery,
-                proof: any RemotePairingOperationalProof = UnavailableRemotePairingOperationalProof()) {
-        self.store = store; self.native = native; self.delivery = delivery; self.proof = proof; self.state = .missing
+                proof: any RemotePairingOperationalProof = UnavailableRemotePairingOperationalProof(),
+                polling: RemotePairingPollingPolicy = RemotePairingPollingPolicy()) {
+        self.store = store; self.native = native; self.delivery = delivery; self.proof = proof
+        self.polling = polling; self.state = .missing
     }
 
     public func prepare(device: IOSSimDeviceIdentity, teamIdentifier: String,
@@ -661,7 +691,7 @@ public actor RemotePairingCoordinator {
         try await delivery.writeEnvelope(encoded, to: device, appBundleIdentifier: appBundleIdentifier)
         state = .awaitingReceipt
         let receiptData = try await poll(
-            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            maxAttempts: polling.protocolAttempts, delayNanoseconds: polling.delayNanoseconds,
             escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
         ) {
             try await self.delivery.readReceipt(from: device, appBundleIdentifier: appBundleIdentifier)
@@ -689,7 +719,7 @@ public actor RemotePairingCoordinator {
             appBundleIdentifier: appBundleIdentifier
         )
         let responseData = try await poll(
-            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            maxAttempts: polling.protocolAttempts, delayNanoseconds: polling.delayNanoseconds,
             escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
         ) {
             try await self.delivery.readPossessionResponse(from: device, appBundleIdentifier: appBundleIdentifier)
@@ -721,7 +751,7 @@ public actor RemotePairingCoordinator {
             appBundleIdentifier: appBundleIdentifier
         )
         let promotionReceiptData = try await poll(
-            maxAttempts: 20, delayNanoseconds: 250_000_000,
+            maxAttempts: polling.protocolAttempts, delayNanoseconds: polling.delayNanoseconds,
             escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
         ) {
             try await self.delivery.readReceipt(from: device, appBundleIdentifier: appBundleIdentifier)
@@ -768,9 +798,8 @@ public actor RemotePairingCoordinator {
             to: device,
             appBundleIdentifier: appBundleIdentifier
         )
-        let bootstrapData = try await poll(
-            maxAttempts: 20, delayNanoseconds: 250_000_000,
-            escalate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
+        let bootstrapData = try await pollBootstrap(
+            activate: { try await self.delivery.activateApp(on: device, appBundleIdentifier: appBundleIdentifier) }
         ) {
             try await self.delivery.readBootstrap(from: device, appBundleIdentifier: appBundleIdentifier)
         }
@@ -815,8 +844,6 @@ public actor RemotePairingCoordinator {
     /// up each later write on its own. An AppService launch kills and restarts the app (`kill_existing`),
     /// which restarts that watcher from zero and is visible to the user, so activation is an escalation
     /// rather than a step: it runs only once the watcher has demonstrably not answered.
-    static let activationEscalationAttempt = 8
-
     private func poll(
         maxAttempts: Int,
         delayNanoseconds: UInt64,
@@ -828,11 +855,39 @@ public actor RemotePairingCoordinator {
         for attempt in 0..<maxAttempts {
             do { return try await operation() }
             catch { lastError = error }
-            if let escalate, !escalated, attempt >= Self.activationEscalationAttempt {
+            if let escalate, !escalated, attempt >= polling.activationEscalationAttempt {
                 escalated = true
                 try await escalate()
             }
             if attempt + 1 < maxAttempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+        }
+        throw lastError
+    }
+
+    /// Bootstrap is the only exchange that may begin before any inbox watcher
+    /// exists. Poll the existing watcher first; if it does not answer, perform
+    /// exactly one activation and start a fresh bounded cold-launch window.
+    private func pollBootstrap(
+        activate: () async throws -> Void,
+        operation: () async throws -> Data
+    ) async throws -> Data {
+        var lastError: Error = RemotePairingFailure.bootstrapMissing
+        for attempt in 0..<polling.initialWatcherAttempts {
+            do { return try await operation() }
+            catch { lastError = error }
+            if attempt + 1 < polling.initialWatcherAttempts {
+                try await Task.sleep(nanoseconds: polling.delayNanoseconds)
+            }
+        }
+
+        try await activate()
+
+        for attempt in 0..<polling.postActivationAttempts {
+            do { return try await operation() }
+            catch { lastError = error }
+            if attempt + 1 < polling.postActivationAttempts {
+                try await Task.sleep(nanoseconds: polling.delayNanoseconds)
+            }
         }
         throw lastError
     }

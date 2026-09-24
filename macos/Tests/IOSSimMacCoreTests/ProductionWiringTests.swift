@@ -193,6 +193,85 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertEqual(delivery.activations, 1, "bootstrap fallback activates exactly once")
     }
 
+    func testAutomaticPairingColdLaunchGetsDedicatedPostActivationWindow() async throws {
+        let delivery = ScriptedPairingDelivery(
+            answerReceiptImmediately: true,
+            bootstrapRequiresActivation: true,
+            bootstrapReadsAfterActivationBeforeResponse: 4
+        )
+        do {
+            _ = try await preparePairing(
+                delivery: delivery,
+                polling: RemotePairingPollingPolicy(
+                    initialWatcherAttempts: 2,
+                    postActivationAttempts: 6,
+                    protocolAttempts: 2,
+                    activationEscalationAttempt: 0,
+                    delayNanoseconds: 0
+                )
+            )
+            XCTFail("the scripted receipt is intentionally not bound")
+        } catch {
+            XCTAssertEqual(error as? RemotePairingFailure, .receiptInvalid)
+        }
+        XCTAssertEqual(delivery.activations, 1)
+        XCTAssertGreaterThan(delivery.bootstrapReadsAfterActivation, 3)
+    }
+
+    func testAutomaticPairingColdLaunchTimeoutNeverRepeatsActivation() async throws {
+        let delivery = ScriptedPairingDelivery(
+            answerReceiptImmediately: true,
+            bootstrapRequiresActivation: true,
+            bootstrapReadsAfterActivationBeforeResponse: .max
+        )
+        do {
+            _ = try await preparePairing(
+                delivery: delivery,
+                polling: RemotePairingPollingPolicy(
+                    initialWatcherAttempts: 2,
+                    postActivationAttempts: 3,
+                    protocolAttempts: 2,
+                    activationEscalationAttempt: 0,
+                    delayNanoseconds: 0
+                )
+            )
+            XCTFail("a watcher that never starts cannot pair")
+        } catch {
+            XCTAssertEqual(error as? RemotePairingFailure, .bootstrapMissing)
+        }
+        XCTAssertEqual(delivery.activations, 1)
+    }
+
+    func testAutomaticPairingFallbackPreservesDeveloperActions() async throws {
+        for expected in [
+            RemotePairingFailure.developerTrustRequired,
+            RemotePairingFailure.developerModeRequired,
+        ] {
+            let delivery = ScriptedPairingDelivery(
+                answerReceiptImmediately: true,
+                bootstrapRequiresActivation: true,
+                activationFailure: expected
+            )
+            do {
+                _ = try await preparePairing(
+                    delivery: delivery,
+                    polling: RemotePairingPollingPolicy(
+                        initialWatcherAttempts: 1,
+                        postActivationAttempts: 1,
+                        protocolAttempts: 1,
+                        activationEscalationAttempt: 0,
+                        delayNanoseconds: 0
+                    )
+                )
+                XCTFail("expected typed activation failure")
+            } catch {
+                XCTAssertEqual(error as? RemotePairingFailure, expected)
+            }
+            XCTAssertEqual(delivery.activations, 1)
+            XCTAssertEqual(DeviceFailureMapping.map(expected).state, .waitingForUser)
+        }
+    }
+
     /// Later protocol polls retain their existing one-shot escalation if the watcher disappears
     /// after answering bootstrap.
     func testAutomaticPairingStillEscalatesOnceWhenWatcherStopsAnswering() async throws {
@@ -208,7 +287,10 @@ final class ProductionWiringTests: XCTestCase {
 
     /// Reaches the envelope delivery with an existing record, so the pairing protocol and its
     /// cryptography are exercised unchanged and only the activation policy is under test.
-    private func preparePairing(delivery: ScriptedPairingDelivery) async throws -> RemotePairingRecord {
+    private func preparePairing(
+        delivery: ScriptedPairingDelivery,
+        polling: RemotePairingPollingPolicy = RemotePairingPollingPolicy()
+    ) async throws -> RemotePairingRecord {
         let store = InMemoryRemotePairingStore()
         let native = ScriptedPairingNative()
         try store.save(RemotePairingRecord(
@@ -217,7 +299,9 @@ final class ProductionWiringTests: XCTestCase {
                 identifier: "pair", publicKeyFingerprint: String(repeating: "a", count: 64),
                 pairingGeneration: 1, releaseIdentity: "veya-v2:abc"),
             pairingData: Data("synthetic".utf8)))
-        return try await RemotePairingCoordinator(store: store, native: native, delivery: delivery)
+        return try await RemotePairingCoordinator(
+            store: store, native: native, delivery: delivery, polling: polling
+        )
             .reconcileAutomatically(
                 device: device, teamIdentifier: "T8SL4SG87F",
                 appBundleIdentifier: "com.personalteam.iossim.main", hostname: "IOSSim-Mac",
@@ -247,7 +331,7 @@ final class ProductionWiringTests: XCTestCase {
         try receipt(state: .vpnPermissionRequired, reachable: false)
         observation = try await domain.observe(scope: scope, journal: journal)
         XCTAssertEqual(observation.state, .invalid, "a reported action is re-probed, never waited on")
-        XCTAssertEqual(observation.userAction, "Open LocalDevVPN on the iPhone and allow the VPN configuration, then continue in Veya.")
+        XCTAssertEqual(observation.userAction, "Open LocalDevVPN, allow the VPN configuration, then continue in Veya.")
         try receipt(state: .running, reachable: false)
         observation = try await domain.observe(scope: scope, journal: journal)
         XCTAssertEqual(observation.state, .invalid, "running is never ready")
@@ -265,6 +349,84 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertEqual(observation.state, .stale, "a minute-old receipt must be re-probed: LocalDevVPN may be off now")
         XCTAssertEqual(service.writes, 0, "observation never writes to the device")
         XCTAssertEqual(service.launches, 0, "observation never launches apps")
+    }
+
+    func testFreshVPNReceiptAbsenceSchedulesRealTransitionThenMakesPairingEligible() async throws {
+        try await install(digestSeed: "fresh-vpn")
+        let service = FreshVPNService()
+        let vpn = ProductionDeviceDomains.vpn(
+            service: service,
+            coordinator: LocalDevVPNSetupCoordinator(
+                service: service, initialProbeAttempts: 1,
+                readinessAttempts: 1, delayNanoseconds: 0
+            ),
+            repository: repository,
+            device: { self.device }
+        )
+        let pairingPrepares = CounterBox()
+        let pairing = CoordinatedDeviceDomain(
+            domain: .pairing,
+            observe: { _ in pairingPrepares.value == 0 ? .missing() : .satisfied() },
+            prepare: { _ in pairingPrepares.value += 1; return .satisfied() }
+        )
+        let engine = try VeyaReconciliationEngine(
+            journalRepository: repository,
+            observers: [vpn, pairing], transitions: [vpn, pairing],
+            sleeper: InstantSleep(), leaseSleeper: InstantSleep()
+        )
+
+        let outcome = try await engine.reconcile(
+            scope: scope,
+            to: DesiredInstallationState(requirements: [.init(domain: .vpn), .init(domain: .pairing)]),
+            policy: ReconciliationPolicy(
+                allowedDomains: [.vpn, .pairing], maximumTransitions: 8, localRetryLimit: 0
+            )
+        )
+
+        XCTAssertEqual(outcome.status, .ready)
+        XCTAssertEqual(service.requestWrites, 1)
+        XCTAssertEqual(service.launches.filter { $0 == "com.personalteam.iossim.main" }.count, 1)
+        XCTAssertEqual(service.launches.filter {
+            $0 == LocalDevVPNSetupCoordinator.localDevVPNBundleIdentifier
+        }.count, 1)
+        XCTAssertEqual(pairingPrepares.value, 1)
+    }
+
+    func testVPNObservationDoesNotTreatContainerOrDeviceFailureAsMissingReceipt() async throws {
+        try await install(digestSeed: "vpn-errors")
+        let journal = try await repository.load()
+        for failure in [
+            NativeDeviceBridgeError.containerUnavailable("house arrest unavailable"),
+            NativeDeviceBridgeError.deviceDisconnected,
+        ] {
+            let service = ContainerService()
+            service.readFailure = failure
+            let domain = ProductionDeviceDomains.vpn(
+                service: service,
+                coordinator: LocalDevVPNSetupCoordinator(service: service),
+                repository: repository,
+                device: { self.device }
+            )
+            let observation = try await domain.observe(scope: scope, journal: journal)
+            XCTAssertEqual(observation.state, .retryableFailure)
+            XCTAssertEqual(observation.failure?.code, DeviceDomainFailure.observationFailed.code)
+        }
+    }
+
+    func testMalformedVPNReceiptRemainsReceiptInvalid() async throws {
+        try await install(digestSeed: "vpn-malformed")
+        let journal = try await repository.load()
+        let service = ContainerService()
+        service.files[LocalDevVPNSetupCoordinator.receiptPath] = Data("{malformed".utf8)
+        let domain = ProductionDeviceDomains.vpn(
+            service: service,
+            coordinator: LocalDevVPNSetupCoordinator(service: service),
+            repository: repository,
+            device: { self.device }
+        )
+        let observation = try await domain.observe(scope: scope, journal: journal)
+        XCTAssertNotEqual(observation.state, .missing)
+        XCTAssertEqual(observation.failure?.code, DeviceDomainFailure.vpnReceiptInvalid.code)
     }
 
     func testInstallationV2PairingStoreFailsClosedWithoutTouchingTheKeychain() throws {
@@ -438,12 +600,22 @@ private final class ScriptedPairingNative: RemotePairingNativeOperations, @unche
 private final class ScriptedPairingDelivery: RemotePairingContainerDelivery, @unchecked Sendable {
     private let answerReceiptImmediately: Bool
     private let bootstrapRequiresActivation: Bool
+    private let bootstrapReadsAfterActivationBeforeResponse: Int
+    private let activationFailure: RemotePairingFailure?
     private var bootstrap: RemotePairingBootstrapSession?
     private(set) var activations = 0
+    private(set) var bootstrapReadsAfterActivation = 0
 
-    init(answerReceiptImmediately: Bool, bootstrapRequiresActivation: Bool = false) {
+    init(
+        answerReceiptImmediately: Bool,
+        bootstrapRequiresActivation: Bool = false,
+        bootstrapReadsAfterActivationBeforeResponse: Int = 0,
+        activationFailure: RemotePairingFailure? = nil
+    ) {
         self.answerReceiptImmediately = answerReceiptImmediately
         self.bootstrapRequiresActivation = bootstrapRequiresActivation
+        self.bootstrapReadsAfterActivationBeforeResponse = bootstrapReadsAfterActivationBeforeResponse
+        self.activationFailure = activationFailure
     }
 
     func writeBootstrapRequest(_ request: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
@@ -457,11 +629,18 @@ private final class ScriptedPairingDelivery: RemotePairingContainerDelivery, @un
         guard let bootstrap, !bootstrapRequiresActivation || activations > 0 else {
             throw RemotePairingFailure.bootstrapMissing
         }
+        if activations > 0 {
+            bootstrapReadsAfterActivation += 1
+            guard bootstrapReadsAfterActivation > bootstrapReadsAfterActivationBeforeResponse else {
+                throw RemotePairingFailure.bootstrapMissing
+            }
+        }
         return try JSONEncoder().encode(bootstrap)
     }
 
     func activateApp(on device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {
         activations += 1
+        if let activationFailure { throw activationFailure }
     }
 
     func writeEnvelope(_ envelope: Data, to device: IOSSimDeviceIdentity, appBundleIdentifier: String) async throws {}
@@ -536,6 +715,7 @@ private struct NoDelivery: RemotePairingContainerDelivery {
 
 private final class ContainerService: NativeApplicationServicing, @unchecked Sendable {
     var files: [String: Data] = [:]
+    var readFailure: NativeDeviceBridgeError?
     private(set) var writes = 0
     private(set) var launches = 0
     func inventory(on device: IOSSimDeviceIdentity) async throws -> [NativeInstalledApplication] { [] }
@@ -546,7 +726,61 @@ private final class ContainerService: NativeApplicationServicing, @unchecked Sen
         writes += 1
     }
     func readContainer(bundleIdentifier: String, relativePath: String, on device: IOSSimDeviceIdentity) async throws -> Data {
-        guard let data = files[relativePath] else { throw NativeDeviceBridgeError.containerUnavailable("missing") }
+        if let readFailure { throw readFailure }
+        guard let data = files[relativePath] else { throw NativeDeviceBridgeError.containerFileNotFound("missing") }
         return data
     }
+}
+
+private final class FreshVPNService: NativeApplicationServicing, @unchecked Sendable {
+    private var request: LocalDevVPNSetupRequestPayload?
+    private(set) var requestWrites = 0
+    private(set) var launches: [String] = []
+
+    func inventory(on device: IOSSimDeviceIdentity) async throws -> [NativeInstalledApplication] {
+        [NativeInstalledApplication(
+            bundleIdentifier: LocalDevVPNSetupCoordinator.localDevVPNBundleIdentifier,
+            version: "1.3.0"
+        )]
+    }
+    func install(appURL: URL, mode: NativeApplicationInstallMode, on device: IOSSimDeviceIdentity) async throws {}
+    func uninstall(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws {}
+    func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws {
+        launches.append(bundleIdentifier)
+    }
+    func writeContainer(
+        bundleIdentifier: String,
+        relativePath: String,
+        data: Data,
+        on device: IOSSimDeviceIdentity
+    ) async throws {
+        guard relativePath == LocalDevVPNSetupCoordinator.requestPath else { return }
+        request = try JSONDecoder().decode(LocalDevVPNSetupRequestPayload.self, from: data)
+        requestWrites += 1
+    }
+    func readContainer(
+        bundleIdentifier: String,
+        relativePath: String,
+        on device: IOSSimDeviceIdentity
+    ) async throws -> Data {
+        guard let request,
+              launches.contains(LocalDevVPNSetupCoordinator.localDevVPNBundleIdentifier) else {
+            throw NativeDeviceBridgeError.containerFileNotFound("receipt absent")
+        }
+        return try JSONEncoder().encode(LocalDevVPNSetupReceiptPayload(
+            requestID: request.requestID,
+            status: "ready",
+            endpoint: request.endpoint,
+            interfaceVisible: true,
+            endpointReachable: true,
+            lifecycleState: .runtimeEndpointReachable,
+            deviceUDID: request.deviceUDID,
+            teamIdentifier: request.teamIdentifier,
+            releaseIdentity: request.releaseIdentity
+        ))
+    }
+}
+
+private final class CounterBox: @unchecked Sendable {
+    var value = 0
 }

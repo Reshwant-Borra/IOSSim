@@ -948,6 +948,33 @@ public struct ProvisioningLogEvent: Codable, Equatable, Sendable, Identifiable {
 }
 
 public enum ConsumerProvisioningErrorClassifier {
+    /// Recognizes the developer-profile trust gate without treating every
+    /// security-flavored launch rejection as trust. Structured CoreDevice/FBS
+    /// evidence requires an accompanying developer/profile trust diagnostic;
+    /// the exact physically observed diagnostic remains a safe fallback when a
+    /// bridge has already normalized the error to `launch_rejected`.
+    public static func isDeveloperProfileTrustRejection(output: String) -> Bool {
+        let lower = output.lowercased()
+        let exactKnownDiagnostic = lower.contains("profile has not been explicitly trusted")
+        let coreDeviceDenied = lower.contains("coredeviceerror")
+            && (lower.contains("error 10002") || lower.contains("code = 10002") || lower.contains("code: 10002"))
+        let fbsSecurityDenied = lower.contains("fbsopenapplicationerrordomain")
+            && (lower.contains("error 3") || lower.contains("code = 3") || lower.contains("code: 3"))
+            && (lower.contains("bserrorcodedescription = security")
+                || lower.contains("bserrorcodedescription: security")
+                || lower.contains("security"))
+        let trustSubject = lower.contains("profile") || lower.contains("developer")
+        let trustLanguage = exactKnownDiagnostic
+            || lower.contains("not trusted")
+            || lower.contains("has not been trusted")
+            || lower.contains("untrusted developer")
+            || lower.contains("trust is required")
+            || lower.contains("must be trusted")
+        let structuredTrust = coreDeviceDenied && fbsSecurityDenied && trustSubject && trustLanguage
+        let normalizedKnownTrust = lower.hasPrefix("launch_rejected:") && exactKnownDiagnostic
+        return structuredTrust || normalizedKnownTrust
+    }
+
     public static func installErrorCode(output: String, artifact: String) -> ConsumerProvisioningErrorCode {
         let lower = output.lowercased()
         if lower.contains("locked") || lower.contains("passcode") && lower.contains("required") {
@@ -1000,15 +1027,12 @@ public enum ConsumerProvisioningErrorClassifier {
         ]
         if let match = typedPrefixes.first(where: { lower.hasPrefix($0.0) }) {
             if match.1 == .launchRejected,
-               lower.contains("profile has not been explicitly trusted") {
+               isDeveloperProfileTrustRejection(output: output) {
                 return .developerProfileTrustRequired
             }
             return match.1
         }
-        if lower.contains("coredeviceerror error 10002")
-            && lower.contains("fbsopenapplicationerrordomain error 3")
-            && lower.contains("bserrorcodedescription = security")
-            && lower.contains("profile has not been explicitly trusted") {
+        if isDeveloperProfileTrustRejection(output: output) {
             return .developerProfileTrustRequired
         }
         return installErrorCode(output: output, artifact: "main") == .mainInstallFailure

@@ -1919,6 +1919,10 @@ public actor ConsumerArtifactProvisioner {
                 code = .developerProfileTrustRequired
                 userMessage = "Trust the developer on your iPhone."
                 remediation = "Open Settings > General > VPN & Device Management, trust the Apple Development entry, then choose Try Again."
+            case .developerModeRequired:
+                code = .developerModeRequired
+                userMessage = "Developer Mode must be enabled on this iPhone."
+                remediation = "Enable Developer Mode, restart and unlock the iPhone, then choose Try Again."
             case .receiptMissing, .receiptInvalid:
                 code = .localDevVPNReadinessFailed
                 userMessage = "IOSSim could not verify LocalDevVPN readiness."
@@ -1928,9 +1932,20 @@ public actor ConsumerArtifactProvisioner {
                 userMessage = "IOSSim lost contact with the iPhone while checking LocalDevVPN."
                 remediation = "Reconnect and unlock the same iPhone, then choose Try Again."
             }
+            let failureStage: ConsumerProvisioningStage
+            switch failure {
+            case .developerModeRequired:
+                failureStage = .checkingDeveloperMode
+            case .developerTrustRequired:
+                failureStage = .developerProfileTrustRequired
+            case .userActionRequired, .appMissing, .unsupportedVersion,
+                 .vpnPermissionRequired, .vpnNotRunning:
+                failureStage = .localDevVPNUserActionRequired
+            default:
+                failureStage = .localDevVPNReadinessStarted
+            }
             try await record(
-                stage: [.userActionRequired, .appMissing, .unsupportedVersion, .vpnPermissionRequired, .vpnNotRunning].contains(failure)
-                    ? .localDevVPNUserActionRequired : .localDevVPNReadinessStarted,
+                stage: failureStage,
                 device: rawDeviceIdentifier,
                 result: .failed,
                 errorCode: code,
@@ -1938,8 +1953,7 @@ public actor ConsumerArtifactProvisioner {
             )
             throw ConsumerProvisioningFailure(
                 code: code,
-                stage: [.userActionRequired, .appMissing, .unsupportedVersion, .vpnPermissionRequired, .vpnNotRunning].contains(failure)
-                    ? .localDevVPNUserActionRequired : .localDevVPNReadinessStarted,
+                stage: failureStage,
                 userMessage: userMessage,
                 remediation: remediation,
                 developerDetail: failure.rawValue

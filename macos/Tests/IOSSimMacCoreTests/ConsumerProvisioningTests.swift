@@ -874,6 +874,20 @@ final class ConsumerProvisioningTests: XCTestCase {
             ),
             .runtimeConfigurationWriteFailed
         )
+        let structuredVariant = """
+        com.apple.dt.CoreDeviceError code = 10002
+        FBSOpenApplicationErrorDomain code = 3
+        BSErrorCodeDescription: Security
+        The developer for this application has not been trusted on this device.
+        """
+        XCTAssertEqual(
+            ConsumerProvisioningErrorClassifier.launchErrorCode(output: structuredVariant),
+            .developerProfileTrustRequired
+        )
+        XCTAssertFalse(ConsumerProvisioningErrorClassifier.isDeveloperProfileTrustRejection(
+            output: "com.apple.dt.CoreDeviceError code = 10002 FBSOpenApplicationErrorDomain code = 3 "
+                + "BSErrorCodeDescription: Security invalid signature"
+        ))
     }
 
     func testNativeAppServiceLayersRemainDistinct() {

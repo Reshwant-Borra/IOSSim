@@ -8,6 +8,7 @@ public actor VeyaReconciliationEngine {
     private let observers: [InstallationDomain: any InstallationObserver]
     private let transitions: [InstallationDomain: any InstallationTransition]
     private let eventSink: any InstallationEventSink
+    private let transitionProgress: (@Sendable (InstallationDomain) -> Void)?
     private let sleeper: any ReconciliationSleeping
     private let leaseSleeper: any ReconciliationSleeping
     private let leaseDuration: TimeInterval
@@ -22,6 +23,7 @@ public actor VeyaReconciliationEngine {
         transitions: [any InstallationTransition],
         planner: ReconciliationPlanner = ReconciliationPlanner(),
         eventSink: any InstallationEventSink = InMemoryInstallationEventSink(),
+        transitionProgress: (@Sendable (InstallationDomain) -> Void)? = nil,
         sleeper: any ReconciliationSleeping = ContinuousClockSleeper(),
         leaseSleeper: any ReconciliationSleeping = ContinuousClockSleeper(),
         leaseDuration: TimeInterval = 30,
@@ -37,6 +39,7 @@ public actor VeyaReconciliationEngine {
         self.observers = try Self.unique(observers, key: \.domain, label: "observer")
         self.transitions = try Self.unique(transitions, key: \.domain, label: "transition")
         self.eventSink = eventSink
+        self.transitionProgress = transitionProgress
         self.sleeper = sleeper
         self.leaseSleeper = leaseSleeper
         self.leaseDuration = leaseDuration
@@ -76,6 +79,7 @@ public actor VeyaReconciliationEngine {
         _ = try await journalRepository.recoverAbandonedTransition(runID: runID)
         cancelledRuns.remove(runID)
         var completed = 0
+        var activeDomain: InstallationDomain?
 
         do {
             while completed < policy.maximumTransitions {
@@ -91,7 +95,10 @@ public actor VeyaReconciliationEngine {
                     _ = try await journalRepository.releaseLease(runID: runID)
                     return outcome
                 }
+                activeDomain = planned.domain
+                transitionProgress?(planned.domain)
                 try await execute(planned, scope: scope, desired: desired, policy: policy, runID: runID)
+                activeDomain = nil
                 completed += 1
             }
 
@@ -126,6 +133,9 @@ public actor VeyaReconciliationEngine {
         } catch {
             try? await finishFailedTransition(runID: runID)
             _ = try? await journalRepository.releaseLease(runID: runID)
+            if let failure = error as? VeyaFailure, let activeDomain {
+                throw failure.originating(in: activeDomain)
+            }
             throw error
         }
     }

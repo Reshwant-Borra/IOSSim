@@ -40,18 +40,46 @@ public protocol DeveloperServicesProbing: Sendable {
 extension DynamicNativeDeviceTransport: DeveloperServicesProbing {
     public func readiness(_ device: IOSSimDeviceIdentity) async throws -> DeveloperServicesReadinessReceipt {
         let inspection = try await inspect(device, timeout: .seconds(12))
-        return try developerServicesReadiness(on: inspection.identity)
+        do {
+            return try developerServicesReadiness(on: inspection.identity)
+        } catch {
+            throw DeviceFailureMapping.developerModeRecovery(
+                from: error, developerMode: inspection.developerMode
+            )
+        }
     }
 }
 
 public enum DeviceFailureMapping {
     static let unlock = "Unlock your iPhone and keep it unlocked, then continue in Veya."
     static let trust = "Tap Trust on your iPhone and enter its passcode, then continue in Veya."
-    static let developerMode = "Turn on Developer Mode on the iPhone, restart it, then continue in Veya."
+    public static let developerMode = "On the iPhone open Settings > Privacy & Security > Developer Mode, turn it on, "
+        + "follow the restart prompt, unlock the iPhone, then continue in Veya."
     public static let developerTrust = "On the iPhone open Settings > General > VPN & Device Management, select the "
         + "Apple Development entry for your Apple Account, tap Trust, then continue in Veya."
     public static let secureStorageUnavailable = DeviceDomainFailure.make(
         .pairing, 31, "store", "Veya's secure storage is unavailable, so the device pairing cannot be kept.")
+
+    /// Developer Mode off fails the CoreDevice/RSD chain with a transport-shaped error: iOS only
+    /// returns the authoritative "Developer mode is not enabled." string on the install, launch and
+    /// mount paths. Without this, that observation degrades to a generic `VEYA-DEVICE-030` and the
+    /// Developer Mode prerequisite is never re-entered. AMFI's advisory status is read only to
+    /// explain a probe that has already failed: it can never block a probe that succeeded, and a
+    /// failure that already carries a typed meaning is returned untouched.
+    static func developerModeRecovery(from error: Error, developerMode: DeveloperModeReadiness) -> Error {
+        guard developerMode == .disabled, let bridge = error as? NativeDeviceBridgeError else { return error }
+        switch bridge {
+        case .coreDeviceProxyFailed, .softwareTunnelFailed, .rsdUnavailable, .remoteXPCFailed,
+             .appServiceUnavailable, .featureUnavailable, .developerServicesNotReady, .protocolFailure:
+            // Stages of the developer-services chain that iOS refuses without Developer Mode and
+            // that carry no authoritative meaning of their own.
+            return NativeDeviceBridgeError.developerModeRequired
+        default:
+            // A lost, locked, untrusted or slow device, a missing image, and Veya's own defects all
+            // keep their accurate meaning; only the ambiguous chain failures are re-read.
+            return error
+        }
+    }
 
     /// Typed coordinator/bridge failures → canonical meaning. Unknown errors are retryable observation failures.
     public static func map(_ error: Error) -> NativeDomainMapping {
@@ -75,19 +103,25 @@ public enum DeviceFailureMapping {
             switch pairing {
             case .deviceLocked: return .user(unlock)
             case .deviceTrustRequired: return .user(trust)
+            case .developerModeRequired: return .user(developerMode)
+            case .developerTrustRequired: return .user(developerTrust)
             case .secureStorageUnavailable: return .failed(secureStorageUnavailable)
             case .invalidRecord, .pairingRejected: return .incomplete()
             default: return .failed(DeviceDomainFailure.pairingFailed)
             }
         case let vpn as LocalDevVPNSetupFailure:
             switch vpn {
-            case .appMissing: return DeviceDomainMapping.localDevVPN(.missing)
+            case .appMissing: return .actionable(DeviceDomainFailure.vpnMissing)
             case .unsupportedVersion: return DeviceDomainMapping.localDevVPN(.installedUnsupported)
-            case .vpnPermissionRequired, .userActionRequired: return DeviceDomainMapping.localDevVPN(.vpnPermissionRequired)
-            case .vpnNotRunning: return .user("Open LocalDevVPN on the iPhone and tap Connect, then continue in Veya.")
-            case .endpointUnavailable, .receiptMissing, .receiptInvalid: return DeviceDomainMapping.localDevVPN(.running)
+            case .vpnPermissionRequired, .userActionRequired:
+                return .actionable(DeviceDomainFailure.vpnPermissionRequired)
+            case .vpnNotRunning: return .actionable(DeviceDomainFailure.vpnNotRunning)
+            case .endpointUnavailable: return .actionable(DeviceDomainFailure.vpnEndpointUnavailable)
+            case .receiptMissing: return .actionable(DeviceDomainFailure.vpnReceiptMissing)
+            case .receiptInvalid: return .actionable(DeviceDomainFailure.vpnReceiptInvalid)
             case .developerTrustRequired: return .user(developerTrust)
-            case .transportUnavailable: return .failed(DeviceDomainFailure.observationFailed)
+            case .developerModeRequired: return .user(developerMode)
+            case .transportUnavailable: return .actionable(DeviceDomainFailure.vpnTransportUnavailable)
             }
         default:
             return .failed(DeviceDomainFailure.observationFailed)
@@ -239,15 +273,62 @@ public enum ProductionDeviceDomains {
                     let payload = try await payload(repository)
                     let target = try device()
                     let data: Data
+                    await coordinator.recordObservation(
+                        "vpn.observation.receiptReadStarted",
+                        device: target,
+                        appBundleIdentifier: payload.mainBundleIdentifier,
+                        teamIdentifier: payload.teamIdentifier,
+                        releaseIdentity: payload.releaseIdentity
+                    )
                     do {
                         data = try await service.readContainer(bundleIdentifier: payload.mainBundleIdentifier,
                                                                relativePath: LocalDevVPNSetupCoordinator.receiptPath, on: target)
-                    } catch NativeDeviceBridgeError.containerUnavailable, NativeDeviceBridgeError.applicationNotFound {
+                    } catch NativeDeviceBridgeError.containerFileNotFound {
+                        await coordinator.recordObservation(
+                            "vpn.observation.containerAvailable", value: "true",
+                            device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                            teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                        )
+                        await coordinator.recordObservation(
+                            "vpn.observation.receiptFile", value: "absent",
+                            device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                            teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                        )
                         return .missing()
+                    } catch {
+                        await coordinator.recordObservation(
+                            "vpn.observation.receiptReadFailed",
+                            value: LocalDevVPNSetupCoordinator.transportCategory(error),
+                            device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                            teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                        )
+                        throw error
                     }
-                    guard let receipt = try? JSONDecoder().decode(LocalDevVPNSetupReceiptPayload.self, from: data),
-                          receipt.deviceUDID == target.udid, receipt.teamIdentifier == payload.teamIdentifier,
+                    await coordinator.recordObservation(
+                        "vpn.observation.containerAvailable", value: "true",
+                        device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                        teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                    )
+                    await coordinator.recordObservation(
+                        "vpn.observation.receiptFile", value: "present",
+                        device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                        teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                    )
+                    guard let receipt = try? JSONDecoder().decode(LocalDevVPNSetupReceiptPayload.self, from: data) else {
+                        await coordinator.recordObservation(
+                            "vpn.observation.receiptValidation", value: "malformed",
+                            device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                            teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                        )
+                        return .actionable(DeviceDomainFailure.vpnReceiptInvalid)
+                    }
+                    guard receipt.deviceUDID == target.udid, receipt.teamIdentifier == payload.teamIdentifier,
                           receipt.releaseIdentity == payload.releaseIdentity else {
+                        await coordinator.recordObservation(
+                            "vpn.observation.receiptValidation", value: "bindingMismatch",
+                            device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                            teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                        )
                         return .missing()
                     }
                     guard abs(now().timeIntervalSince(receipt.timestamp)) <= receiptLifetime else {
@@ -256,6 +337,12 @@ public enum ProductionDeviceDomains {
                     let state = receipt.lifecycleState ?? (receipt.status == "ready" ? .runtimeEndpointReachable : .installed)
                     if state == .runtimeEndpointReachable, !receipt.endpointReachable { return .incomplete() }
                     let mapped = DeviceDomainMapping.localDevVPN(state)
+                    await coordinator.recordObservation(
+                        "vpn.observation.receiptValidation",
+                        value: mapped.state == .satisfied ? "satisfied" : state.rawValue,
+                        device: target, appBundleIdentifier: payload.mainBundleIdentifier,
+                        teamIdentifier: payload.teamIdentifier, releaseIdentity: payload.releaseIdentity
+                    )
                     // The receipt is the phone's report from the last probe, not the current state. Waiting on it
                     // would never re-probe after the user acted (physically observed deadlock), so it stays a hint
                     // and the transition re-probes; that throws the same action if it is still needed.

@@ -27,6 +27,10 @@ public struct VeyaFailure: Error, Codable, Equatable, Sendable, CustomStringConv
     public let retryable: Bool
     public let userAction: String?
     public let underlyingSubsystem: String
+    /// The reconciliation domain executing when this failure was produced.
+    /// This is independent of the error namespace; a VPN transition may
+    /// legitimately fail with a generic device transport error.
+    public let originatingDomain: InstallationDomain?
 
     public init(
         namespace: InstallationFailureNamespace,
@@ -35,7 +39,8 @@ public struct VeyaFailure: Error, Codable, Equatable, Sendable, CustomStringConv
         safeMessage: String,
         retryable: Bool = false,
         userAction: String? = nil,
-        underlyingSubsystem: String
+        underlyingSubsystem: String,
+        originatingDomain: InstallationDomain? = nil
     ) throws {
         guard (0...999).contains(number) else { throw InstallationStateFailure.unsafeValue("error number") }
         try InstallationSafeValue.validate(operation, field: "operation", maximumLength: 96)
@@ -51,6 +56,50 @@ public struct VeyaFailure: Error, Codable, Equatable, Sendable, CustomStringConv
         self.retryable = retryable
         self.userAction = userAction
         self.underlyingSubsystem = underlyingSubsystem
+        self.originatingDomain = originatingDomain
+    }
+
+    public func originating(in domain: InstallationDomain) -> VeyaFailure {
+        VeyaFailure(
+            validatedCode: code,
+            namespace: namespace,
+            operation: operation,
+            safeMessage: safeMessage,
+            retryable: retryable,
+            userAction: userAction,
+            underlyingSubsystem: underlyingSubsystem,
+            originatingDomain: domain
+        )
+    }
+
+    private init(
+        validatedCode: String,
+        namespace: InstallationFailureNamespace,
+        operation: String,
+        safeMessage: String,
+        retryable: Bool,
+        userAction: String?,
+        underlyingSubsystem: String,
+        originatingDomain: InstallationDomain?
+    ) {
+        code = validatedCode
+        self.namespace = namespace
+        self.operation = operation
+        self.safeMessage = safeMessage
+        self.retryable = retryable
+        self.userAction = userAction
+        self.underlyingSubsystem = underlyingSubsystem
+        self.originatingDomain = originatingDomain
+    }
+
+    public static func == (lhs: VeyaFailure, rhs: VeyaFailure) -> Bool {
+        lhs.code == rhs.code
+            && lhs.namespace == rhs.namespace
+            && lhs.operation == rhs.operation
+            && lhs.safeMessage == rhs.safeMessage
+            && lhs.retryable == rhs.retryable
+            && lhs.userAction == rhs.userAction
+            && lhs.underlyingSubsystem == rhs.underlyingSubsystem
     }
 
     public var description: String { "\(code): \(safeMessage)" }

@@ -130,6 +130,18 @@ public enum RunSetupInboxError: Error, Equatable, Sendable {
     case unsafeInbox
 }
 
+/// Product presentation for the Mac-requested Run Setup hand-off. Eligibility
+/// is deliberately derived from `pendingRequest`, so an absent, expired,
+/// malformed, or differently app-bound request can never enable the button.
+public enum RunSetupRequestPresentation {
+    public static let unavailableMessage = "Finish preparation in Veya on your Mac first."
+    public static let pendingMessage = "Veya is waiting on your Mac. Tap Run Setup below to finish setup."
+
+    public static func buttonEnabled(requestPending: Bool, isWorking: Bool) -> Bool {
+        requestPending && !isWorking
+    }
+}
+
 /// Reads the pending request and records the result of a real Run Setup run.
 /// It never opens LocalDevVPN, RSD, TestManager, XCTest or location services.
 public struct RunSetupInbox: @unchecked Sendable {
@@ -177,6 +189,26 @@ public struct RunSetupInbox: @unchecked Sendable {
             throw RunSetupInboxError.requestExpired
         }
         return request
+    }
+
+    /// Fail-closed convenience used by product presentation and invocation
+    /// guards. Detailed parser errors remain available through `pendingRequest`
+    /// for diagnostics, while every invalid request is ineligible for Run Setup.
+    public func validPendingRequest(
+        appBundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> RunSetupRequest? {
+        (try? pendingRequest(appBundleIdentifier: appBundleIdentifier)) ?? nil
+    }
+
+    /// Executes a Mac-answering operation only after the same freshness and
+    /// app-binding validation used by presentation. A caller cannot accidentally
+    /// run diagnostics or write a receipt for an ineligible request.
+    public func performIfValidPendingRequest<Result>(
+        appBundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        operation: (RunSetupRequest) async -> Result
+    ) async -> Result? {
+        guard let request = validPendingRequest(appBundleIdentifier: appBundleIdentifier) else { return nil }
+        return await operation(request)
     }
 
     /// Records a completed run. A success receipt retires the request so ordinary

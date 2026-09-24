@@ -13,12 +13,15 @@ struct SetupView: View {
 
     var body: some View {
         List {
-            if connectionStatus.veyaSetupRequestPending {
-                Section {
-                    Label("Veya is waiting on your Mac. Tap Run Setup below to finish setup.",
-                          systemImage: "desktopcomputer.and.arrow.down")
-                        .font(.footnote)
-                }
+            Section {
+                Label(
+                    connectionStatus.runSetupRequestMessage,
+                    systemImage: connectionStatus.veyaSetupRequestPending
+                        ? "desktopcomputer.and.arrow.down"
+                        : "desktopcomputer"
+                )
+                .font(.footnote)
+                .foregroundStyle(connectionStatus.veyaSetupRequestPending ? .primary : .secondary)
             }
 
             Section {
@@ -76,7 +79,7 @@ struct SetupView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(connectionStatus.isWorking)
+                .disabled(!connectionStatus.canRunRequestedSetup)
                 .tint(connectionStatus.allStepsPass ? .green : .accentColor)
             }
         }

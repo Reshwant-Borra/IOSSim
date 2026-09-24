@@ -317,6 +317,8 @@ public enum NativeDeviceBridgeError: Error, Equatable, Sendable {
     case developerServicesNotReady(String)
     case launchRejected(String)
     case containerUnavailable(String)
+    /// The app container was reached, but this exact requested path does not exist.
+    case containerFileNotFound(String)
     case pairingRejected(String)
     case trustPromptPending
     case trustDenied
@@ -407,7 +409,10 @@ public actor IOSSimDeviceBridge {
 /// unit tests run without a native library. Release packaging places the dylib
 /// in Contents/Frameworks; development may opt in with IOSSIM_DEVICE_BRIDGE_PATH.
 public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @unchecked Sendable {
-    public static let requiredABIVersion: UInt32 = 2
+    // ABI 3 adds iossim_bridge_reveal_developer_mode, the AMFI action-0 trigger the
+    // pre-install Developer Mode gate depends on. A bridge that predates it cannot
+    // satisfy the gate, so it is refused outright rather than silently skipped.
+    public static let requiredABIVersion: UInt32 = 3
     private struct CResult {
         let status: Int32
         let payload: UnsafeMutablePointer<UInt8>?
@@ -478,6 +483,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         UnsafePointer<UInt8>?, Int, UInt64
     ) -> UnsafeMutableRawPointer?
     private typealias DeveloperSupportStatusFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
+    private typealias RevealDeveloperModeFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> UnsafeMutableRawPointer?
     private typealias MountDeveloperSupportFn = @convention(c) (
         UnsafeMutableRawPointer?,
         UnsafePointer<UInt8>?, Int,
@@ -517,6 +523,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
     private let createPairingFunction: CreatePairingFn?
     private let validatePairingFunction: ValidatePairingFn?
     private let developerSupportStatusFunction: DeveloperSupportStatusFn?
+    private let revealDeveloperModeFunction: RevealDeveloperModeFn?
     private let mountDeveloperSupportFunction: MountDeveloperSupportFn?
     private let inventoryFunction: InventoryFn?
     private let installFunction: InstallFn?
@@ -553,6 +560,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             createPairingFunction = nil
             validatePairingFunction = nil
             developerSupportStatusFunction = nil
+            revealDeveloperModeFunction = nil
             mountDeveloperSupportFunction = nil
             inventoryFunction = nil
             installFunction = nil
@@ -577,6 +585,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             createPairingFunction = nil
             validatePairingFunction = nil
             developerSupportStatusFunction = nil
+            revealDeveloperModeFunction = nil
             mountDeveloperSupportFunction = nil
             inventoryFunction = nil
             installFunction = nil
@@ -598,6 +607,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         createPairingFunction = Self.symbol("iossim_bridge_create_remote_pairing", in: loaded)
         validatePairingFunction = Self.symbol("iossim_bridge_validate_remote_pairing", in: loaded)
         developerSupportStatusFunction = Self.symbol("iossim_bridge_developer_support_status", in: loaded)
+        revealDeveloperModeFunction = Self.symbol("iossim_bridge_reveal_developer_mode", in: loaded)
         mountDeveloperSupportFunction = Self.symbol("iossim_bridge_mount_developer_support", in: loaded)
         inventoryFunction = Self.symbol("iossim_bridge_app_inventory", in: loaded)
         installFunction = Self.symbol("iossim_bridge_install_app", in: loaded)
@@ -613,6 +623,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
             pairLockdownOnceFunction != nil,
             createPairingFunction != nil, validatePairingFunction != nil,
             developerSupportStatusFunction != nil, mountDeveloperSupportFunction != nil,
+            revealDeveloperModeFunction != nil,
             inventoryFunction != nil, installFunction != nil, uninstallFunction != nil,
             containerWriteFunction != nil, containerReadFunction != nil,
             closeFunction != nil, freeFunction != nil
@@ -775,6 +786,19 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
                 }
             }
             return try consume(pointer)
+        }
+    }
+
+    /// AMFI action 0: makes iOS show the Developer Mode toggle in Settings. It reveals
+    /// the option and nothing more — it never enables Developer Mode, never reboots the
+    /// device, and is idempotent on a device that already shows the toggle.
+    public func revealDeveloperMode(
+        on identity: IOSSimDeviceIdentity,
+        timeout: Duration = .seconds(20)
+    ) throws {
+        guard let revealDeveloperModeFunction else { throw NativeDeviceBridgeError.incompatibleABI }
+        _ = try withHandle(identity, timeout: timeout) { handle, timeoutMS in
+            try consume(revealDeveloperModeFunction(handle, timeoutMS))
         }
     }
 
@@ -1088,6 +1112,7 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         case 24: return .pairingRejected(Redactor.redact(diagnostic))
         case 25: return .trustPromptPending
         case 26: return .trustDenied
+        case 27: return .containerFileNotFound(Redactor.redact(diagnostic))
         default: return .internalFailure(Redactor.redact(diagnostic))
         }
     }

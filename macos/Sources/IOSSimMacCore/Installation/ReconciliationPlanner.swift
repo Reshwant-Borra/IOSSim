@@ -85,7 +85,8 @@ public struct ReconciliationPlanner: Sendable {
                     snapshotRevision: snapshot.revision,
                     disposition: .userActionRequired,
                     domain: requirement.domain,
-                    userAction: observation.userAction
+                    userAction: observation.userAction,
+                    failure: observation.failure
                 )
             case .retryableFailure:
                 return ReconciliationPlan(

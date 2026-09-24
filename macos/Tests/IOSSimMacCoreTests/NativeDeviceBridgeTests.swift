@@ -2,6 +2,39 @@ import XCTest
 @testable import IOSSimMacCore
 
 final class NativeDeviceBridgeTests: XCTestCase {
+    func testDeveloperSupportMountPreservesAuthoritativeDeviceStateOnly() {
+        XCTAssertEqual(
+            NativeDeveloperServicesCoordinator.mapMountFailure(
+                NativeDeviceBridgeError.developerModeRequired
+            ) as? NativeDeviceBridgeError,
+            .developerModeRequired
+        )
+        XCTAssertEqual(
+            NativeDeveloperServicesCoordinator.mapMountFailure(
+                NativeDeviceBridgeError.deviceDisconnected
+            ) as? NativeDeviceBridgeError,
+            .deviceDisconnected
+        )
+        XCTAssertEqual(
+            NativeDeveloperServicesCoordinator.mapMountFailure(
+                NativeDeviceBridgeError.protocolFailure("tss service unavailable")
+            ) as? DeveloperSupportFailure,
+            .tssUnavailable
+        )
+        XCTAssertEqual(
+            NativeDeveloperServicesCoordinator.mapMountFailure(
+                NativeDeviceBridgeError.protocolFailure("image rejected")
+            ) as? DeveloperSupportFailure,
+            .mountRejected
+        )
+        XCTAssertEqual(
+            NativeDeveloperServicesCoordinator.mapMountFailure(
+                DeveloperSupportFailure.wrongBuildIdentity
+            ) as? DeveloperSupportFailure,
+            .mountRejected
+        )
+    }
+
     func testOptInPhysicalDeveloperServicesLaunchBoundary() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let udid = environment["VEYA_PHYSICAL_DEVICE_UDID"],
@@ -97,6 +130,20 @@ final class NativeDeviceBridgeTests: XCTestCase {
         let inspected = try await bridge.inspect(listed[0].identity)
         XCTAssertEqual(inspected.identity.udid, "PHONE-0001")
         XCTAssertEqual(inspected.trust, .trusted)
+    }
+
+    func testRediscoveryOfSameUDIDUsesANewConnectionGeneration() async throws {
+        let descriptor = try descriptor("PHONE-0001", connection: .usb, mux: 7)
+        let bridge = IOSSimDeviceBridge(transport: FakeNativeTransport(devices: [descriptor]))
+        let beforeRestart = try await bridge.listDevices()[0]
+        let afterRestart = try await bridge.listDevices()[0]
+        XCTAssertEqual(beforeRestart.identity.udid, afterRestart.identity.udid)
+        XCTAssertGreaterThan(
+            afterRestart.identity.connectionGeneration,
+            beforeRestart.identity.connectionGeneration
+        )
+        let inspected = try await bridge.inspect(afterRestart.identity)
+        XCTAssertEqual(inspected.identity.connectionGeneration, afterRestart.identity.connectionGeneration)
     }
 
     func testTwoDevicesRemainDistinct() async throws {

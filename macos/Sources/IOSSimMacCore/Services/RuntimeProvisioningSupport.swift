@@ -550,7 +550,7 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
         case .timedOut:
             return ("RSD_UNAVAILABLE", detail)
         case .invalidIdentity, .decodingFailure, .protocolFailure, .internalFailure,
-             .containerUnavailable, .pairingRejected:
+             .containerUnavailable, .containerFileNotFound, .pairingRejected:
             return ("PROTOCOL_ERROR", detail)
         }
     }

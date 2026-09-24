@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum LocalDevVPNSetupFailure: String, Error, Codable, Equatable, Sendable {
@@ -12,6 +13,7 @@ public enum LocalDevVPNSetupFailure: String, Error, Codable, Equatable, Sendable
     case transportUnavailable = "LOCALDEVVPN_TRANSPORT_UNAVAILABLE"
     /// iOS refused to launch Veya because its Personal Team developer is not trusted yet.
     case developerTrustRequired = "LOCALDEVVPN_DEVELOPER_TRUST_REQUIRED"
+    case developerModeRequired = "LOCALDEVVPN_DEVELOPER_MODE_REQUIRED"
 }
 
 public enum LocalDevVPNLifecycleState: String, Codable, Equatable, Sendable {
@@ -114,6 +116,67 @@ public struct LocalDevVPNSetupReceiptPayload: Codable, Equatable, Sendable {
     }
 }
 
+/// Secret-free diagnostics for one LocalDevVPN handshake. The correlation
+/// value is a one-way hash; raw device, team, release, bundle, and request
+/// identifiers are never written to this trace.
+public struct LocalDevVPNTraceRecord: Codable, Equatable, Sendable {
+    public let timestamp: Date
+    public let event: String
+    public let value: String?
+    public let bindingHash: String
+
+    public init(timestamp: Date = .now, event: String, value: String? = nil, bindingHash: String) {
+        self.timestamp = timestamp
+        self.event = event
+        self.value = value
+        self.bindingHash = bindingHash
+    }
+}
+
+public protocol LocalDevVPNTraceRecording: Sendable {
+    func record(_ value: LocalDevVPNTraceRecord) async
+}
+
+public struct NoOpLocalDevVPNTraceRecorder: LocalDevVPNTraceRecording {
+    public init() {}
+    public func record(_ value: LocalDevVPNTraceRecord) async {}
+}
+
+/// JSON-lines trace retained beside installation state. Trace I/O is
+/// diagnostic-only and can never change readiness or transition outcomes.
+public actor FileLocalDevVPNTraceRecorder: LocalDevVPNTraceRecording {
+    public static let fileName = "localdevvpn-transition-trace.jsonl"
+    private let url: URL
+    private let fileManager: FileManager
+
+    public init(url: URL, fileManager: FileManager = .default) {
+        self.url = url
+        self.fileManager = fileManager
+    }
+
+    public func record(_ value: LocalDevVPNTraceRecord) {
+        do {
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            var data = try encoder.encode(value)
+            data.append(0x0A)
+            if fileManager.fileExists(atPath: url.path) {
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } else {
+                try data.write(to: url, options: .atomic)
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+        } catch {
+            return
+        }
+    }
+}
+
 public actor LocalDevVPNSetupCoordinator {
     public static let localDevVPNBundleIdentifier = "com.jkcoxson.LocalDevVPN"
     public static let requestPath = "Library/Application Support/IOSSim/SetupInbox/localdevvpn.request"
@@ -124,19 +187,22 @@ public actor LocalDevVPNSetupCoordinator {
     private let readinessAttempts: Int
     private let delayNanoseconds: UInt64
     private let compatibilityPolicy: LocalDevVPNCompatibilityPolicy
+    private let traceRecorder: any LocalDevVPNTraceRecording
 
     public init(
         service: any NativeApplicationServicing,
         initialProbeAttempts: Int = 4,
         readinessAttempts: Int = 48,
         delayNanoseconds: UInt64 = 500_000_000,
-        compatibilityPolicy: LocalDevVPNCompatibilityPolicy = LocalDevVPNCompatibilityPolicy()
+        compatibilityPolicy: LocalDevVPNCompatibilityPolicy = LocalDevVPNCompatibilityPolicy(),
+        traceRecorder: any LocalDevVPNTraceRecording = NoOpLocalDevVPNTraceRecorder()
     ) {
         self.service = service
         self.initialProbeAttempts = initialProbeAttempts
         self.readinessAttempts = readinessAttempts
         self.delayNanoseconds = delayNanoseconds
         self.compatibilityPolicy = compatibilityPolicy
+        self.traceRecorder = traceRecorder
     }
 
     /// Activates IOSSim's setup-only route watcher, launches the separately
@@ -162,51 +228,76 @@ public actor LocalDevVPNSetupCoordinator {
                 data: try JSONEncoder().encode(request),
                 on: device
             )
+            await trace("vpn.requestWritten", request: request)
+        } catch {
+            let failure = Self.mapTransport(error)
+            await trace("vpn.failed", value: failure.rawValue, request: request)
+            throw failure
+        }
+        do {
             try await service.launch(bundleIdentifier: iosSimBundleIdentifier, on: device)
+            await trace("vpn.veyaLaunchSucceeded", request: request)
         } catch {
-            throw Self.mapTransport(error)
-        }
-
-        if let ready = try await poll(
-            request: request,
-            device: device,
-            attempts: initialProbeAttempts,
-            stopOnActionRequired: false
-        ) {
-            return ready
-        }
-
-        let inventory: [NativeInstalledApplication]
-        do {
-            inventory = try await service.inventory(on: device)
-        } catch {
-            throw Self.mapTransport(error)
-        }
-        guard let installed = inventory.first(where: { $0.bundleIdentifier == Self.localDevVPNBundleIdentifier }) else {
-            throw LocalDevVPNSetupFailure.appMissing
-        }
-        guard compatibilityPolicy.supports(installed.version) else {
-            throw LocalDevVPNSetupFailure.unsupportedVersion
+            let failure = Self.mapTransport(error)
+            await trace("vpn.veyaLaunchFailed", value: failure.rawValue, request: request)
+            await trace("vpn.failed", value: failure.rawValue, request: request)
+            throw failure
         }
 
         do {
-            try await service.launch(bundleIdentifier: Self.localDevVPNBundleIdentifier, on: device)
-        } catch let bridge as NativeDeviceBridgeError {
-            if case .applicationNotFound(_) = bridge { throw LocalDevVPNSetupFailure.appMissing }
-            throw Self.mapTransport(bridge)
-        } catch {
-            throw LocalDevVPNSetupFailure.transportUnavailable
-        }
+            if let ready = try await poll(
+                request: request,
+                device: device,
+                attempts: initialProbeAttempts,
+                stopOnActionRequired: false
+            ) {
+                await trace("vpn.completed", request: request)
+                return ready
+            }
 
-        if let ready = try await poll(
-            request: request,
-            device: device,
-            attempts: readinessAttempts,
-            stopOnActionRequired: true
-        ) {
-            return ready
+            let inventory: [NativeInstalledApplication]
+            do {
+                inventory = try await service.inventory(on: device)
+            } catch {
+                throw Self.mapTransport(error)
+            }
+            guard let installed = inventory.first(where: { $0.bundleIdentifier == Self.localDevVPNBundleIdentifier }) else {
+                throw LocalDevVPNSetupFailure.appMissing
+            }
+            guard compatibilityPolicy.supports(installed.version) else {
+                throw LocalDevVPNSetupFailure.unsupportedVersion
+            }
+
+            do {
+                try await service.launch(bundleIdentifier: Self.localDevVPNBundleIdentifier, on: device)
+                await trace("vpn.localDevVPNLaunchSucceeded", request: request)
+            } catch let bridge as NativeDeviceBridgeError {
+                if case .applicationNotFound(_) = bridge { throw LocalDevVPNSetupFailure.appMissing }
+                throw Self.mapTransport(bridge)
+            } catch {
+                throw LocalDevVPNSetupFailure.transportUnavailable
+            }
+
+            if let ready = try await poll(
+                request: request,
+                device: device,
+                attempts: readinessAttempts,
+                stopOnActionRequired: true
+            ) {
+                await trace("vpn.completed", request: request)
+                return ready
+            }
+            throw LocalDevVPNSetupFailure.receiptMissing
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as LocalDevVPNSetupFailure {
+            await trace("vpn.failed", value: failure.rawValue, request: request)
+            throw failure
+        } catch {
+            let failure = Self.mapTransport(error)
+            await trace("vpn.failed", value: failure.rawValue, request: request)
+            throw failure
         }
-        throw LocalDevVPNSetupFailure.vpnPermissionRequired
     }
 
     private func poll(
@@ -215,46 +306,179 @@ public actor LocalDevVPNSetupCoordinator {
         attempts: Int,
         stopOnActionRequired: Bool
     ) async throws -> LocalDevVPNSetupReceiptPayload? {
+        var rejectedReceipt = false
+        var lastTraceSignature: String?
+        var receiptObserved = false
         for attempt in 0..<max(1, attempts) {
             if Task.isCancelled { throw CancellationError() }
-            if let data = try? await service.readContainer(
-                bundleIdentifier: request.appBundleIdentifier,
-                relativePath: Self.receiptPath,
-                on: device
-            ), let receipt = try? JSONDecoder().decode(LocalDevVPNSetupReceiptPayload.self, from: data),
-               receipt.schemaVersion == 1, receipt.requestID == request.requestID {
-                guard receipt.endpoint == request.endpoint else {
+            let data: Data
+            do {
+                data = try await service.readContainer(
+                    bundleIdentifier: request.appBundleIdentifier,
+                    relativePath: Self.receiptPath,
+                    on: device
+                )
+            } catch NativeDeviceBridgeError.containerFileNotFound {
+                if lastTraceSignature != "read:fileAbsent" {
+                    await trace("vpn.receiptReadUnavailable", value: "fileAbsent", request: request)
+                    lastTraceSignature = "read:fileAbsent"
+                }
+                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                continue
+            } catch {
+                let category = Self.transportCategory(error)
+                if lastTraceSignature != "read:\(category)" {
+                    await trace("vpn.receiptReadUnavailable", value: category, request: request)
+                    lastTraceSignature = "read:\(category)"
+                }
+                throw Self.mapTransport(error)
+            }
+
+            if !receiptObserved {
+                await trace("vpn.receiptObserved", request: request)
+                receiptObserved = true
+            }
+            guard let receipt = try? JSONDecoder().decode(LocalDevVPNSetupReceiptPayload.self, from: data) else {
+                rejectedReceipt = true
+                if lastTraceSignature != "reject:malformed" {
+                    await trace("vpn.receiptRejected", value: "malformed", request: request)
+                    lastTraceSignature = "reject:malformed"
+                }
+                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                continue
+            }
+            guard receipt.schemaVersion == 1 else {
+                rejectedReceipt = true
+                if lastTraceSignature != "reject:schemaVersion" {
+                    await trace("vpn.receiptRejected", value: "schemaVersion", request: request)
+                    lastTraceSignature = "reject:schemaVersion"
+                }
+                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                continue
+            }
+            guard receipt.requestID == request.requestID else {
+                rejectedReceipt = true
+                if lastTraceSignature != "reject:requestIDMismatch" {
+                    await trace("vpn.receiptRejected", value: "requestIDMismatch", request: request)
+                    lastTraceSignature = "reject:requestIDMismatch"
+                }
+                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                continue
+            }
+            guard receipt.endpoint == request.endpoint else {
+                rejectedReceipt = true
+                if lastTraceSignature != "reject:endpointMismatch" {
+                    await trace("vpn.receiptRejected", value: "endpointMismatch", request: request)
+                    lastTraceSignature = "reject:endpointMismatch"
+                }
+                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                continue
+            }
+            guard receipt.deviceUDID == request.deviceUDID,
+                  receipt.teamIdentifier == request.teamIdentifier,
+                  receipt.releaseIdentity == request.releaseIdentity else {
+                rejectedReceipt = true
+                if lastTraceSignature != "reject:bindingMismatch" {
+                    await trace("vpn.receiptRejected", value: "bindingMismatch", request: request)
+                    lastTraceSignature = "reject:bindingMismatch"
+                }
+                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: delayNanoseconds) }
+                continue
+            }
+
+            let state = receipt.lifecycleState ?? (receipt.status == "ready" ? .runtimeEndpointReachable : nil)
+            let signature = "state:\(state?.rawValue ?? "unknown"):\(receipt.interfaceVisible):\(receipt.endpointReachable)"
+            if signature != lastTraceSignature {
+                await trace("vpn.receiptState", value: state?.rawValue ?? "UNKNOWN", request: request)
+                await trace("vpn.interfaceVisible", value: String(receipt.interfaceVisible), request: request)
+                await trace("vpn.endpointReachable", value: String(receipt.endpointReachable), request: request)
+                lastTraceSignature = signature
+            }
+            if state == .runtimeEndpointReachable {
+                guard receipt.endpointReachable else {
+                    await trace("vpn.receiptRejected", value: "readyWithoutEndpoint", request: request)
                     throw LocalDevVPNSetupFailure.receiptInvalid
                 }
-                guard receipt.deviceUDID == request.deviceUDID,
-                      receipt.teamIdentifier == request.teamIdentifier,
-                      receipt.releaseIdentity == request.releaseIdentity else {
-                    throw LocalDevVPNSetupFailure.receiptInvalid
+                return receipt
+            }
+            if stopOnActionRequired {
+                switch state {
+                case .vpnPermissionRequired: throw LocalDevVPNSetupFailure.vpnPermissionRequired
+                case .configured: throw LocalDevVPNSetupFailure.vpnNotRunning
+                case .running: throw LocalDevVPNSetupFailure.endpointUnavailable
+                default: break
                 }
-                let state = receipt.lifecycleState ?? (receipt.status == "ready" ? .runtimeEndpointReachable : nil)
-                if state == .runtimeEndpointReachable {
-                    guard receipt.endpointReachable else {
-                        throw LocalDevVPNSetupFailure.receiptInvalid
-                    }
-                    return receipt
-                }
-                if stopOnActionRequired {
-                    switch state {
-                    case .vpnPermissionRequired: throw LocalDevVPNSetupFailure.vpnPermissionRequired
-                    case .configured: throw LocalDevVPNSetupFailure.vpnNotRunning
-                    case .running: throw LocalDevVPNSetupFailure.endpointUnavailable
-                    default: break
-                    }
-                }
-                guard receipt.status == "checking" || receipt.status == "action_required" else {
-                    throw LocalDevVPNSetupFailure.receiptInvalid
-                }
+            }
+            guard receipt.status == "checking" || receipt.status == "action_required" else {
+                await trace("vpn.receiptRejected", value: "status", request: request)
+                throw LocalDevVPNSetupFailure.receiptInvalid
             }
             if attempt + 1 < attempts {
                 try await Task.sleep(nanoseconds: delayNanoseconds)
             }
         }
+        if stopOnActionRequired, rejectedReceipt {
+            throw LocalDevVPNSetupFailure.receiptInvalid
+        }
         return nil
+    }
+
+    private func trace(_ event: String, value: String? = nil, request: LocalDevVPNSetupRequestPayload) async {
+        await traceRecorder.record(LocalDevVPNTraceRecord(
+            event: event,
+            value: value,
+            bindingHash: Self.bindingHash(request)
+        ))
+    }
+
+    /// Observation and transition share the same secret-free binding hash, so
+    /// a physical trace can show whether a fresh receipt absence advanced into
+    /// the request/launch/probe handshake. Trace failure remains non-fatal in
+    /// the recorder implementation.
+    public func recordObservation(
+        _ event: String,
+        value: String? = nil,
+        device: IOSSimDeviceIdentity,
+        appBundleIdentifier: String,
+        teamIdentifier: String?,
+        releaseIdentity: String?
+    ) async {
+        let request = LocalDevVPNSetupRequestPayload(
+            requestID: "observation",
+            appBundleIdentifier: appBundleIdentifier,
+            deviceUDID: device.udid,
+            teamIdentifier: teamIdentifier,
+            releaseIdentity: releaseIdentity
+        )
+        await trace(event, value: value, request: request)
+    }
+
+    private static func bindingHash(_ request: LocalDevVPNSetupRequestPayload) -> String {
+        let material = [
+            request.deviceUDID ?? "none",
+            request.teamIdentifier ?? "none",
+            request.releaseIdentity ?? "none",
+            request.appBundleIdentifier,
+            request.endpoint.host,
+            String(request.endpoint.port),
+        ].joined(separator: "|")
+        return SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func transportCategory(_ error: Error) -> String {
+        guard let bridge = error as? NativeDeviceBridgeError else { return "other" }
+        switch bridge {
+        case .deviceNotFound, .deviceResolutionFailed(_): return "deviceUnavailable"
+        case .deviceDisconnected: return "deviceDisconnected"
+        case .timedOut: return "timedOut"
+        case .deviceLocked: return "deviceLocked"
+        case .trustRequired, .trustPromptPending, .trustDenied: return "deviceTrustRequired"
+        case .containerUnavailable(_): return "containerUnavailable"
+        case .containerFileNotFound(_): return "fileAbsent"
+        case .developerModeRequired: return "developerModeRequired"
+        case _ where bridge.isDeveloperTrustRejection: return "developerTrustRequired"
+        default: return "bridgeUnavailable"
+        }
     }
 
     private static func mapTransport(_ error: Error) -> LocalDevVPNSetupFailure {
@@ -262,6 +486,7 @@ public actor LocalDevVPNSetupCoordinator {
         switch bridge {
         case .applicationNotFound(_): return .appMissing
         case _ where bridge.isDeveloperTrustRejection: return .developerTrustRequired
+        case .developerModeRequired: return .developerModeRequired
         case .deviceNotFound, .deviceResolutionFailed(_), .deviceDisconnected, .timedOut,
              .deviceLocked, .trustRequired:
             return .transportUnavailable

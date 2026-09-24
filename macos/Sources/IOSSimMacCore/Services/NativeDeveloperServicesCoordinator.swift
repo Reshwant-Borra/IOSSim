@@ -130,12 +130,8 @@ public actor NativeDeveloperServicesCoordinator: DeveloperServicesPreparing {
             await progress(.ddiMountStarted)
             do {
                 try transport.mountDeveloperSupport(on: inspection.identity, artifact: selected)
-            } catch NativeDeviceBridgeError.protocolFailure(let detail)
-                where detail.localizedCaseInsensitiveContains("http")
-                    || detail.localizedCaseInsensitiveContains("tss") {
-                throw DeveloperSupportFailure.tssUnavailable
             } catch {
-                throw DeveloperSupportFailure.mountRejected
+                throw Self.mapMountFailure(error)
             }
             await progress(.ddiPersonalizationSucceeded)
             await progress(.ddiMountSucceeded)
@@ -147,6 +143,27 @@ public actor NativeDeveloperServicesCoordinator: DeveloperServicesPreparing {
                 context: context,
                 developerSupportIdentity: developerSupportIdentity(inspection: inspection, artifact: selected)
             )
+        }
+    }
+
+    /// DDI acquisition/mount semantics remain unchanged; this mapper only
+    /// prevents authoritative device/user state from being relabeled as a
+    /// generic image rejection.
+    static func mapMountFailure(_ error: Error) -> Error {
+        guard let bridge = error as? NativeDeviceBridgeError else {
+            return DeveloperSupportFailure.mountRejected
+        }
+        switch bridge {
+        case .protocolFailure(let detail)
+            where detail.localizedCaseInsensitiveContains("http")
+                || detail.localizedCaseInsensitiveContains("tss"):
+            return DeveloperSupportFailure.tssUnavailable
+        case .developerModeRequired, .deviceLocked, .trustRequired,
+             .trustPromptPending, .trustDenied, .deviceNotFound,
+             .deviceDisconnected, .deviceResolutionFailed(_), .timedOut:
+            return bridge
+        default:
+            return DeveloperSupportFailure.mountRejected
         }
     }
 

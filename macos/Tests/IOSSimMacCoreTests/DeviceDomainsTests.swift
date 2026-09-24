@@ -131,6 +131,15 @@ final class DeviceDomainsTests: XCTestCase {
         XCTAssertEqual(direct.userAction, DeviceFailureMapping.developerTrust)
         // The VPN coordinator's launch of Veya is often the first launch after DDI is already mounted.
         XCTAssertEqual(DeviceFailureMapping.map(LocalDevVPNSetupFailure.developerTrustRequired), direct)
+        XCTAssertEqual(DeviceFailureMapping.map(RemotePairingFailure.developerTrustRequired), direct)
+        XCTAssertEqual(
+            DeviceFailureMapping.map(LocalDevVPNSetupFailure.developerModeRequired).userAction,
+            DeviceFailureMapping.developerMode
+        )
+        XCTAssertEqual(
+            DeviceFailureMapping.map(RemotePairingFailure.developerModeRequired).userAction,
+            DeviceFailureMapping.developerMode
+        )
         XCTAssertEqual(DeviceFailureMapping.map(NativeDeviceBridgeError.launchRejected("invalid signature")).state,
                        .retryableFailure)
     }
@@ -145,6 +154,148 @@ final class DeviceDomainsTests: XCTestCase {
                                               identity: EngineIdentity(packaged: false, qualificationBuild: true))
         XCTAssertEqual(result.exitCode, .userAction)
         XCTAssertEqual(result.status, "userActionRequired")
-        XCTAssertEqual(result.userAction, "Install LocalDevVPN from the App Store on the iPhone, then continue in Veya.")
+        XCTAssertEqual(result.userAction, "Install LocalDevVPN on your iPhone, then continue in Veya.")
+        XCTAssertEqual(result.firstFailure?.code, DeviceDomainFailure.vpnMissing.code)
+        XCTAssertEqual(result.firstFailure?.domain, .vpn)
     }
+
+    func testVPNCoordinatorFailuresPreserveDistinctTypedFailuresAndGuidance() async throws {
+        let cases: [(LocalDevVPNSetupFailure, VeyaFailure, String)] = [
+            (.endpointUnavailable, DeviceDomainFailure.vpnEndpointUnavailable,
+             "LocalDevVPN is active, but Veya cannot reach the developer connection. Keep LocalDevVPN connected and try Continue again."),
+            (.receiptInvalid, DeviceDomainFailure.vpnReceiptInvalid,
+             "Keep the iPhone connected and try Continue again."),
+            (.transportUnavailable, DeviceDomainFailure.vpnTransportUnavailable,
+             "Reconnect and unlock the iPhone, then try Continue again."),
+        ]
+
+        for (source, expected, action) in cases {
+            let mapped = DeviceFailureMapping.map(source)
+            XCTAssertEqual(mapped.failure?.code, expected.code)
+            XCTAssertEqual(mapped.userAction, action)
+            XCTAssertNotEqual(mapped.failure?.code, DeviceDomainFailure.observationFailed.code)
+
+            do {
+                _ = try await DeviceFailureMapping.prepare { throw source }
+                XCTFail("expected \(source)")
+            } catch let failure as VeyaFailure {
+                XCTAssertEqual(failure.code, expected.code)
+                XCTAssertEqual(failure.userAction, action)
+            }
+        }
+    }
+
+    func testVPNFailureStopsBeforeAutomaticPairingTransition() async throws {
+        let repository = InstallationJournalRepository(rootURL: root.appendingPathComponent("ordered-failure", isDirectory: true))
+        let pairingPrepares = Counter()
+        let vpn = CoordinatedDeviceDomain(
+            domain: .vpn,
+            observe: { _ in .missing() },
+            prepare: { _ in throw DeviceDomainFailure.vpnEndpointUnavailable }
+        )
+        let pairing = CoordinatedDeviceDomain(
+            domain: .pairing,
+            observe: { _ in .missing() },
+            prepare: { _ in
+                pairingPrepares.value += 1
+                return .satisfied()
+            }
+        )
+        let engine = try VeyaReconciliationEngine(
+            journalRepository: repository,
+            observers: [vpn, pairing],
+            transitions: [vpn, pairing]
+        )
+        do {
+            _ = try await engine.reconcile(
+                scope: InstallationScope(domains: [.vpn, .pairing], selectedDeviceIDHash: "sha256:" + String(repeating: "2", count: 64), connectionGeneration: 1),
+                to: DesiredInstallationState(requirements: [.init(domain: .vpn), .init(domain: .pairing)]),
+                policy: ReconciliationPolicy(allowedDomains: [.vpn, .pairing], maximumTransitions: 4, localRetryLimit: 0)
+            )
+            XCTFail("VPN failure must stop reconciliation")
+        } catch let failure as VeyaFailure {
+            XCTAssertEqual(failure.code, DeviceDomainFailure.vpnEndpointUnavailable.code)
+        }
+        XCTAssertEqual(pairingPrepares.value, 0)
+    }
+
+    func testVPNSuccessAllowsAutomaticPairingTransition() async throws {
+        let repository = InstallationJournalRepository(rootURL: root.appendingPathComponent("ordered-success", isDirectory: true))
+        let vpnState = Script(observed: .missing(), afterPrepare: .satisfied())
+        let pairingState = Script(observed: .missing(), afterPrepare: .satisfied())
+        let vpn = CoordinatedDeviceDomain(
+            domain: .vpn,
+            observe: { _ in vpnState.observed },
+            prepare: { _ in
+                vpnState.prepares += 1
+                vpnState.observed = vpnState.afterPrepare
+                return vpnState.afterPrepare
+            }
+        )
+        let pairing = CoordinatedDeviceDomain(
+            domain: .pairing,
+            observe: { _ in pairingState.observed },
+            prepare: { _ in
+                pairingState.prepares += 1
+                pairingState.observed = pairingState.afterPrepare
+                return pairingState.afterPrepare
+            }
+        )
+        let engine = try VeyaReconciliationEngine(
+            journalRepository: repository,
+            observers: [vpn, pairing],
+            transitions: [vpn, pairing]
+        )
+        let outcome = try await engine.reconcile(
+            scope: InstallationScope(domains: [.vpn, .pairing], selectedDeviceIDHash: "sha256:" + String(repeating: "3", count: 64), connectionGeneration: 1),
+            to: DesiredInstallationState(requirements: [.init(domain: .vpn), .init(domain: .pairing)]),
+            policy: ReconciliationPolicy(allowedDomains: [.vpn, .pairing], maximumTransitions: 8, localRetryLimit: 0)
+        )
+        XCTAssertEqual(outcome.status, .ready)
+        XCTAssertEqual(vpnState.prepares, 1)
+        XCTAssertEqual(pairingState.prepares, 1)
+    }
+
+    func testGenericDeviceFailureRetainsOriginatingVPNDomain() async throws {
+        let repository = InstallationJournalRepository(
+            rootURL: root.appendingPathComponent("originating-domain", isDirectory: true)
+        )
+        let vpn = CoordinatedDeviceDomain(
+            domain: .vpn,
+            observe: { _ in .missing() },
+            prepare: { _ in throw DeviceDomainFailure.observationFailed }
+        )
+        let engine = try VeyaReconciliationEngine(
+            journalRepository: repository,
+            observers: [vpn], transitions: [vpn]
+        )
+        do {
+            _ = try await engine.reconcile(
+                scope: InstallationScope(
+                    domains: [.vpn],
+                    selectedDeviceIDHash: "sha256:" + String(repeating: "4", count: 64),
+                    connectionGeneration: 1
+                ),
+                to: DesiredInstallationState(requirements: [.init(domain: .vpn)]),
+                policy: ReconciliationPolicy(
+                    allowedDomains: [.vpn], maximumTransitions: 1, localRetryLimit: 0
+                )
+            )
+            XCTFail("expected transport failure")
+        } catch let failure as VeyaFailure {
+            XCTAssertEqual(failure.namespace, .device)
+            XCTAssertEqual(failure.originatingDomain, .vpn)
+            let result = EngineHost.failureResult(
+                EngineRequest(command: .reconcile),
+                error: failure,
+                identity: EngineIdentity(packaged: false, qualificationBuild: true)
+            )
+            XCTAssertEqual(result.firstFailure?.code, DeviceDomainFailure.observationFailed.code)
+            XCTAssertEqual(result.firstFailure?.domain, .vpn)
+        }
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    var value = 0
 }

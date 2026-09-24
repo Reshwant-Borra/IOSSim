@@ -17,11 +17,13 @@ public enum ProductionComposition {
         connectionGeneration: UInt64? = nil,
         resourcesURL: URL? = nil,
         appleServices: (any AppleDeveloperServices)? = nil,
-        runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil
+        runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil,
+        transitionProgress: (@Sendable (InstallationDomain) -> Void)? = nil
     ) -> EngineComposition {
         compose(helperURL: helperURL, stateRoot: stateRoot, device: device,
                 connectionGeneration: connectionGeneration, resourcesURL: resourcesURL,
-                appleServices: appleServices, runSetupProgress: runSetupProgress)
+                appleServices: appleServices, runSetupProgress: runSetupProgress,
+                transitionProgress: transitionProgress)
     }
 
     static func compose(
@@ -31,7 +33,8 @@ public enum ProductionComposition {
         wrapping: any WrappingSecretStore = KeychainWrappingSecretStore(),
         pairingOverride: (any RemotePairingStore)? = nil,
         developerServicesOverride: (any DeveloperServicesPreparing)? = nil,
-        runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil
+        runSetupProgress: (@Sendable (RunSetupProgress) -> Void)? = nil,
+        transitionProgress: (@Sendable (InstallationDomain) -> Void)? = nil
     ) -> EngineComposition {
         let root = stateRoot ?? InstallationJournalRepository.defaultRootURL().deletingLastPathComponent()
         let repository = InstallationJournalRepository(rootURL: root.appendingPathComponent("installation", isDirectory: true))
@@ -100,7 +103,10 @@ public enum ProductionComposition {
                               device: { try selected() }),
             ProductionDeviceDomains.developerSupport(probe: transport, coordinator: developerServices,
                                                      repository: repository, device: selected),
-            ProductionDeviceDomains.vpn(service: applications, coordinator: LocalDevVPNSetupCoordinator(service: applications),
+            ProductionDeviceDomains.vpn(service: applications, coordinator: LocalDevVPNSetupCoordinator(
+                                            service: applications,
+                                            traceRecorder: FileLocalDevVPNTraceRecorder(
+                                                url: root.appendingPathComponent(FileLocalDevVPNTraceRecorder.fileName))),
                                         repository: repository, device: selected),
             ProductionDeviceDomains.pairing(store: pairingStore, native: pairingNative, coordinator: pairingCoordinator,
                                             repository: repository, device: selected),
@@ -117,7 +123,8 @@ public enum ProductionComposition {
             identity: EngineIdentity(
                 packaged: helperURL.resolvingSymlinksInPath().path.contains(".app/Contents/MacOS/"),
                 qualificationBuild: isQualificationBuild
-            )
+            ),
+            transitionProgress: transitionProgress
         )
     }
 

@@ -17,6 +17,28 @@ final class RemotePairingLifecycleTests: XCTestCase {
         XCTAssertThrowsError(try envelope.decrypt(using: .init(nonce: "other", importKey: session.importKey)))
     }
 
+    func testNativeFallbackActivationPreservesDeveloperModeAndTrust() async throws {
+        let trustDetail = "launchapplication: com.apple.dt.CoreDeviceError code = 10002 "
+            + "FBSOpenApplicationErrorDomain code = 3 BSErrorCodeDescription: Security "
+            + "profile has not been explicitly trusted"
+        for (bridge, expected) in [
+            (NativeDeviceBridgeError.developerModeRequired, RemotePairingFailure.developerModeRequired),
+            (NativeDeviceBridgeError.launchRejected(trustDetail), .developerTrustRequired),
+        ] {
+            let delivery = NativeRemotePairingContainerDelivery(
+                service: ActivationFailureService(error: bridge)
+            )
+            do {
+                try await delivery.activateApp(
+                    on: try device(), appBundleIdentifier: "com.example.veya"
+                )
+                XCTFail("expected typed launch failure")
+            } catch {
+                XCTAssertEqual(error as? RemotePairingFailure, expected)
+            }
+        }
+    }
+
     func testCoordinatorReusesValidRecordAndCompletesReceiptAndProof() async throws {
         let d = try device(); let store = InMemoryRemotePairingStore(); let native = FakePairingNative()
         let delivery = FakePairingDelivery(native: native, device: d, team: "TEAM123")
@@ -217,6 +239,20 @@ private struct FailingProof: RemotePairingOperationalProof {
     func verify(on device: IOSSimDeviceIdentity, pairing: RemotePairingRecord) async throws {
         throw RemotePairingFailure.operationalProofFailed
     }
+}
+
+private struct ActivationFailureService: NativeApplicationServicing {
+    let error: NativeDeviceBridgeError
+    func inventory(on device: IOSSimDeviceIdentity) async throws -> [NativeInstalledApplication] { [] }
+    func install(appURL: URL, mode: NativeApplicationInstallMode, on device: IOSSimDeviceIdentity) async throws {}
+    func uninstall(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws {}
+    func launch(bundleIdentifier: String, on device: IOSSimDeviceIdentity) async throws { throw error }
+    func writeContainer(
+        bundleIdentifier: String, relativePath: String, data: Data, on device: IOSSimDeviceIdentity
+    ) async throws {}
+    func readContainer(
+        bundleIdentifier: String, relativePath: String, on device: IOSSimDeviceIdentity
+    ) async throws -> Data { throw NativeDeviceBridgeError.containerFileNotFound(relativePath) }
 }
 
 private final class FakePairingNative: RemotePairingNativeOperations, @unchecked Sendable {

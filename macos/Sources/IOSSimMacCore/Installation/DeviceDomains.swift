@@ -16,6 +16,9 @@ public struct NativeDomainMapping: Equatable, Sendable {
     /// Veya-driven work is in flight or incomplete: the next transition completes or replaces it.
     static func incomplete() -> Self { .init(state: .invalid, userAction: nil, failure: nil) }
     static func user(_ action: String) -> Self { .init(state: .waitingForUser, userAction: action, failure: nil) }
+    static func actionable(_ failure: VeyaFailure) -> Self {
+        .init(state: .waitingForUser, userAction: failure.userAction, failure: failure)
+    }
     static func failed(_ failure: VeyaFailure) -> Self {
         .init(state: failure.retryable ? .retryableFailure : .terminalFailure, userAction: nil, failure: failure)
     }
@@ -23,14 +26,39 @@ public struct NativeDomainMapping: Equatable, Sendable {
 
 public enum DeviceDomainFailure {
     static func make(_ namespace: InstallationFailureNamespace, _ number: Int, _ operation: String, _ message: String,
-                     retryable: Bool = false) -> VeyaFailure {
+                     retryable: Bool = false, userAction: String? = nil) -> VeyaFailure {
         // Constant, validated inputs; construction cannot fail.
         try! VeyaFailure(namespace: namespace, number: number, operation: operation, safeMessage: message,
-                         retryable: retryable, underlyingSubsystem: "deviceDomains")
+                         retryable: retryable, userAction: userAction, underlyingSubsystem: "deviceDomains")
     }
     public static let ddiIncompatible = make(.developerSupport, 30, "resolve", "No developer support image is approved for this iOS build.")
     public static let ddiUnavailable = make(.developerSupport, 31, "mount", "Developer support could not be prepared.", retryable: true)
     public static let vpnUnsupportedVersion = make(.vpn, 30, "observe", "The installed LocalDevVPN version is not supported.")
+    public static let vpnMissing = make(
+        .vpn, 31, "install", "LocalDevVPN is not installed.",
+        userAction: "Install LocalDevVPN on your iPhone, then continue in Veya.")
+    public static let vpnPermissionRequired = make(
+        .vpn, 32, "approveConfiguration", "LocalDevVPN needs permission to add its VPN configuration.",
+        userAction: "Open LocalDevVPN, allow the VPN configuration, then continue in Veya.")
+    public static let vpnNotRunning = make(
+        .vpn, 33, "connect", "LocalDevVPN is configured but not connected.",
+        userAction: "Open LocalDevVPN and tap Connect, then continue in Veya.")
+    public static let vpnEndpointUnavailable = make(
+        .vpn, 34, "probeEndpoint", "LocalDevVPN is active, but Veya cannot reach the developer connection.",
+        retryable: true,
+        userAction: "LocalDevVPN is active, but Veya cannot reach the developer connection. Keep LocalDevVPN connected and try Continue again.")
+    public static let vpnReceiptMissing = make(
+        .vpn, 35, "readReceipt", "Veya did not receive a LocalDevVPN readiness response.",
+        retryable: true,
+        userAction: "Keep the iPhone connected, open Veya on the iPhone, and try Continue again.")
+    public static let vpnReceiptInvalid = make(
+        .vpn, 36, "validateReceipt", "Veya received an invalid LocalDevVPN readiness response.",
+        retryable: true,
+        userAction: "Keep the iPhone connected and try Continue again.")
+    public static let vpnTransportUnavailable = make(
+        .vpn, 37, "deviceTransport", "Veya could not communicate with the iPhone while checking LocalDevVPN.",
+        retryable: true,
+        userAction: "Reconnect and unlock the iPhone, then try Continue again.")
     public static let pairingFailed = make(.pairing, 30, "prove", "The device pairing could not be proven.", retryable: true)
     public static let observationFailed = make(.device, 30, "observe", "The device could not be observed.", retryable: true)
 }
@@ -56,9 +84,9 @@ public enum DeviceDomainMapping {
     public static func localDevVPN(_ state: LocalDevVPNLifecycleState) -> NativeDomainMapping {
         switch state {
         case .runtimeEndpointReachable: return .satisfied()
-        case .missing: return .user("Install LocalDevVPN from the App Store on the iPhone, then continue in Veya.")
+        case .missing: return .actionable(DeviceDomainFailure.vpnMissing)
         case .installedUnsupported: return .failed(DeviceDomainFailure.vpnUnsupportedVersion)
-        case .vpnPermissionRequired: return .user("Open LocalDevVPN on the iPhone and allow the VPN configuration, then continue in Veya.")
+        case .vpnPermissionRequired: return .actionable(DeviceDomainFailure.vpnPermissionRequired)
         case .installed, .configured, .running: return .incomplete()
         }
     }
