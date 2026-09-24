@@ -541,7 +541,9 @@ public struct IdeviceProvisioningBackend: DeviceProvisioningBackend {
             return ("DDI_REQUIRED", detail)
         case .developerServicesNotReady:
             return ("DEVELOPER_SERVICES_NOT_READY", detail)
-        case .launchRejected:
+        case .launchRejected, .launchRejectedStructured:
+            // Both forms are the same launch outcome here; only the developer-trust
+            // classifier distinguishes them, and it does so with prerequisites.
             return ("LAUNCH_REJECTED", detail)
         case .libraryUnavailable, .libraryLoadFailure, .incompatibleABI:
             return ("APPSERVICE_UNAVAILABLE", detail)

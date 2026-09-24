@@ -50,6 +50,83 @@ extension DynamicNativeDeviceTransport: DeveloperServicesProbing {
     }
 }
 
+/// The facts Veya must already have proved, independently of the device's answer,
+/// before a launch security denial is allowed to mean "the developer is untrusted".
+///
+/// iOS collapses invalid code signature, inadequate entitlements and untrusted
+/// developer profile into one launch rejection. Veya cannot tell them apart from the
+/// rejection alone, so it eliminates the other two in advance: every flag here
+/// corresponds to evidence already recorded in the installation journal by a domain
+/// that proved it cryptographically and offline. Nothing is inferred from the device.
+public struct DeveloperTrustPrerequisites: Equatable, Sendable {
+    /// A live developer-services session (CoreDevice/RSD/AppService) was proven before
+    /// the launch, so the rejection is not DDI, transport or Developer Mode.
+    public let developerServicesProven: Bool
+    /// The exact expected bundle was observed installed on this device after install.
+    public let applicationInstalled: Bool
+    /// `veya-signing-core` re-verified the signed Mach-O graph that was installed,
+    /// eliminating "invalid code signature".
+    public let payloadSignatureVerified: Bool
+    /// The provisioning profile validated offline against Apple's CMS anchor, and its
+    /// team, application identifier, device list and expiry all matched. This
+    /// eliminates "inadequate entitlements", a wrong team, an unprovisioned device and
+    /// an expired profile, because signing refuses any entitlement the profile does
+    /// not grant.
+    public let profileBindingValidated: Bool
+    /// The signing certificate matched Apple's own live inventory, eliminating a
+    /// revoked or unknown certificate.
+    public let certificateInventoryMatched: Bool
+
+    public init(developerServicesProven: Bool, applicationInstalled: Bool,
+                payloadSignatureVerified: Bool, profileBindingValidated: Bool,
+                certificateInventoryMatched: Bool) {
+        self.developerServicesProven = developerServicesProven
+        self.applicationInstalled = applicationInstalled
+        self.payloadSignatureVerified = payloadSignatureVerified
+        self.profileBindingValidated = profileBindingValidated
+        self.certificateInventoryMatched = certificateInventoryMatched
+    }
+
+    /// Nothing proved. Every caller that has not established the prerequisites gets
+    /// this, so trust can never be classified by default.
+    public static let unproven = DeveloperTrustPrerequisites(
+        developerServicesProven: false, applicationInstalled: false,
+        payloadSignatureVerified: false, profileBindingValidated: false,
+        certificateInventoryMatched: false)
+
+    public var allProven: Bool {
+        developerServicesProven && applicationInstalled && payloadSignatureVerified
+            && profileBindingValidated && certificateInventoryMatched
+    }
+
+    /// Evidence counts only when it is bound to the domain's *active* record, was
+    /// captured at that record's generation, and has not expired.
+    static func proved(_ journal: InstallationJournal, _ domain: InstallationDomain,
+                       kind: String, at now: Date) -> Bool {
+        guard let record = journal.activeResource(for: domain) else { return false }
+        return journal.evidence.contains { evidence in
+            evidence.kind == kind
+                && record.evidenceIDs.contains(evidence.id)
+                && evidence.generation == record.generation
+                && (evidence.validUntil.map { $0 > now } ?? true)
+        }
+    }
+
+    /// `developerServicesProven` is supplied by the caller because it is a property of
+    /// the call site, not of the journal: the developer-services transition launches the
+    /// app only after its own readiness probe has succeeded on this connection.
+    public static func fromJournal(_ journal: InstallationJournal, developerServicesProven: Bool,
+                                   now: Date = Date()) -> Self {
+        DeveloperTrustPrerequisites(
+            developerServicesProven: developerServicesProven,
+            applicationInstalled: proved(journal, .application, kind: "deviceInventoryAfterInstall", at: now),
+            payloadSignatureVerified: proved(journal, .payload, kind: "payloadIndependentVerification", at: now),
+            profileBindingValidated: proved(journal, .profile, kind: "profileCMSBindingValidation", at: now),
+            certificateInventoryMatched: proved(journal, .certificate, kind: "appleInventorySPKIMatch", at: now)
+        )
+    }
+}
+
 public enum DeviceFailureMapping {
     static let unlock = "Unlock your iPhone and keep it unlocked, then continue in Veya."
     static let trust = "Tap Trust on your iPhone and enter its passcode, then continue in Veya."
@@ -82,7 +159,11 @@ public enum DeviceFailureMapping {
     }
 
     /// Typed coordinator/bridge failures → canonical meaning. Unknown errors are retryable observation failures.
-    public static func map(_ error: Error) -> NativeDomainMapping {
+    ///
+    /// `trustPrerequisites` defaults to `.unproven`, so a caller that has not proved the
+    /// signing chain can never reach the developer-trust classification.
+    public static func map(_ error: Error,
+                           trustPrerequisites: DeveloperTrustPrerequisites = .unproven) -> NativeDomainMapping {
         switch error {
         case let bridge as NativeDeviceBridgeError:
             switch bridge {
@@ -90,6 +171,8 @@ public enum DeviceFailureMapping {
             case .trustRequired, .trustPromptPending, .trustDenied: return .user(trust)
             case .developerModeRequired: return .user(developerMode)
             case _ where bridge.isDeveloperTrustRejection: return .user(developerTrust)
+            case _ where bridge.isDeveloperTrustRejection(given: trustPrerequisites):
+                return .user(developerTrust)
             case .ddiRequired: return .missing()
             default: return .failed(DeviceDomainFailure.observationFailed)
             }
@@ -130,12 +213,13 @@ public enum DeviceFailureMapping {
 
     /// Runs a mutating coordinator call: success is `.satisfied`; typed failures throw (so the transition
     /// fails and the next observation reports the user action or failure).
-    static func prepare(_ body: () async throws -> Void) async throws -> NativeDomainMapping {
+    static func prepare(trustPrerequisites: DeveloperTrustPrerequisites = .unproven,
+                        _ body: () async throws -> Void) async throws -> NativeDomainMapping {
         do {
             try await body()
             return .satisfied()
         } catch {
-            let mapped = map(error)
+            let mapped = map(error, trustPrerequisites: trustPrerequisites)
             throw mapped.failure ?? mapped.userAction.map {
                 (try? VeyaFailure(namespace: .device, number: 31, operation: "prepare", safeMessage: $0, userAction: $0,
                                   underlyingSubsystem: "deviceDomains")) ?? DeviceDomainFailure.observationFailed
@@ -144,13 +228,39 @@ public enum DeviceFailureMapping {
     }
 }
 
+extension NativeLaunchRejection {
+    /// FrontBoard's open-application security denial: the narrow structured shape iOS
+    /// returns when it refuses to launch an installed application on security grounds.
+    /// It is the whole security family, not trust alone, which is why prerequisites
+    /// must eliminate the rest of that family before it can mean anything.
+    public var isOpenApplicationSecurityDenial: Bool {
+        guard isStructurallyUsable, let terminal = chain.last else { return false }
+        return terminal.domain == "FBSOpenApplicationErrorDomain"
+            && terminal.code == 3
+            && terminal.bsDescription == "Security"
+    }
+}
+
 extension NativeDeviceBridgeError {
     /// AppService launch denied because the user has not trusted the Personal Team developer on the iPhone.
     /// A platform security requirement, not a Veya defect; reuses the physically observed classifier.
+    ///
+    /// This text form serves the legacy `devicectl` path, whose output genuinely carries
+    /// Apple's NSError description. It is unreachable from the native bridge, which now
+    /// produces `launchRejectedStructured` instead.
     public var isDeveloperTrustRejection: Bool {
         guard case .launchRejected(let detail) = self else { return false }
         return ConsumerProvisioningErrorClassifier.launchErrorCode(output: "launch_rejected: \(detail)")
             == .developerProfileTrustRequired
+    }
+
+    /// Conditional classification: a structured open-application security denial means
+    /// "untrusted developer" only once Veya has independently eliminated every other
+    /// cause iOS folds into that same denial. Both halves are required; neither is
+    /// sufficient, and no localized text participates.
+    public func isDeveloperTrustRejection(given prerequisites: DeveloperTrustPrerequisites) -> Bool {
+        guard case .launchRejectedStructured(let detail) = self else { return false }
+        return prerequisites.allProven && detail.isOpenApplicationSecurityDenial
     }
 }
 
@@ -177,6 +287,17 @@ public struct InstalledPayloadIdentity: Equatable, Sendable {
 public enum ProductionDeviceDomains {
     public typealias DeviceProvider = @Sendable () throws -> IOSSimDeviceIdentity
 
+    /// Prerequisites for the developer-trust classification, read from the journal.
+    /// `developerServicesProven` is the call site's own guarantee: the developer-services
+    /// transition launches the app only after its readiness probe succeeded, and the VPN
+    /// and pairing domains run only after developer support is an active record.
+    static func trustPrerequisites(_ repository: InstallationJournalRepository,
+                                   developerServicesProven: Bool) async -> DeveloperTrustPrerequisites {
+        guard let journal = try? await repository.load() else { return .unproven }
+        return DeveloperTrustPrerequisites.fromJournal(
+            journal, developerServicesProven: developerServicesProven)
+    }
+
     static func payload(_ repository: InstallationJournalRepository) async throws -> InstalledPayloadIdentity {
         guard let payload = InstalledPayloadIdentity(journal: try await repository.load()) else {
             throw PayloadFailure.payloadNotReady
@@ -197,11 +318,18 @@ public enum ProductionDeviceDomains {
                 do {
                     return try await probe.readiness(try device()).transportReady ? .satisfied() : .incomplete()
                 } catch {
+                    // Observation is read-only and never launches the app, so it cannot
+                    // produce a launch rejection; prerequisites stay unproven here.
                     return DeviceFailureMapping.map(error)
                 }
             },
             prepare: { _ in
-                try await DeviceFailureMapping.prepare {
+                // The coordinator launches the installed app only after its own
+                // CoreDevice/RSD/AppService readiness probe has succeeded on this
+                // connection, so developer services are proven by construction here.
+                try await DeviceFailureMapping.prepare(
+                    trustPrerequisites: await trustPrerequisites(repository, developerServicesProven: true)
+                ) {
                     let payload = try await payload(repository)
                     _ = try await coordinator.prepare(
                         device: try device(),
@@ -240,7 +368,12 @@ public enum ProductionDeviceDomains {
                 }
             },
             prepare: { _ in
-                try await DeviceFailureMapping.prepare {
+                try await DeviceFailureMapping.prepare(
+                    trustPrerequisites: await trustPrerequisites(
+                        repository,
+                        developerServicesProven: (try? await repository.load())?
+                            .activeResource(for: .developerSupport) != nil)
+                ) {
                     let payload = try await payload(repository)
                     _ = try await coordinator.reconcileAutomatically(
                         device: try device(), teamIdentifier: payload.teamIdentifier,
@@ -353,7 +486,12 @@ public enum ProductionDeviceDomains {
                 }
             },
             prepare: { _ in
-                try await DeviceFailureMapping.prepare {
+                try await DeviceFailureMapping.prepare(
+                    trustPrerequisites: await trustPrerequisites(
+                        repository,
+                        developerServicesProven: (try? await repository.load())?
+                            .activeResource(for: .developerSupport) != nil)
+                ) {
                     let payload = try await payload(repository)
                     let receipt = try await coordinator.prepare(
                         device: try device(), iosSimBundleIdentifier: payload.mainBundleIdentifier,

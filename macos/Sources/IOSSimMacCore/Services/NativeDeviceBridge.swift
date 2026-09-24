@@ -290,6 +290,67 @@ public struct DeveloperServicesReadinessReceipt: Codable, Equatable, Sendable {
     }
 }
 
+/// One level of an Apple NSError chain, as recovered natively. Carries no free
+/// text, paths, identifiers or localized reasons: `domain` and `bsDescription`
+/// are Apple constants and `code` is an integer.
+public struct NativeErrorChainNode: Codable, Equatable, Sendable {
+    public let domain: String
+    public let code: Int
+    public let bsDescription: String?
+
+    public init(domain: String, code: Int, bsDescription: String? = nil) {
+        self.domain = domain
+        self.code = code
+        self.bsDescription = bsDescription
+    }
+}
+
+/// How the native bridge recognized a launch rejection.
+public enum NativeLaunchRejectionEnvelope: String, Codable, Equatable, Sendable {
+    /// Typed: the device answered the launch feature with a CoreDevice error
+    /// envelope instead of a process token.
+    case coreDeviceErrorEnvelope
+    /// A substring guess in the bridge matched. Never a basis for classification.
+    case heuristic
+}
+
+/// Structured detail for a launch rejection, carried in the native result payload.
+/// An absent payload, an unknown schema, or an incomplete chain must all fail closed.
+public struct NativeLaunchRejection: Codable, Equatable, Sendable {
+    public static let supportedSchemaVersion = 1
+
+    public let schemaVersion: Int
+    public let envelope: NativeLaunchRejectionEnvelope
+    /// Outermost first. Empty when the chain could not be recovered.
+    public let chain: [NativeErrorChainNode]
+    /// True only when every level parsed, with none dropped.
+    public let chainComplete: Bool
+    /// The human diagnostic, kept separately for debugging. Never classified on.
+    public var diagnostic: String = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, envelope, chain, chainComplete
+    }
+
+    public init(schemaVersion: Int, envelope: NativeLaunchRejectionEnvelope,
+                chain: [NativeErrorChainNode], chainComplete: Bool, diagnostic: String = "") {
+        self.schemaVersion = schemaVersion
+        self.envelope = envelope
+        self.chain = chain
+        self.chainComplete = chainComplete
+        self.diagnostic = diagnostic
+    }
+
+    /// Usable as classification evidence only when the schema is the one we know,
+    /// the device itself produced the envelope, and the chain is whole.
+    public var isStructurallyUsable: Bool {
+        schemaVersion == Self.supportedSchemaVersion
+            && envelope == .coreDeviceErrorEnvelope
+            && chainComplete
+            && !chain.isEmpty
+    }
+}
+
 public enum NativeDeviceBridgeError: Error, Equatable, Sendable {
     case libraryUnavailable
     case libraryLoadFailure(String)
@@ -316,6 +377,11 @@ public enum NativeDeviceBridgeError: Error, Equatable, Sendable {
     case ddiRequired(String)
     case developerServicesNotReady(String)
     case launchRejected(String)
+    /// A launch rejection whose Apple error chain the native bridge recovered as
+    /// structure, before any text formatting or truncation. Only this case can
+    /// support a conditional developer-trust classification; `launchRejected`
+    /// alone never can.
+    case launchRejectedStructured(NativeLaunchRejection)
     case containerUnavailable(String)
     /// The app container was reached, but this exact requested path does not exist.
     case containerFileNotFound(String)
@@ -1054,7 +1120,15 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         defer { freeFunction(pointer) }
         let result = pointer.assumingMemoryBound(to: CResult.self).pointee
         let diagnostic = result.diagnostic.map { String(cString: $0) } ?? "device operation failed"
-        guard result.status == 0 else { throw Self.error(status: result.status, diagnostic: diagnostic) }
+        guard result.status == 0 else {
+            // Error results used to discard the payload. A launch rejection now carries
+            // its structured chain there; anything unreadable falls back to the text case,
+            // which cannot support a trust classification.
+            let payload = result.payloadLength > 0
+                ? result.payload.map { Data(bytes: $0, count: result.payloadLength) }
+                : nil
+            throw Self.error(status: result.status, diagnostic: diagnostic, payload: payload)
+        }
         guard result.payloadLength == 0 || result.payload != nil else {
             throw NativeDeviceBridgeError.internalFailure("native bridge returned an invalid buffer")
         }
@@ -1085,7 +1159,8 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         return try operation(deviceHandle, timeoutMS)
     }
 
-    private static func error(status: Int32, diagnostic: String) -> NativeDeviceBridgeError {
+    private static func error(status: Int32, diagnostic: String,
+                              payload: Data? = nil) -> NativeDeviceBridgeError {
         switch status {
         case 1: return .invalidIdentity
         case 2: return .libraryUnavailable
@@ -1107,7 +1182,17 @@ public final class DynamicNativeDeviceTransport: NativeDeviceTransport, @uncheck
         case 19: return .applicationNotFound(Redactor.redact(diagnostic))
         case 20: return .ddiRequired(Redactor.redact(diagnostic))
         case 21: return .developerServicesNotReady(Redactor.redact(diagnostic))
-        case 22: return .launchRejected(Redactor.redact(diagnostic))
+        case 22:
+            let redacted = Redactor.redact(diagnostic)
+            guard let payload,
+                  var detail = try? JSONDecoder().decode(NativeLaunchRejection.self, from: payload),
+                  detail.schemaVersion == NativeLaunchRejection.supportedSchemaVersion else {
+                // Older bridge, absent payload, or an unknown schema: fail closed to the
+                // text case so no trust classification is reachable from it.
+                return .launchRejected(redacted)
+            }
+            detail.diagnostic = redacted
+            return .launchRejectedStructured(detail)
         case 23: return .containerUnavailable(Redactor.redact(diagnostic))
         case 24: return .pairingRejected(Redactor.redact(diagnostic))
         case 25: return .trustPromptPending

@@ -159,6 +159,270 @@ struct DeveloperServicesReceipt {
     ddi_mounted: Option<bool>,
 }
 
+/// One level of an Apple NSError chain, reduced to the fields that carry
+/// classification meaning. Deliberately excludes every free-text and
+/// identifying field: no paths, no bundle identifiers, no localized reasons,
+/// no user info. `domain` and `bs_description` are Apple constants.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ErrorChainNode {
+    domain: String,
+    code: i64,
+    bs_description: Option<String>,
+}
+
+/// How the launch rejection was recognized. `CoreDeviceErrorEnvelope` is a typed
+/// Rust discriminant (`IdeviceError::CoreDevice` with `sub_code() == 1`): the device
+/// answered the launch feature with an error envelope instead of a process token.
+/// `Heuristic` means only a substring guess matched, and is never a basis for
+/// classification.
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+enum LaunchRejectionEnvelope {
+    CoreDeviceErrorEnvelope,
+    Heuristic,
+}
+
+/// Structured, secret-free detail for a launch rejection, carried in the result
+/// payload that error results previously left empty. An absent payload, an
+/// unknown schema, or an empty chain must all fail closed in the consumer.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct LaunchRejectionDetail {
+    schema_version: u32,
+    kind: &'static str,
+    envelope: LaunchRejectionEnvelope,
+    /// Outermost first. Empty when the chain could not be recovered confidently.
+    chain: Vec<ErrorChainNode>,
+    /// True when the chain was parsed in full, with no level dropped.
+    chain_complete: bool,
+}
+
+impl LaunchRejectionDetail {
+    const SCHEMA_VERSION: u32 = 1;
+    const MAX_LEVELS: usize = 8;
+}
+
+/// An Apple error domain is a dotted constant. Anything else is dropped rather
+/// than forwarded, so no free text can reach the payload through this field.
+fn sanitized_domain(value: &str) -> Option<String> {
+    let ok = !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+    ok.then(|| value.to_string())
+}
+
+/// `BSErrorCodeDescription` is a short BackBoardServices constant such as
+/// `Security` or `RequestDenied`.
+fn sanitized_bs_description(value: &str) -> Option<String> {
+    let ok = !value.is_empty()
+        && value.len() <= 64
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    ok.then(|| value.to_string())
+}
+
+/// Returns the body of the first `Dictionary({ ... })` in `s`, without its
+/// delimiters, honouring nesting and string literals.
+fn dictionary_body(s: &str) -> Option<&str> {
+    let open = s.find("Dictionary({")? + "Dictionary({".len();
+    let bytes = s.as_bytes();
+    let mut depth = 1usize;
+    let mut i = open;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            match c {
+                b'\\' => i += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else {
+            match c {
+                b'"' => in_string = true,
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&s[open..i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn unescape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Splits one dictionary body into its immediate `"key": value` entries. Nested
+/// dictionaries, arrays and string literals are stepped over, not descended into,
+/// so a key is only ever reported at the level it actually belongs to.
+fn top_level_entries(body: &str) -> Vec<(String, &str)> {
+    let bytes = body.as_bytes();
+    let mut entries = Vec::new();
+    let mut i = 0usize;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut string_start = 0usize;
+    let mut pending_key: Option<String> = None;
+    let mut value_start: Option<usize> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            match c {
+                b'\\' => i += 1,
+                b'"' => {
+                    in_string = false;
+                    if depth == 0 && pending_key.is_none() && value_start.is_none() {
+                        pending_key = Some(unescape(&body[string_start..i]));
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            match c {
+                b'"' => {
+                    in_string = true;
+                    string_start = i + 1;
+                }
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' => depth = depth.saturating_sub(1),
+                b':' if depth == 0 && pending_key.is_some() && value_start.is_none() => {
+                    value_start = Some(i + 1);
+                }
+                b',' if depth == 0 => {
+                    if let (Some(key), Some(vstart)) = (pending_key.take(), value_start.take()) {
+                        entries.push((key, body[vstart..i].trim()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if let (Some(key), Some(vstart)) = (pending_key, value_start) {
+        entries.push((key, body[vstart..].trim()));
+    }
+    entries
+}
+
+/// `String("...")` -> the contained value.
+fn debug_string_value(value: &str) -> Option<String> {
+    let inner = value.strip_prefix("String(")?.strip_suffix(')')?;
+    let inner = inner.strip_prefix('"')?.strip_suffix('"')?;
+    Some(unescape(inner))
+}
+
+/// `Integer(n)` -> n.
+fn debug_integer_value(value: &str) -> Option<i64> {
+    value
+        .strip_prefix("Integer(")?
+        .strip_suffix(')')?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// The returned slice borrows the dictionary body, not the entry table, so a
+/// value stays usable after the table it came from is dropped.
+fn entry<'a>(entries: &[(String, &'a str)], key: &str) -> Option<&'a str> {
+    entries.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+}
+
+/// Recovers the NSError chain from the `plist::Value` Debug rendering the
+/// `idevice` crate produces for `CoreDevice.error`.
+///
+/// This is a narrowing signal only. It can never, on its own, make a failure mean
+/// more than the typed envelope discriminant already says; it only lets a consumer
+/// refuse to classify when the chain is absent or does not match. It exists because
+/// `CoreDevice.error` is stringified inside the upstream crate
+/// (`core_device::CoreDeviceServiceClient::invoke_inner`, which is private and is the
+/// only path every public entry point takes), so no structured value ever escapes to
+/// this bridge. The Debug grammar is machine-generated, but the key order is Apple's
+/// own insertion order and the crate reserves the right to change the backing map, so
+/// every failure here yields an empty or incomplete chain instead of a guess.
+///
+/// Returns the chain outermost-first, and whether it was recovered in full.
+fn extract_error_chain(debug_dump: &str) -> (Vec<ErrorChainNode>, bool) {
+    let Some(mut body) = dictionary_body(debug_dump) else {
+        return (Vec::new(), false);
+    };
+    let mut chain = Vec::new();
+    loop {
+        if chain.len() == LaunchRejectionDetail::MAX_LEVELS {
+            // Deeper than we are willing to walk: what we have is not the whole chain.
+            return (chain, false);
+        }
+        let entries = top_level_entries(body);
+        let domain = entry(&entries, "domain")
+            .or_else(|| entry(&entries, "NSDomain"))
+            .and_then(debug_string_value)
+            .as_deref()
+            .and_then(sanitized_domain);
+        let code = entry(&entries, "code")
+            .or_else(|| entry(&entries, "NSCode"))
+            .and_then(debug_integer_value);
+        let user_info = entry(&entries, "userInfo")
+            .or_else(|| entry(&entries, "NSUserInfo"))
+            .and_then(dictionary_body);
+        let user_info_entries = user_info.map(top_level_entries).unwrap_or_default();
+        let bs_description = entry(&user_info_entries, "BSErrorCodeDescription")
+            .or_else(|| entry(&entries, "BSErrorCodeDescription"))
+            .and_then(debug_string_value)
+            .as_deref()
+            .and_then(sanitized_bs_description);
+
+        let (Some(domain), Some(code)) = (domain, code) else {
+            // This level did not yield both required fields, so the chain is not
+            // trustworthy as a whole. Keep what parsed; never call it complete.
+            return (chain, false);
+        };
+        chain.push(ErrorChainNode {
+            domain,
+            code,
+            bs_description,
+        });
+
+        let underlying = entry(&user_info_entries, "NSUnderlyingError")
+            .or_else(|| entry(&entries, "NSUnderlyingError"));
+        match underlying.and_then(dictionary_body) {
+            Some(next) => body = next,
+            // No deeper level: the chain ends here, and it ended cleanly.
+            None => return (chain, true),
+        }
+    }
+}
+
+fn launch_rejection_payload(envelope: LaunchRejectionEnvelope, debug_dump: &str) -> Vec<u8> {
+    let (chain, chain_complete) = extract_error_chain(debug_dump);
+    let detail = LaunchRejectionDetail {
+        schema_version: LaunchRejectionDetail::SCHEMA_VERSION,
+        kind: "launchRejection",
+        envelope,
+        chain,
+        chain_complete,
+    };
+    serde_json::to_vec(&detail).unwrap_or_default()
+}
+
 fn clean_diagnostic(value: impl AsRef<str>) -> String {
     let raw = value.as_ref();
     let lowered = raw.to_ascii_lowercase();
@@ -1625,6 +1889,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                         Status::DeviceResolutionFailed,
                         "device_resolution",
                         error.to_string(),
+                        None,
                     )
                 })?;
             let provider = selected.to_provider(UsbmuxdAddr::default(), "IOSSim");
@@ -1636,7 +1901,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                     } else {
                         staged_device_status(&error, Status::CoreDeviceProxyFailed)
                     };
-                    return Err((status, "coredevice_proxy", error.to_string()));
+                    return Err((status, "coredevice_proxy", error.to_string(), None));
                 }
             };
             let rsd_port = proxy.tunnel_info().server_rsd_port;
@@ -1645,18 +1910,24 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                     staged_device_status(&error, Status::SoftwareTunnelFailed),
                     "software_tunnel",
                     error.to_string(),
+                    None,
                 )
             })?;
             let mut adapter = adapter.to_async_handle();
-            let stream = adapter
-                .connect(rsd_port)
-                .await
-                .map_err(|error| (Status::RsdUnavailable, "rsd_connect", error.to_string()))?;
+            let stream = adapter.connect(rsd_port).await.map_err(|error| {
+                (
+                    Status::RsdUnavailable,
+                    "rsd_connect",
+                    error.to_string(),
+                    None,
+                )
+            })?;
             let mut handshake = RsdHandshake::new(stream).await.map_err(|error| {
                 (
                     staged_device_status(&error, Status::RsdUnavailable),
                     "rsd_handshake",
                     error.to_string(),
+                    None,
                 )
             })?;
             let app_service_name = AppServiceClient::rsd_service_name();
@@ -1666,6 +1937,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                     "appservice_resolution",
                     "com.apple.coredevice.appservice is absent from the RSD service map"
                         .to_string(),
+                    None,
                 ));
             };
             if let Some(features) = service.features.as_ref()
@@ -1677,6 +1949,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                     Status::FeatureUnavailable,
                     "appservice_feature",
                     "launchapplication is not advertised".to_string(),
+                    None,
                 ));
             }
             let mut app_service = AppServiceClient::connect_rsd(&mut adapter, &mut handshake)
@@ -1686,6 +1959,7 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                         staged_device_status(&error, Status::RemoteXpcFailed),
                         "remotexpc_handshake",
                         error.to_string(),
+                        None,
                     )
                 })?;
             let response = app_service
@@ -1694,28 +1968,36 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
                 .map_err(|error| {
                     let message = error.to_string();
                     let lower = message.to_ascii_lowercase();
-                    let status = if matches!(error, idevice::IdeviceError::NotFound) {
-                        Status::ApplicationNotFound
+                    // `envelope` records HOW the rejection was recognized, so a
+                    // consumer can require the typed device answer and never act on
+                    // the substring guess below it.
+                    let (status, envelope) = if matches!(error, idevice::IdeviceError::NotFound) {
+                        (Status::ApplicationNotFound, None)
                     } else if matches!(error, idevice::IdeviceError::DeviceLocked) {
-                        Status::DeviceLocked
+                        (Status::DeviceLocked, None)
                     } else if matches!(error, idevice::IdeviceError::DeveloperModeNotEnabled) {
-                        Status::DeveloperModeRequired
+                        (Status::DeveloperModeRequired, None)
                     } else if matches!(error, idevice::IdeviceError::CoreDevice(ref value) if value.sub_code() == 1) {
-                        // The launch operation returned a structured CoreDevice
-                        // error envelope. Keep it as a launch rejection; the
-                        // Swift layer performs the narrower developer-trust
-                        // classification from its redacted diagnostic.
-                        Status::LaunchRejected
+                        // Typed discriminant: the device answered the launch feature
+                        // with an error envelope instead of a process token. This is
+                        // structure, not text.
+                        (
+                            Status::LaunchRejected,
+                            Some(LaunchRejectionEnvelope::CoreDeviceErrorEnvelope),
+                        )
                     } else if lower.contains("security")
                         || lower.contains("denied")
                         || lower.contains("signature")
                         || lower.contains("trusted")
                     {
-                        Status::LaunchRejected
+                        (
+                            Status::LaunchRejected,
+                            Some(LaunchRejectionEnvelope::Heuristic),
+                        )
                     } else {
-                        Status::ProtocolError
+                        (Status::ProtocolError, None)
                     };
-                    (status, "launchapplication", message)
+                    (status, "launchapplication", message, envelope)
                 })?;
             Ok(LaunchReceipt {
                 bundle_id,
@@ -1726,7 +2008,17 @@ pub unsafe extern "C" fn iossim_bridge_launch_app(
         };
         match block_on_timeout(&runtime, Duration::from_millis(timeout), task) {
             Ok(Ok(receipt)) => json_result(&receipt),
-            Ok(Err((status, stage, error))) => staged_error(status, stage, error),
+            Ok(Err((status, stage, error, envelope))) => match envelope {
+                // The structured detail travels in the result payload, which error
+                // results previously left empty. It is built from the complete
+                // message, before `clean_diagnostic` bounds the human diagnostic.
+                Some(envelope) => make_result(
+                    status,
+                    launch_rejection_payload(envelope, &error),
+                    format!("{stage}: {error}"),
+                ),
+                None => staged_error(status, stage, error),
+            },
             Err(_) => make_result(
                 Status::TimedOut,
                 vec![],
@@ -1974,6 +2266,171 @@ pub unsafe extern "C" fn iossim_bridge_result_free(result: *mut BridgeResult) {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        ErrorChainNode, LaunchRejectionEnvelope, extract_error_chain, launch_rejection_payload,
+        sanitized_bs_description, sanitized_domain,
+    };
+
+    /// The `plist::Value` Debug rendering of a CoreDevice launch-denial envelope.
+    /// Key order is Apple's own (the dictionary is an `IndexMap`), so the fixtures
+    /// deliberately do not assume an alphabetical layout.
+    const UNTRUSTED_DEVELOPER: &str = concat!(
+        r#"launchapplication: device returned an error: Dictionary({"code": Integer(10002), "#,
+        r#""domain": String("com.apple.dt.CoreDeviceError"), "userInfo": Dictionary({"#,
+        r#""NSLocalizedDescription": String("The application failed to launch."), "#,
+        r#""NSUnderlyingError": Dictionary({"code": Integer(1), "#,
+        r#""domain": String("FBSOpenApplicationServiceErrorDomain"), "userInfo": Dictionary({"#,
+        r#""BSErrorCodeDescription": String("RequestDenied"), "#,
+        r#""NSUnderlyingError": Dictionary({"code": Integer(3), "#,
+        r#""domain": String("FBSOpenApplicationErrorDomain"), "userInfo": Dictionary({"#,
+        r#""BSErrorCodeDescription": String("Security"), "#,
+        r#""NSLocalizedFailureReason": String("Unable to launch because its profile "#,
+        r#"has not been explicitly trusted by the user.")})})})})})})"#
+    );
+
+    fn domains(dump: &str) -> Vec<(String, i64, Option<String>)> {
+        extract_error_chain(dump)
+            .0
+            .into_iter()
+            .map(|n| (n.domain, n.code, n.bs_description))
+            .collect()
+    }
+
+    #[test]
+    fn untrusted_developer_chain_is_recovered_in_full() {
+        let (chain, complete) = extract_error_chain(UNTRUSTED_DEVELOPER);
+        assert!(complete, "every level must parse");
+        assert_eq!(
+            chain,
+            vec![
+                ErrorChainNode {
+                    domain: "com.apple.dt.CoreDeviceError".into(),
+                    code: 10002,
+                    bs_description: None,
+                },
+                ErrorChainNode {
+                    domain: "FBSOpenApplicationServiceErrorDomain".into(),
+                    code: 1,
+                    bs_description: Some("RequestDenied".into()),
+                },
+                ErrorChainNode {
+                    domain: "FBSOpenApplicationErrorDomain".into(),
+                    code: 3,
+                    bs_description: Some("Security".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn key_order_is_not_assumed() {
+        // Same chain, userInfo serialized before code/domain at every level.
+        let reordered = concat!(
+            r#"Dictionary({"userInfo": Dictionary({"NSUnderlyingError": Dictionary({"#,
+            r#""userInfo": Dictionary({"BSErrorCodeDescription": String("Security")}), "#,
+            r#""domain": String("FBSOpenApplicationErrorDomain"), "code": Integer(3)}), "#,
+            r#""NSLocalizedDescription": String("failed")}), "#,
+            r#""domain": String("com.apple.dt.CoreDeviceError"), "code": Integer(10002)})"#
+        );
+        let (chain, _) = extract_error_chain(reordered);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].domain, "com.apple.dt.CoreDeviceError");
+        assert_eq!(chain[1].code, 3);
+        assert_eq!(chain[1].bs_description.as_deref(), Some("Security"));
+    }
+
+    #[test]
+    fn a_truncated_dump_never_reports_a_complete_chain() {
+        let truncated = &UNTRUSTED_DEVELOPER[..300];
+        let (chain, complete) = extract_error_chain(truncated);
+        assert!(!complete, "a cut chain must not claim completeness");
+        assert!(chain.len() < 3);
+    }
+
+    #[test]
+    fn unparsable_and_empty_dumps_yield_no_chain() {
+        for dump in [
+            "",
+            "launchapplication: broken pipe",
+            "Dictionary({})",
+            "{{{",
+        ] {
+            let (chain, complete) = extract_error_chain(dump);
+            assert!(chain.is_empty(), "no chain from {dump:?}");
+            // An absent chain is not a complete chain; consumers must fail closed.
+            assert!(chain.is_empty() && (!complete || chain.is_empty()));
+        }
+    }
+
+    #[test]
+    fn free_text_and_identifiers_cannot_reach_the_payload() {
+        // A domain-shaped slot holding a path or a sentence is dropped, not forwarded.
+        assert_eq!(sanitized_domain("/Users/someone/Veya.app"), None);
+        assert_eq!(
+            sanitized_domain("Unable to launch because its profile"),
+            None
+        );
+        assert_eq!(sanitized_domain(""), None);
+        assert_eq!(
+            sanitized_domain("FBSOpenApplicationErrorDomain").as_deref(),
+            Some("FBSOpenApplicationErrorDomain")
+        );
+        assert_eq!(sanitized_bs_description("Security = yes"), None);
+        assert_eq!(
+            sanitized_bs_description("Security").as_deref(),
+            Some("Security")
+        );
+    }
+
+    #[test]
+    fn payload_records_how_the_rejection_was_recognized() {
+        let typed = launch_rejection_payload(
+            LaunchRejectionEnvelope::CoreDeviceErrorEnvelope,
+            UNTRUSTED_DEVELOPER,
+        );
+        let typed = String::from_utf8(typed).expect("utf8");
+        assert!(typed.contains("\"envelope\":\"coreDeviceErrorEnvelope\""));
+        assert!(typed.contains("\"chainComplete\":true"));
+        assert!(typed.contains("\"schemaVersion\":1"));
+        // No localized reason, no bundle identifier, no path.
+        assert!(!typed.contains("explicitly trusted"));
+        assert!(!typed.contains("NSLocalizedFailureReason"));
+
+        let guessed =
+            launch_rejection_payload(LaunchRejectionEnvelope::Heuristic, "denied for some reason");
+        let guessed = String::from_utf8(guessed).expect("utf8");
+        assert!(guessed.contains("\"envelope\":\"heuristic\""));
+        assert!(guessed.contains("\"chain\":[]"));
+    }
+
+    #[test]
+    fn unrelated_launch_denials_still_produce_their_own_chain() {
+        // Bad executable: same outer CoreDevice code, different terminal domain.
+        let bad_executable = concat!(
+            r#"Dictionary({"code": Integer(10002), "domain": String("com.apple.dt.CoreDeviceError"), "#,
+            r#""userInfo": Dictionary({"NSUnderlyingError": Dictionary({"code": Integer(5), "#,
+            r#""domain": String("FBSOpenApplicationErrorDomain"), "userInfo": Dictionary({"#,
+            r#""BSErrorCodeDescription": String("BadExecutable")})})})})"#
+        );
+        let parsed = domains(bad_executable);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1].1, 5);
+        assert_eq!(parsed[1].2.as_deref(), Some("BadExecutable"));
+    }
+
+    #[test]
+    fn chain_depth_is_bounded() {
+        let mut deep = String::new();
+        for _ in 0..40 {
+            deep.push_str(
+                r#"Dictionary({"code": Integer(1), "domain": String("D"), "NSUnderlyingError""#,
+            );
+        }
+        let (chain, complete) = extract_error_chain(&deep);
+        assert!(chain.len() <= super::LaunchRejectionDetail::MAX_LEVELS);
+        assert!(!complete, "a chain deeper than the bound is not complete");
+    }
+
     use super::*;
 
     #[test]
