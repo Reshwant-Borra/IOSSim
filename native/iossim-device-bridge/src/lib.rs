@@ -942,19 +942,27 @@ async fn personalized_image_mounted(
     Ok(mounter.lookup_image("Personalized").await.is_ok())
 }
 
+/// The exact usbmuxd entry the handle was opened on. usbmuxd lists one entry per
+/// connection, so a phone on USB and Wi-Fi appears twice under the same UDID, in an
+/// order that changes when the Wi-Fi entry attaches (physically observed: the
+/// Network entry listed first). Matching the UDID alone and then checking the mux
+/// id failed every operation with DeviceNotFound while the USB entry was attached.
+fn find_selected_device(
+    values: Vec<idevice::usbmuxd::UsbmuxdDevice>,
+    stable_id: &str,
+    expected_mux: u32,
+) -> Option<idevice::usbmuxd::UsbmuxdDevice> {
+    values
+        .into_iter()
+        .find(|device| device.udid == stable_id && device.device_id == expected_mux)
+}
+
 async fn selected_device(
     stable_id: &str,
     expected_mux: u32,
 ) -> Result<idevice::usbmuxd::UsbmuxdDevice, idevice::IdeviceError> {
-    let selected = devices()
-        .await?
-        .into_iter()
-        .find(|device| device.udid == stable_id)
-        .ok_or(idevice::IdeviceError::DeviceNotFound)?;
-    if selected.device_id != expected_mux {
-        return Err(idevice::IdeviceError::DeviceNotFound);
-    }
-    Ok(selected)
+    find_selected_device(devices().await?, stable_id, expected_mux)
+        .ok_or(idevice::IdeviceError::DeviceNotFound)
 }
 
 #[unsafe(no_mangle)]
@@ -2855,6 +2863,34 @@ mod tests {
                 ConnectionKind::Usb
             );
         }
+    }
+
+    #[test]
+    fn per_operation_selector_uses_udid_and_mux_not_input_order() {
+        let wifi = || {
+            device(
+                "PHONE-0001",
+                90,
+                Connection::Network("127.0.0.1".parse().unwrap()),
+            )
+        };
+        for values in [
+            vec![wifi(), device("PHONE-0001", 7, Connection::Usb)],
+            vec![device("PHONE-0001", 7, Connection::Usb), wifi()],
+        ] {
+            let selected = find_selected_device(values, "PHONE-0001", 7).expect("USB entry");
+            assert_eq!(selected.device_id, 7);
+        }
+        // The opened entry detached: fail closed even though the UDID is still listed.
+        assert!(find_selected_device(vec![wifi()], "PHONE-0001", 7).is_none());
+        assert!(
+            find_selected_device(
+                vec![device("PHONE-0002", 7, Connection::Usb)],
+                "PHONE-0001",
+                7
+            )
+            .is_none()
+        );
     }
 
     #[test]
