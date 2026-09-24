@@ -247,3 +247,32 @@ Build remains `11` through M0-M12. Per owner direction (2026-09-21), M5-M12 proc
 - Target A remains ad-hoc/private: Gatekeeper user approval, network development-DDI acquisition,
   external LocalDevVPN installation, and M4-deferred relaunch behavior are expected.
 - Evidence and clean-Mac handoff: `TARGET_A_PRIVATE_TEST_DMG_2026-09-23.md`.
+
+## Developer Mode pre-install prerequisite gate — 2026-09-24
+
+- Developer Mode is no longer discovered as a generic `VEYA-DEVICE-030` during Install / Prepare.
+  An explicit prerequisite runs in front of the engine: Select iPhone → **Enable Developer Mode**
+  (AMFI action 0, reveal only) → iPhone instructions → **Continue** → device-state verification →
+  **Install / Prepare**. `InstallationDomain.reconciliationOrder` is unchanged and no second setup
+  engine exists.
+- New `iossim_bridge_reveal_developer_mode` FFI exports AMFI's reveal action through the
+  already-linked `AmfiClient`; enable (action 1) and accept (action 2) stay unexposed. Bridge ABI
+  **2 → 3**, with the new symbol in the fail-closed symbol list so an older bridge is refused.
+- Continue is never proof: it re-lists, rebinds by stable UDID after Apple's restart, and requires
+  AMFI `enabled`, a mounted personalized image, or a live developer-services receipt. Three signals
+  because AMFI's status is advisory on iOS 26.6.2. No bypass was added, by decision.
+- `DynamicNativeDeviceTransport.readiness` re-reads an ambiguous developer-services chain failure as
+  `.developerModeRequired` when the device reports Developer Mode off, so losing Developer Mode after
+  verification re-enters the prerequisite instead of degrading to `VEYA-DEVICE-030`. Transport
+  losses, locks, missing images and Veya's own defects keep their accurate meaning.
+- Deleted `ConsumerOnboardingCoordinator` (a second Developer Mode gate with no production callers
+  that trusted AMFI alone). Lower-level fail-closed checks, the reactive recovery stage, and the
+  reboot/rebinding behavior are retained. Developer trust stays post-install and conditional.
+- `DeveloperModeGateTests` 20/20 PASS; native 21/21 PASS; full macOS suite 569 tests with only the
+  pre-existing unsigned-test-binary `SigningKeyStoreTests` Keychain failure, reproduced identically
+  on the clean tree before these changes. `./iossim installation-baseline --defer-m4`: **PASS**.
+- `Veya-Test-94ed677.dmg` rebuilt from clean HEAD `94ed677` (`sourceDirty: false`): 33,412,201 bytes;
+  SHA-256 `af6c5563f848dd978ec5a8627a3a5160aa3071120c88610d91312e3d87b86f02`; `nativeBridgeABI` 3;
+  reveal symbol present; universal; `hdiutil verify` and strict code-sign PASS. The bundled iPhone
+  payload is unchanged from `073d4a9`.
+- Not yet `PHYSICAL_PASS`. Retest steps: `DEVELOPER_MODE_PREREQUISITE_GATE_2026-09-24.md`.
